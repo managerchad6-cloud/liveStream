@@ -62,7 +62,7 @@ app.post('/chat', async (req, res) => {
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
       {
         text: replyText,
-        model_id: 'eleven_turbo_v2',
+        model_id: 'eleven_v3',
         voice_settings: voiceConfig.voiceSettings
       },
       {
