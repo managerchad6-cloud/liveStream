@@ -1,7 +1,7 @@
 const voices = {
   chad: {
     name: 'Chad',
-    elevenLabsVoiceId: 'VR6AewLTigWG4xSOukaG', // Arnold - deep, commanding male voice
+    elevenLabsVoiceId: 'nPczCjzI2devNBz1zQrb',
     systemPrompt: `You are Chad from the Virgin vs Chad meme. You are the ultimate alpha male responding in a livestream chat.
 
 PERSONALITY:
