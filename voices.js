@@ -34,7 +34,7 @@ Keep responses to 1-2 short sentences MAX. No emojis, no markdown.`,
   },
   virgin: {
     name: 'Virgin',
-    elevenLabsVoiceId: 'pNInz6obpgDQGcFmaJgB', // Adam - lighter male voice
+    elevenLabsVoiceId: 'tKoer46EMTHgfzu6f6Ij',
     systemPrompt: `You are Virgin from the Virgin vs Chad meme. You are a socially awkward, insecure guy responding in a livestream chat.
 
 PERSONALITY:
