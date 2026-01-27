@@ -30,7 +30,7 @@ AUDIO TAGS (use these inline for expressive speech):
 
 Keep responses to 3-4 sentences. Be funny and charming. No emojis, no markdown.`,
     voiceSettings: {
-      stability: 0.25,
+      stability: 0.0,
       similarity_boost: 0.8,
       style: 0.6,
       use_speaker_boost: true
@@ -72,7 +72,7 @@ AUDIO TAGS (use these inline for expressive speech):
 
 Keep responses to 3-4 sentences. No emojis, no markdown.`,
     voiceSettings: {
-      stability: 0.75,
+      stability: 1.0,
       similarity_boost: 0.5,
       style: 0.2,
       use_speaker_boost: false
