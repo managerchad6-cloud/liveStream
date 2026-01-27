@@ -14,7 +14,19 @@ This guide will help you set up automatic bidirectional git syncing on your Ubun
    ssh user@your-vps-ip
    ```
 
-3. **Run the setup script:**
+3. **Fix line endings (if you get ^M error):**
+   ```bash
+   cd ~
+   chmod +x vps-setup/fix-line-endings.sh
+   ./vps-setup/fix-line-endings.sh
+   ```
+   
+   Or manually:
+   ```bash
+   sed -i 's/\r$//' vps-setup/*.sh
+   ```
+
+4. **Run the setup script:**
    ```bash
    cd ~
    chmod +x vps-setup/setup-livestream.sh

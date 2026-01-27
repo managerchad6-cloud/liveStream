@@ -4,6 +4,15 @@
 
 set -e
 
+# Fix line endings for all shell scripts (Windows CRLF to Unix LF)
+echo "🔧 Fixing line endings..."
+if command -v dos2unix &> /dev/null; then
+    find vps-setup -name "*.sh" -exec dos2unix {} \; 2>/dev/null || true
+else
+    # Use sed to remove carriage returns if dos2unix is not available
+    find vps-setup -name "*.sh" -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
+fi
+
 echo "🚀 Setting up LiveStream on VPS..."
 
 # Check if git is installed
@@ -50,6 +59,8 @@ echo "📝 Setting up sync script..."
 cd "$HOME"
 if [ -f "liveStream/vps-setup/livestream-sync.sh" ]; then
     cp liveStream/vps-setup/livestream-sync.sh liveStream/
+    # Fix line endings for the copied script
+    sed -i 's/\r$//' liveStream/livestream-sync.sh
     chmod +x liveStream/livestream-sync.sh
 fi
 
