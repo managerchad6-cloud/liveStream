@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiveStream Chatbox</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="config.js"></script>
+</head>
+<body>
+  <div class="main-container">
+    <div class="viewport-container">
+      <div id="viewport">
+        <video id="character-stream" autoplay playsinline></video>
+        <div id="loading-indicator">Waiting for response...</div>
+      </div>
+    </div>
+
+    <div class="chat-container">
+      <h1>LiveStream Chat</h1>
+
+      <div class="controls">
+        <div class="control-row">
+          <label for="voiceSelect">Voice:</label>
+          <select id="voiceSelect">
+            <option value="chad">Chad</option>
+            <option value="virgin">Virgin</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="modelSelect">TTS Model:</label>
+          <select id="modelSelect">
+            <option value="eleven_v3">v3 (Expressive)</option>
+            <option value="eleven_turbo_v2">v2 Turbo (Fast)</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="tempSlider">Temperature:</label>
+          <input type="range" id="tempSlider" min="0" max="1" step="0.1" value="0.7">
+          <span class="value" id="tempValue">0.7</span>
+        </div>
+      </div>
+
+      <div id="messageHistory"></div>
+
+      <div class="chatbox-container">
+        <input
+          type="text"
+          id="chatbox"
+          placeholder="Type your message here..."
+          autocomplete="off"
+        />
+        <button id="submitBtn">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

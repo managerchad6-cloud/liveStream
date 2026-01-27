@@ -1,21 +1,32 @@
 {
-  "name": "livestream-chatbox-mvp",
-  "version": "1.0.0",
-  "description": "MVP chatbox with OpenAI integration",
+  "name": "livestream-chatbox",
+  "version": "2.0.0",
+  "description": "Animated chatbox with lip-sync and TTS",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "setup": "node setup.js",
+    "export-psd": "node tools/export-psd.js",
+    "animation": "cd animation-server && node server.js",
+    "dev": "node server.js & cd animation-server && node server.js",
     "commit": "git add . && git commit -m",
-    "push": "git push origin master",
-    "deploy": "git add . && git commit -m \"Update: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')\" && git push origin master"
+    "push": "git push origin master"
   },
-  "keywords": [],
+  "keywords": [
+    "chatbot",
+    "animation",
+    "lip-sync",
+    "tts"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "ag-psd": "^18.0.1",
     "axios": "^1.6.0",
+    "cors": "^2.8.6",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
-    "openai": "^4.28.0"
+    "openai": "^4.28.0",
+    "sharp": "^0.33.5"
   }
 }

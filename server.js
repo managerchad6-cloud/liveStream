@@ -1,24 +1,27 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const path = require('path');
 const OpenAI = require('openai');
 const axios = require('axios');
 const voices = require('./voices');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3002;
 
-// Initialize OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
 // Middleware
+app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
 
-// GET /voices endpoint
-app.get('/voices', (req, res) => {
+// Also serve frontend for backward compatibility (can be disabled on VPS with nginx)
+app.use(express.static(path.join(__dirname, 'frontend')));
+
+// API: Get available voices
+app.get('/api/voices', (req, res) => {
   const voiceList = Object.entries(voices).map(([id, config]) => ({
     id,
     name: config.name
@@ -26,8 +29,8 @@ app.get('/voices', (req, res) => {
   res.json(voiceList);
 });
 
-// POST /chat endpoint
-app.post('/chat', async (req, res) => {
+// API: Chat endpoint - returns audio
+app.post('/api/chat', async (req, res) => {
   try {
     const { message, voice = 'chad', model = 'eleven_v3', temperature = 0.7 } = req.body;
 
@@ -35,7 +38,6 @@ app.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'Message is required and must be a string' });
     }
 
-    // Validate voice
     const voiceConfig = voices[voice];
     if (!voiceConfig) {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
@@ -46,23 +48,22 @@ app.post('/chat', async (req, res) => {
       ? voiceConfig.basePrompt + voiceConfig.audioTags
       : voiceConfig.basePrompt;
 
-    // Call OpenAI API to get text response
+    // Call OpenAI
     const completion = await openai.chat.completions.create({
       model: process.env.MODEL || 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: message }
       ],
-      max_tokens: 150, // Keep responses short
+      max_tokens: 150,
       temperature: temperature,
     });
 
     const replyText = completion.choices[0].message.content;
+    console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
+    console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
 
-    // Log settings for debugging
-    console.log(`Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
-
-    // Convert text to speech using ElevenLabs
+    // Call ElevenLabs
     const elevenLabsResponse = await axios.post(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
       {
@@ -80,25 +81,35 @@ app.post('/chat', async (req, res) => {
       }
     );
 
-    // Return audio as MP3
     res.setHeader('Content-Type', 'audio/mpeg');
     res.send(elevenLabsResponse.data);
   } catch (error) {
     console.error('Error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
     if (error.response) {
       const errorText = Buffer.from(error.response.data).toString();
-      console.error('ElevenLabs API Error:', errorText);
       return res.status(500).json({ error: `ElevenLabs API error: ${errorText}` });
     }
     res.status(500).json({ error: 'Failed to generate response' });
   }
 });
 
-// Serve index.html at root
+// Legacy endpoint for backward compatibility
+app.post('/chat', async (req, res) => {
+  req.url = '/api/chat';
+  app.handle(req, res);
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', platform: process.platform });
+});
+
+// Serve frontend index
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'frontend', 'index.html'));
 });
 
 app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+  console.log(`API server running on http://localhost:${port}`);
+  console.log(`Platform: ${process.platform}`);
 });

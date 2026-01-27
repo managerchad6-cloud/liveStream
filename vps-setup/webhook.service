@@ -1,0 +1,13 @@
+[Unit]
+Description=GitHub Webhook Listener for LiveStream
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/liveStream
+ExecStart=/usr/bin/node /home/liveStream/webhook.js
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
