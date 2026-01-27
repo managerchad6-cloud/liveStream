@@ -29,7 +29,7 @@ app.get('/voices', (req, res) => {
 // POST /chat endpoint
 app.post('/chat', async (req, res) => {
   try {
-    const { message, voice = 'chad' } = req.body;
+    const { message, voice = 'chad', model = 'eleven_v3', temperature = 0.7 } = req.body;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required and must be a string' });
@@ -49,20 +49,20 @@ app.post('/chat', async (req, res) => {
         { role: 'user', content: message }
       ],
       max_tokens: 150, // Keep responses short
-      temperature: 0.7,
+      temperature: temperature,
     });
 
     const replyText = completion.choices[0].message.content;
 
-    // Log voice being used for debugging
-    console.log(`Using voice: ${voiceConfig.name} (${voice}) with ID: ${voiceConfig.elevenLabsVoiceId}`);
+    // Log settings for debugging
+    console.log(`Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
 
     // Convert text to speech using ElevenLabs
     const elevenLabsResponse = await axios.post(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
       {
         text: replyText,
-        model_id: 'eleven_v3',
+        model_id: model,
         voice_settings: voiceConfig.voiceSettings
       },
       {

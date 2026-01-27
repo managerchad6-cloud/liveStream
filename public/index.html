@@ -131,18 +131,25 @@
       cursor: not-allowed;
     }
 
-    .voice-selector {
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .control-row {
       display: flex;
       align-items: center;
       gap: 10px;
     }
 
-    .voice-selector label {
+    .control-row label {
       color: #888;
       font-size: 14px;
+      min-width: 80px;
     }
 
-    #voiceSelect {
+    .control-row select {
       padding: 8px 12px;
       border: 1px solid #404040;
       border-radius: 4px;
@@ -152,9 +159,21 @@
       cursor: pointer;
     }
 
-    #voiceSelect:focus {
+    .control-row select:focus {
       outline: none;
       border-color: #007bff;
+    }
+
+    .control-row input[type="range"] {
+      flex: 1;
+      accent-color: #007bff;
+    }
+
+    .control-row .value {
+      color: #e0e0e0;
+      font-size: 14px;
+      min-width: 35px;
+      text-align: right;
     }
   </style>
 </head>
@@ -167,12 +186,26 @@
     <div class="chat-container">
       <h1>Chatbox MVP</h1>
       
-      <div class="voice-selector">
-        <label for="voiceSelect">Voice:</label>
-        <select id="voiceSelect">
-          <option value="chad">Chad</option>
-          <option value="virgin">Virgin</option>
-        </select>
+      <div class="controls">
+        <div class="control-row">
+          <label for="voiceSelect">Voice:</label>
+          <select id="voiceSelect">
+            <option value="chad">Chad</option>
+            <option value="virgin">Virgin</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="modelSelect">Model:</label>
+          <select id="modelSelect">
+            <option value="eleven_v3">v3 (Expressive)</option>
+            <option value="eleven_turbo_v2">v2 Turbo (Fast)</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="tempSlider">Temp:</label>
+          <input type="range" id="tempSlider" min="0" max="1" step="0.1" value="0.7">
+          <span class="value" id="tempValue">0.7</span>
+        </div>
       </div>
       
       <div id="messageHistory"></div>
@@ -194,6 +227,13 @@
     const submitBtn = document.getElementById('submitBtn');
     const messageHistory = document.getElementById('messageHistory');
     const voiceSelect = document.getElementById('voiceSelect');
+    const modelSelect = document.getElementById('modelSelect');
+    const tempSlider = document.getElementById('tempSlider');
+    const tempValue = document.getElementById('tempValue');
+
+    tempSlider.addEventListener('input', () => {
+      tempValue.textContent = tempSlider.value;
+    });
 
     function addMessage(text, isUser, isStatus = false) {
       const messageDiv = document.createElement('div');
@@ -227,7 +267,9 @@
           },
           body: JSON.stringify({
             message,
-            voice: voiceSelect.value
+            voice: voiceSelect.value,
+            model: modelSelect.value,
+            temperature: parseFloat(tempSlider.value)
           }),
         });
 
