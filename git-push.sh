@@ -11,6 +11,6 @@ git add .
 git commit -m "$COMMIT_MSG"
 
 # Push to origin
-git push origin main
+git push origin master
 
 echo "✅ Changes committed and pushed successfully!"

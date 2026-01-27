@@ -4,7 +4,7 @@
 After completing any task or making changes:
 1. Always stage all changes: `git add .`
 2. Commit with a descriptive message: `git commit -m "Description of changes"`
-3. Push to remote: `git push origin main` (or `master` if main doesn't exist)
+3. Push to remote: `git push origin master`
 
 ## Auto-commit Pattern
 When the user asks me to complete a task, I should:

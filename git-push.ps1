@@ -9,10 +9,7 @@ git add .
 # Commit with message
 git commit -m $Message
 
-# Push to origin (try main first, fallback to master)
-git push origin main 2>$null
-if ($LASTEXITCODE -ne 0) {
-    git push origin master
-}
+# Push to origin
+git push origin master
 
 Write-Host "✅ Changes committed and pushed successfully!" -ForegroundColor Green
