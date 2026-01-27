@@ -1,0 +1,14 @@
+[Unit]
+Description=LiveStream Chatbox Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/liveStream
+ExecStart=/root/.nvm/versions/node/v18.20.8/bin/node /home/liveStream/server.js
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/home/liveStream/.env
+
+[Install]
+WantedBy=multi-user.target
