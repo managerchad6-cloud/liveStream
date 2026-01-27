@@ -43,3 +43,4 @@ http://localhost:3000
 - Basic message history display (user messages only)
 - No authentication or persistence
 - Livestream host-style responses (short, conversational)
+
