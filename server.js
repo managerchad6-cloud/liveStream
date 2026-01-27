@@ -3,6 +3,7 @@ const express = require('express');
 const path = require('path');
 const OpenAI = require('openai');
 const axios = require('axios');
+const voices = require('./voices');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -16,26 +17,35 @@ const openai = new OpenAI({
 app.use(express.json());
 app.use(express.static('public'));
 
-// System prompt for livestream host behavior
-const SYSTEM_PROMPT = "You are a livestream host responding casually in chat. Keep responses short, conversational, and not verbose. No emojis, no markdown, no explanations about being an AI.";
-
-// Default ElevenLabs voice ID (Rachel - a common default voice)
-const ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+// GET /voices endpoint
+app.get('/voices', (req, res) => {
+  const voiceList = Object.entries(voices).map(([id, config]) => ({
+    id,
+    name: config.name
+  }));
+  res.json(voiceList);
+});
 
 // POST /chat endpoint
 app.post('/chat', async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, voice = 'chad' } = req.body;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required and must be a string' });
+    }
+
+    // Validate voice
+    const voiceConfig = voices[voice];
+    if (!voiceConfig) {
+      return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
 
     // Call OpenAI API to get text response
     const completion = await openai.chat.completions.create({
       model: process.env.MODEL || 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: voiceConfig.systemPrompt },
         { role: 'user', content: message }
       ],
       max_tokens: 150, // Keep responses short
@@ -46,14 +56,11 @@ app.post('/chat', async (req, res) => {
 
     // Convert text to speech using ElevenLabs
     const elevenLabsResponse = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
       {
         text: replyText,
         model_id: 'eleven_turbo_v2',
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.5
-        }
+        voice_settings: voiceConfig.voiceSettings
       },
       {
         headers: {

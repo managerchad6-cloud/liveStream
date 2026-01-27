@@ -130,6 +130,32 @@
       color: #666;
       cursor: not-allowed;
     }
+
+    .voice-selector {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .voice-selector label {
+      color: #888;
+      font-size: 14px;
+    }
+
+    #voiceSelect {
+      padding: 8px 12px;
+      border: 1px solid #404040;
+      border-radius: 4px;
+      background-color: #2d2d2d;
+      color: #e0e0e0;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    #voiceSelect:focus {
+      outline: none;
+      border-color: #007bff;
+    }
   </style>
 </head>
 <body>
@@ -140,6 +166,14 @@
     
     <div class="chat-container">
       <h1>Chatbox MVP</h1>
+      
+      <div class="voice-selector">
+        <label for="voiceSelect">Voice:</label>
+        <select id="voiceSelect">
+          <option value="chad">Chad</option>
+          <option value="virgin">Virgin</option>
+        </select>
+      </div>
       
       <div id="messageHistory"></div>
       
@@ -159,6 +193,7 @@
     const chatbox = document.getElementById('chatbox');
     const submitBtn = document.getElementById('submitBtn');
     const messageHistory = document.getElementById('messageHistory');
+    const voiceSelect = document.getElementById('voiceSelect');
 
     function addMessage(text, isUser, isStatus = false) {
       const messageDiv = document.createElement('div');
@@ -190,7 +225,10 @@
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify({
+            message,
+            voice: voiceSelect.value
+          }),
         });
 
         if (!response.ok) {
