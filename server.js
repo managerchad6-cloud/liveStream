@@ -41,11 +41,16 @@ app.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
 
+    // Build system prompt - add audio tags only for v3
+    const systemPrompt = model === 'eleven_v3'
+      ? voiceConfig.basePrompt + voiceConfig.audioTags
+      : voiceConfig.basePrompt;
+
     // Call OpenAI API to get text response
     const completion = await openai.chat.completions.create({
       model: process.env.MODEL || 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: voiceConfig.systemPrompt },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: message }
       ],
       max_tokens: 150, // Keep responses short
