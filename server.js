@@ -54,6 +54,9 @@ app.post('/chat', async (req, res) => {
 
     const replyText = completion.choices[0].message.content;
 
+    // Log voice being used for debugging
+    console.log(`Using voice: ${voiceConfig.name} (${voice}) with ID: ${voiceConfig.elevenLabsVoiceId}`);
+
     // Convert text to speech using ElevenLabs
     const elevenLabsResponse = await axios.post(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
