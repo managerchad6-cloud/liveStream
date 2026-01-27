@@ -1,0 +1,22 @@
+# Cursor Rules for LiveStream Project
+
+## Git Workflow
+After completing any task or making changes:
+1. Always stage all changes: `git add .`
+2. Commit with a descriptive message: `git commit -m "Description of changes"`
+3. Push to remote: `git push origin main` (or `master` if main doesn't exist)
+
+## Auto-commit Pattern
+When the user asks me to complete a task, I should:
+1. Complete the task
+2. Automatically commit and push changes unless the user explicitly asks not to
+3. Use clear, descriptive commit messages
+
+## Commit Message Format
+- Use present tense: "Add feature" not "Added feature"
+- Be specific about what changed
+- Examples:
+  - "Add voice selection dropdown"
+  - "Fix audio playback error handling"
+  - "Update UI styling for mobile"
+  - "Refactor server error handling"
