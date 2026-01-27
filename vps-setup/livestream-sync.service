@@ -1,0 +1,19 @@
+[Unit]
+Description=LiveStream Bidirectional Git Sync Service
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%h/liveStream
+ExecStart=%h/liveStream/livestream-sync.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables
+Environment="HOME=%h"
+
+[Install]
+WantedBy=multi-user.target
