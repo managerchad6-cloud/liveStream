@@ -175,11 +175,12 @@ async function routeMessageToVoice(message) {
     return filterDecision;
   }
 
-  const systemPrompt = `You are an LLM router between two characters: "chad" and "virgin".
-Choose the best voice based on intent, tone, and who the user is addressing.
-Prefer "virgin" for insults about being a loser, insecurity, awkwardness, or timid vibes.
-Prefer "chad" for confident, successful, or directly asking Chad for advice.
-Reply with JSON only: {"voice":"chad"} or {"voice":"virgin"}.`;
+  const directAddress = detectDirectAddress(message);
+  if (directAddress) {
+    return { voice: directAddress };
+  }
+
+  const systemPrompt = buildRouterSystemPrompt();
 
   const completion = await openai.chat.completions.create({
     model: routerModel,
@@ -196,6 +197,39 @@ Reply with JSON only: {"voice":"chad"} or {"voice":"virgin"}.`;
   return { voice: parsed.voice };
 }
 
+function detectDirectAddress(text) {
+  const lowered = text.toLowerCase();
+  const hasVirgin = /\bvirgin\b/.test(lowered);
+  const hasChad = /\bchad\b/.test(lowered);
+
+  if (hasVirgin && !hasChad) return 'virgin';
+  if (hasChad && !hasVirgin) return 'chad';
+  return null;
+}
+
+function buildRouterSystemPrompt() {
+  const chadProfile = voices.chad.basePrompt.trim();
+  const virginProfile = voices.virgin.basePrompt.trim();
+
+  return `You are an LLM router between two characters: "chad" and "virgin".
+Your only task is to choose the best voice based on the message content and context.
+
+CHARACTER PROFILES:
+CHAD:
+${chadProfile}
+
+VIRGIN:
+${virginProfile}
+
+ROUTING RULES:
+- If the message directly addresses "chad" or "virgin" (e.g., "hi virgin"), route to that character. This rule has highest priority.
+- Prefer "virgin" for insults about being a loser, insecurity, awkwardness, timidity, or self-deprecation.
+- Prefer "chad" for confidence, winning/success, dating wins, or asking Chad for advice.
+- If unclear, choose the character whose personality best matches the user's tone.
+
+Reply with JSON only: {"voice":"chad"} or {"voice":"virgin"}.`;
+}
+
 function parseRouterResponse(content, message) {
   const fallbackVoice = guessVoiceFromHeuristics(message);
   const clean = content.replace(/```json|```/gi, '').trim();
@@ -203,6 +237,12 @@ function parseRouterResponse(content, message) {
     const parsed = JSON.parse(clean);
     if (parsed.voice === 'chad' || parsed.voice === 'virgin') {
       return parsed;
+    }
+    if (typeof parsed.voice === 'string') {
+      const normalized = parsed.voice.toLowerCase();
+      if (normalized === 'chad' || normalized === 'virgin') {
+        return { voice: normalized };
+      }
     }
   } catch (error) {
     return { voice: fallbackVoice };
@@ -212,10 +252,12 @@ function parseRouterResponse(content, message) {
 
 function guessVoiceFromHeuristics(text) {
   const lowered = text.toLowerCase();
-  if (lowered.includes('virgin') || lowered.includes('loser') || lowered.includes('awkward')) {
+  const direct = detectDirectAddress(text);
+  if (direct) return direct;
+  if (lowered.includes('loser') || lowered.includes('awkward') || lowered.includes('insecure')) {
     return 'virgin';
   }
-  if (lowered.includes('chad') || lowered.includes('money') || lowered.includes('success')) {
+  if (lowered.includes('winning') || lowered.includes('money') || lowered.includes('success')) {
     return 'chad';
   }
   return 'chad';

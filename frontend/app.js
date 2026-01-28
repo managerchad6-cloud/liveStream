@@ -160,6 +160,7 @@ async function sendMessage() {
     const formData = new FormData();
     formData.append('audio', audioBlob, 'audio.mp3');
     formData.append('character', selectedVoice);
+    formData.append('message', message);
 
     const animUrl = CONFIG.ANIMATION_SERVER_URL ? `${CONFIG.ANIMATION_SERVER_URL}/render` : '/render';
 

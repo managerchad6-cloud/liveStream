@@ -54,6 +54,23 @@ let frameCount = 0;
 
 // Track current speaking state for synced mode
 let currentSpeaker = null;
+let currentCaption = null;
+let captionUntil = 0;
+let captionTimeout = null;
+
+function setCaption(text, durationSeconds) {
+  if (!text) return;
+  currentCaption = text;
+  captionUntil = Date.now() + Math.max(0, durationSeconds) * 1000;
+  if (captionTimeout) {
+    clearTimeout(captionTimeout);
+  }
+  captionTimeout = setTimeout(() => {
+    currentCaption = null;
+    captionUntil = 0;
+    captionTimeout = null;
+  }, Math.max(0, durationSeconds) * 1000);
+}
 
 // Frame renderer callback
 // audioProgress is provided by SyncedStreamManager: { playing, frame, total }
@@ -89,6 +106,7 @@ async function renderFrame(frame, audioProgress = null) {
   // Don't blink while speaking
   const chadBlinking = blinkControllers.chad.update(frame, speakingCharacter === 'chad');
   const virginBlinking = blinkControllers.virgin.update(frame, speakingCharacter === 'virgin');
+  const caption = currentCaption && Date.now() < captionUntil ? currentCaption : null;
 
   // Debug log every 30 frames (once per second)
   if (frame % 30 === 0) {
@@ -105,7 +123,8 @@ async function renderFrame(frame, audioProgress = null) {
       chadPhoneme,
       virginPhoneme,
       chadBlinking,
-      virginBlinking
+      virginBlinking,
+      caption
     });
     return buffer;
   } catch (err) {
@@ -118,6 +137,7 @@ async function renderFrame(frame, audioProgress = null) {
 app.post('/render', upload.single('audio'), async (req, res) => {
   const renderStart = Date.now();
   const character = req.body.character || 'chad';
+  const messageText = typeof req.body.message === 'string' ? req.body.message.trim() : '';
 
   if (!req.file) {
     return res.status(400).json({ error: 'No audio file provided' });
@@ -152,6 +172,10 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         syncedPlayback.start();
       }
 
+      if (messageText) {
+        setCaption(messageText, audioDuration);
+      }
+
       const totalTime = Date.now() - renderStart;
       console.log(`[Render] ${character} | move:${moveTime}ms decode:${decodeTime}ms total:${totalTime}ms | ${audioDuration.toFixed(1)}s audio`);
 
@@ -175,6 +199,10 @@ app.post('/render', upload.single('audio'), async (req, res) => {
 
       // Update animation state
       animationState.startSpeaking(character, lipSyncCues, audioMp3Path, audioDuration);
+    }
+
+    if (messageText) {
+      setCaption(messageText, audioDuration);
     }
 
     // Schedule cleanup after audio finishes
@@ -280,6 +308,12 @@ async function start() {
     streamManager.onAudioComplete = () => {
       console.log('[Server] Audio complete, resetting speaker');
       currentSpeaker = null;
+      currentCaption = null;
+      captionUntil = 0;
+      if (captionTimeout) {
+        clearTimeout(captionTimeout);
+        captionTimeout = null;
+      }
     };
   } else {
     streamManager = new StreamManager(STREAMS_DIR, 30);
