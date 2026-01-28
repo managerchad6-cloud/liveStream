@@ -6,14 +6,39 @@ const voiceSelect = document.getElementById('voiceSelect');
 const modelSelect = document.getElementById('modelSelect');
 const tempSlider = document.getElementById('tempSlider');
 const tempValue = document.getElementById('tempValue');
+const delaySlider = document.getElementById('delaySlider');
+const delayValue = document.getElementById('delayValue');
 const characterStream = document.getElementById('character-stream');
 
 let hlsPlayer = null;
 let audioPlayer = null;
+let currentDelayLevel = parseInt(delaySlider.value, 10) || 3;
 
 tempSlider.addEventListener('input', () => {
   tempValue.textContent = tempSlider.value;
 });
+
+function getDelayConfig(level) {
+  const table = {
+    1: { lowLatencyMode: true, liveSyncDuration: 2, liveMaxLatencyDuration: 6, maxBufferLength: 8, maxMaxBufferLength: 12, backBufferLength: 4 },
+    2: { lowLatencyMode: true, liveSyncDuration: 4, liveMaxLatencyDuration: 10, maxBufferLength: 12, maxMaxBufferLength: 18, backBufferLength: 6 },
+    3: { lowLatencyMode: false, liveSyncDuration: 8, liveMaxLatencyDuration: 20, maxBufferLength: 20, maxMaxBufferLength: 30, backBufferLength: 10 },
+    4: { lowLatencyMode: false, liveSyncDuration: 12, liveMaxLatencyDuration: 30, maxBufferLength: 30, maxMaxBufferLength: 45, backBufferLength: 15 },
+    5: { lowLatencyMode: false, liveSyncDuration: 16, liveMaxLatencyDuration: 45, maxBufferLength: 40, maxMaxBufferLength: 60, backBufferLength: 20 }
+  };
+  return table[level] || table[3];
+}
+
+function updateDelayState() {
+  currentDelayLevel = parseInt(delaySlider.value, 10) || 3;
+  delayValue.textContent = String(currentDelayLevel);
+  if (hlsPlayer) {
+    reconnectStream();
+  }
+}
+
+delaySlider.addEventListener('input', updateDelayState);
+updateDelayState();
 
 function updateModeState() {
   const isRouterMode = modeSelect.value === 'router';
@@ -63,16 +88,17 @@ function connectToLiveStream() {
       hlsPlayer.destroy();
     }
 
+    const delayConfig = getDelayConfig(currentDelayLevel);
     hlsPlayer = new Hls({
       enableWorker: true,
-      lowLatencyMode: false,
-      liveSyncDuration: 8,          // Target ~2 segments behind
-      liveMaxLatencyDuration: 20,
+      lowLatencyMode: delayConfig.lowLatencyMode,
+      liveSyncDuration: delayConfig.liveSyncDuration,
+      liveMaxLatencyDuration: delayConfig.liveMaxLatencyDuration,
       liveDurationInfinity: true,
       highBufferWatchdogPeriod: 2,
-      maxBufferLength: 20,
-      maxMaxBufferLength: 30,
-      backBufferLength: 10,
+      maxBufferLength: delayConfig.maxBufferLength,
+      maxMaxBufferLength: delayConfig.maxMaxBufferLength,
+      backBufferLength: delayConfig.backBufferLength,
       startLevel: -1,
       autoStartLoad: true,
       startFragPrefetch: true
@@ -103,6 +129,14 @@ function connectToLiveStream() {
   } else {
     addMessage('HLS not supported in this browser', 'error');
   }
+}
+
+function reconnectStream() {
+  if (hlsPlayer) {
+    hlsPlayer.destroy();
+    hlsPlayer = null;
+  }
+  connectToLiveStream();
 }
 
 // Play audio synchronized with video

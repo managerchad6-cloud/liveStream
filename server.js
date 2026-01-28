@@ -4,14 +4,34 @@ const cors = require('cors');
 const path = require('path');
 const OpenAI = require('openai');
 const axios = require('axios');
+const FormData = require('form-data');
 const voices = require('./voices');
 
 const app = express();
 const port = process.env.PORT || 3002;
 const routerModel = process.env.ROUTER_MODEL || process.env.MODEL || 'gpt-4o-mini';
+const autoModel = process.env.AUTO_MODEL || process.env.MODEL || 'gpt-4o-mini';
+const autoTtsModel = process.env.AUTO_TTS_MODEL || 'eleven_turbo_v2';
 const routerMaxPerSecond = parseInt(process.env.ROUTER_MAX_PER_SECOND || '3', 10);
 const routerMaxPerMinute = parseInt(process.env.ROUTER_MAX_PER_MINUTE || '30', 10);
 const routerTimestamps = [];
+const memoryStore = {
+  chad: '',
+  virgin: ''
+};
+const memoryMaxChars = 600;
+const memoryModel = process.env.MEMORY_MODEL || routerModel;
+let memoryUpdateInFlight = false;
+const memoryPending = {
+  chad: null,
+  virgin: null
+};
+const conversationHistory = [];
+const autoConversation = {
+  id: 0,
+  history: []
+};
+const animationServerUrl = process.env.ANIMATION_SERVER_URL || 'http://localhost:3003';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -31,6 +51,40 @@ app.get('/api/voices', (req, res) => {
     name: config.name
   }));
   res.json(voiceList);
+});
+
+// API: Auto conversation (pre-generated)
+app.post('/api/auto', async (req, res) => {
+  try {
+    const {
+      seed,
+      turns = 12,
+      model = autoModel,
+      temperature = 0.7
+    } = req.body;
+
+    if (!seed || typeof seed !== 'string') {
+      return res.status(400).json({ error: 'Seed is required and must be a string' });
+    }
+
+    const turnCount = Math.max(2, Math.min(30, parseInt(turns, 10) || 12));
+    autoConversation.id += 1;
+    autoConversation.history = [];
+    const script = await generateAutoScript(seed, turnCount, model, temperature);
+    autoConversation.history.push(`System: Auto seed: ${seed}`);
+
+    res.json({ ok: true, turns: script.length, script });
+
+    const currentAutoId = autoConversation.id;
+    setImmediate(() => {
+      playAutoScript(script, currentAutoId).catch(err => {
+        console.error('[Auto] Playback failed:', err.message);
+      });
+    });
+  } catch (error) {
+    console.error('[Auto] Error:', error.message);
+    res.status(500).json({ error: 'Failed to generate auto conversation' });
+  }
 });
 
 // API: Chat endpoint - returns audio
@@ -67,10 +121,8 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
 
-    // Build system prompt - add audio tags only for v3
-    const systemPrompt = model === 'eleven_v3'
-      ? voiceConfig.basePrompt + voiceConfig.audioTags
-      : voiceConfig.basePrompt;
+    const memory = memoryStore[selectedVoice] || '';
+    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
 
     // Call OpenAI
     const completion = await openai.chat.completions.create({
@@ -108,6 +160,9 @@ app.post('/api/chat', async (req, res) => {
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('X-Selected-Voice', selectedVoice);
     res.send(elevenLabsResponse.data);
+
+    appendConversationTurn(message, replyText, selectedVoice);
+    enqueueMemoryUpdate(selectedVoice, message, replyText);
   } catch (error) {
     console.error('Error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
     if (error.response) {
@@ -127,6 +182,14 @@ app.post('/chat', async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', platform: process.platform });
+});
+
+// API: Get current conversation history (in-memory)
+app.get('/api/history', (req, res) => {
+  res.json({
+    history: conversationHistory,
+    autoHistory: autoConversation.history
+  });
 });
 
 // Serve frontend index
@@ -175,12 +238,7 @@ async function routeMessageToVoice(message) {
     return filterDecision;
   }
 
-  const directAddress = detectDirectAddress(message);
-  if (directAddress) {
-    return { voice: directAddress };
-  }
-
-  const systemPrompt = buildRouterSystemPrompt();
+  const systemPrompt = buildRouterSystemPrompt(conversationHistory);
 
   const completion = await openai.chat.completions.create({
     model: routerModel,
@@ -197,19 +255,12 @@ async function routeMessageToVoice(message) {
   return { voice: parsed.voice };
 }
 
-function detectDirectAddress(text) {
-  const lowered = text.toLowerCase();
-  const hasVirgin = /\bvirgin\b/.test(lowered);
-  const hasChad = /\bchad\b/.test(lowered);
-
-  if (hasVirgin && !hasChad) return 'virgin';
-  if (hasChad && !hasVirgin) return 'chad';
-  return null;
-}
-
-function buildRouterSystemPrompt() {
+function buildRouterSystemPrompt(history) {
   const chadProfile = voices.chad.basePrompt.trim();
   const virginProfile = voices.virgin.basePrompt.trim();
+  const historySection = history.length
+    ? `\n\nCONVERSATION HISTORY (most recent last):\n${history.join('\n')}`
+    : '';
 
   return `You are an LLM router between two characters: "chad" and "virgin".
 Your only task is to choose the best voice based on the message content and context.
@@ -222,12 +273,13 @@ VIRGIN:
 ${virginProfile}
 
 ROUTING RULES:
-- If the message directly addresses "chad" or "virgin" (e.g., "hi virgin"), route to that character. This rule has highest priority.
+- If the user addresses one character to ask about the other (e.g., "what did chad say, virgin?"), route to the addressed character (Virgin in that example).
+- If the user asks a question about Chad but does not address Virgin, route to Chad; likewise for Virgin.
 - Prefer "virgin" for insults about being a loser, insecurity, awkwardness, timidity, or self-deprecation.
 - Prefer "chad" for confidence, winning/success, dating wins, or asking Chad for advice.
 - If unclear, choose the character whose personality best matches the user's tone.
 
-Reply with JSON only: {"voice":"chad"} or {"voice":"virgin"}.`;
+Reply with JSON only: {"voice":"chad"} or {"voice":"virgin"}.` + historySection;
 }
 
 function parseRouterResponse(content, message) {
@@ -252,8 +304,6 @@ function parseRouterResponse(content, message) {
 
 function guessVoiceFromHeuristics(text) {
   const lowered = text.toLowerCase();
-  const direct = detectDirectAddress(text);
-  if (direct) return direct;
   if (lowered.includes('loser') || lowered.includes('awkward') || lowered.includes('insecure')) {
     return 'virgin';
   }
@@ -261,4 +311,312 @@ function guessVoiceFromHeuristics(text) {
     return 'chad';
   }
   return 'chad';
+}
+
+function buildCharacterSystemPrompt(voiceConfig, model, memory, history) {
+  const memorySection = memory
+    ? `\n\nCONVERSATION MEMORY (use for continuity):\n${memory}\n\nAvoid repeating any "Recent anecdotes" unless the user asks to continue.`
+    : '';
+  const historySection = history && history.length
+    ? `\n\nCONVERSATION HISTORY (most recent last):\n${history.join('\n')}`
+    : '';
+  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nAvoid repeating stock or clichéd anecdotes (e.g., helping a friend move and ending up owning a building). Keep each response fresh and aligned to the user's intent.`;
+  const base = model === 'eleven_v3'
+    ? voiceConfig.basePrompt + voiceConfig.audioTags
+    : voiceConfig.basePrompt;
+  return base + memorySection + historySection + freshnessGuard;
+}
+
+async function updateMemorySummary(voiceId, userMessage, assistantMessage) {
+  const current = memoryStore[voiceId] || '';
+  const prompt = `You update a compact memory summary for a character.
+Keep it under ${memoryMaxChars} characters.
+Only store stable facts, preferences, ongoing topics, and notable context.
+Avoid storing sensitive data. Track and rotate "Recent anecdotes" to avoid repetition.
+
+EXISTING MEMORY:
+${current || '(empty)'}
+
+NEW EXCHANGE:
+User: ${userMessage}
+Assistant: ${assistantMessage}
+
+Write the updated memory as plain text with these sections:
+Summary: <1-3 sentences>
+Recent anecdotes: <comma-separated short phrases, max 3>
+Topics to continue: <comma-separated short phrases, optional>`;
+
+  const timeoutMs = 8000;
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('Memory update timeout')), timeoutMs);
+  });
+
+  const completion = await Promise.race([
+    openai.chat.completions.create({
+      model: memoryModel,
+      messages: [{ role: 'system', content: prompt }],
+      max_tokens: 200,
+      temperature: 0
+    }),
+    timeoutPromise
+  ]);
+
+  const updated = completion.choices[0].message.content.trim();
+  if (!updated) return;
+  memoryStore[voiceId] = updated.slice(0, memoryMaxChars);
+}
+
+function enqueueMemoryUpdate(voiceId, userMessage, assistantMessage) {
+  memoryPending[voiceId] = { userMessage, assistantMessage };
+  if (memoryUpdateInFlight) return;
+  memoryUpdateInFlight = true;
+  processMemoryQueue();
+}
+
+function appendConversationTurn(userMessage, assistantMessage, voiceId) {
+  const speaker = voiceId === 'virgin' ? 'Virgin' : 'Chad';
+  conversationHistory.push(`User: ${userMessage}`);
+  conversationHistory.push(`${speaker}: ${assistantMessage}`);
+}
+
+function appendDialogueLine(speakerId, text, targetHistory) {
+  const speaker = speakerId === 'virgin' ? 'Virgin' : 'Chad';
+  targetHistory.push(`${speaker}: ${text}`);
+}
+
+function appendSystemNote(text) {
+  conversationHistory.push(`System: ${text}`);
+}
+
+async function generateAutoScript(seed, turns, model, temperature) {
+  const chadProfile = voices.chad.basePrompt.trim();
+  const virginProfile = voices.virgin.basePrompt.trim();
+  const intent = await deriveAutoIntent(seed, model);
+  const intentJson = JSON.stringify(intent);
+  const systemPrompt = `You are writing a scripted dialogue between Chad and Virgin from the Virgin vs Chad meme.
+The seed's intent is the blueprint. Do not deviate from it at any point.
+Respect archetypes, but never override the intent.
+Alternate speakers each turn, starting with Chad.
+Write exactly ${turns} turns.
+Each line should be 1-3 sentences, no emojis, no markdown.
+Output JSON only as an array of objects like:
+[
+  {"speaker":"chad","text":"..."},
+  {"speaker":"virgin","text":"..."}
+]
+INTENT BLUEPRINT (must be followed exactly):
+${intentJson}
+
+CHARACTER PROFILES:
+CHAD:
+${chadProfile}
+
+VIRGIN:
+${virginProfile}`;
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: seed }
+    ],
+    max_tokens: 1200,
+    temperature
+  });
+
+  const content = completion.choices[0].message.content.trim();
+  const parsed = parseJsonArray(content);
+  if (!Array.isArray(parsed)) {
+    throw new Error('Auto script is not a JSON array');
+  }
+  const validated = await validateAutoScript(parsed, intent, model);
+  return validated;
+}
+
+async function deriveAutoIntent(seed, model) {
+  const prompt = `Extract an intent blueprint for a scripted dialogue.
+Return JSON only with:
+{
+  "scenario": "<1 sentence>",
+  "dynamics": "<1-2 sentences describing who leads/targets/frames the exchange>",
+  "tone": "<short description>",
+  "constraints": ["<short, non-negotiable rules>"]
+}
+Make constraints strong enough to prevent drift. Do not mention "Chad" or "Virgin" in constraints unless the seed requires it.`;
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: seed }
+    ],
+    max_tokens: 200,
+    temperature: 0
+  });
+
+  const content = completion.choices[0].message.content.trim();
+  const parsed = parseJsonObject(content);
+  if (!parsed || typeof parsed !== 'object') {
+    return {
+      scenario: seed.slice(0, 160),
+      dynamics: 'Follow the seed exactly without drifting.',
+      tone: 'As implied by the seed.',
+      constraints: ['Do not deviate from the seed intent.']
+    };
+  }
+  return parsed;
+}
+
+function parseJsonObject(content) {
+  const clean = content.replace(/```json|```/gi, '').trim();
+  try {
+    return JSON.parse(clean);
+  } catch (error) {
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
+        return JSON.parse(clean.slice(start, end + 1));
+      } catch (innerError) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+async function validateAutoScript(script, intent, model) {
+  const prompt = `You are a strict validator. Check if the dialogue follows the intent blueprint.
+If it fully complies, reply with: {"ok":true}
+If not, reply with: {"ok":false,"issues":["..."],"fix":"<short instruction to rewrite>"}
+Be concise and strict.`;
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: JSON.stringify({ intent, script }) }
+    ],
+    max_tokens: 120,
+    temperature: 0
+  });
+
+  const verdict = parseJsonObject(completion.choices[0].message.content.trim());
+  if (verdict && verdict.ok === true) {
+    return script;
+  }
+
+  const fix = verdict && verdict.fix ? verdict.fix : 'Rewrite to follow the intent blueprint without drift.';
+  return rewriteAutoScript(script, intent, model, fix);
+}
+
+async function rewriteAutoScript(script, intent, model, fix) {
+  const systemPrompt = `Rewrite this dialogue to strictly follow the intent blueprint.
+Keep the number of turns and speakers, but fix any drift.
+Output JSON only as an array of objects with speaker/text.`;
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: JSON.stringify({ intent, fix, script }) }
+    ],
+    max_tokens: 1200,
+    temperature: 0.5
+  });
+
+  const content = completion.choices[0].message.content.trim();
+  const parsed = parseJsonArray(content);
+  if (!Array.isArray(parsed)) {
+    return script;
+  }
+  return parsed;
+}
+
+function parseJsonArray(content) {
+  const clean = content.replace(/```json|```/gi, '').trim();
+  try {
+    return JSON.parse(clean);
+  } catch (error) {
+    const start = clean.indexOf('[');
+    const end = clean.lastIndexOf(']');
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
+        return JSON.parse(clean.slice(start, end + 1));
+      } catch (innerError) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+async function playAutoScript(script, autoId) {
+  for (const entry of script) {
+    if (autoId !== autoConversation.id) {
+      return;
+    }
+    const speakerId = String(entry.speaker || '').toLowerCase();
+    const text = String(entry.text || '').trim();
+    if (!text) continue;
+
+    const voiceConfig = voices[speakerId];
+    if (!voiceConfig) continue;
+
+    const elevenLabsResponse = await axios.post(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
+      {
+        text,
+        model_id: autoTtsModel,
+        voice_settings: voiceConfig.voiceSettings
+      },
+      {
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': process.env.ELEVENLABS_API_KEY
+        },
+        responseType: 'arraybuffer'
+      }
+    );
+
+    const form = new FormData();
+    form.append('audio', Buffer.from(elevenLabsResponse.data), {
+      filename: 'audio.mp3',
+      contentType: 'audio/mpeg'
+    });
+    form.append('character', speakerId);
+    form.append('message', text);
+    form.append('mode', 'router');
+
+    await axios.post(`${animationServerUrl}/render`, form, {
+      headers: form.getHeaders()
+    });
+
+    appendDialogueLine(speakerId, text, autoConversation.history);
+  }
+}
+
+async function processMemoryQueue() {
+  const voiceIds = Object.keys(memoryPending);
+  let didWork = false;
+
+  for (const voiceId of voiceIds) {
+    const payload = memoryPending[voiceId];
+    if (!payload) continue;
+    memoryPending[voiceId] = null;
+    didWork = true;
+    try {
+      await updateMemorySummary(voiceId, payload.userMessage, payload.assistantMessage);
+    } catch (err) {
+      console.warn('[Memory] Update failed:', err.message);
+    }
+  }
+
+  if (didWork) {
+    setImmediate(processMemoryQueue);
+    return;
+  }
+
+  memoryUpdateInFlight = false;
 }
