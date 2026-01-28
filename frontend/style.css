@@ -45,14 +45,6 @@ body {
   object-fit: contain;
 }
 
-#loading-indicator {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  color: #666;
-  font-size: 18px;
-}
 
 .chat-container {
   width: 400px;

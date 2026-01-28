@@ -6,7 +6,6 @@ const modelSelect = document.getElementById('modelSelect');
 const tempSlider = document.getElementById('tempSlider');
 const tempValue = document.getElementById('tempValue');
 const characterStream = document.getElementById('character-stream');
-const loadingIndicator = document.getElementById('loading-indicator');
 
 let hlsPlayer = null;
 let audioPlayer = null;
@@ -29,11 +28,6 @@ function removeStatus() {
   statusMsgs.forEach(msg => msg.remove());
 }
 
-function showLoading(show) {
-  if (loadingIndicator) {
-    loadingIndicator.style.display = show ? 'block' : 'none';
-  }
-}
 
 // Connect to live stream on page load
 function connectToLiveStream() {
@@ -137,7 +131,6 @@ async function sendMessage() {
 
     const audioBlob = await chatResponse.blob();
     statusMsg.textContent = 'Starting animation...';
-    showLoading(true);
 
     // Step 2: Send audio to animation server
     const formData = new FormData();
@@ -159,7 +152,6 @@ async function sendMessage() {
     const renderData = await renderResponse.json();
     const { audioUrl, duration, streamMode } = renderData;
     removeStatus();
-    showLoading(false);
 
     // Step 3: Play audio
     if (streamMode === 'synced' || !audioUrl) {
@@ -186,7 +178,6 @@ async function sendMessage() {
     console.error('Error:', error);
     removeStatus();
     addMessage(`Error: ${error.message}`, 'error');
-    showLoading(false);
   } finally {
     chatbox.disabled = false;
     submitBtn.disabled = false;
