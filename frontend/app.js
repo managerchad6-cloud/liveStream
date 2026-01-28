@@ -1,6 +1,7 @@
 const chatbox = document.getElementById('chatbox');
 const submitBtn = document.getElementById('submitBtn');
 const messageHistory = document.getElementById('messageHistory');
+const modeSelect = document.getElementById('modeSelect');
 const voiceSelect = document.getElementById('voiceSelect');
 const modelSelect = document.getElementById('modelSelect');
 const tempSlider = document.getElementById('tempSlider');
@@ -13,6 +14,17 @@ let audioPlayer = null;
 tempSlider.addEventListener('input', () => {
   tempValue.textContent = tempSlider.value;
 });
+
+function updateModeState() {
+  const isRouterMode = modeSelect.value === 'router';
+  voiceSelect.disabled = isRouterMode;
+  voiceSelect.title = isRouterMode
+    ? 'Voice is chosen automatically by the router'
+    : '';
+}
+
+modeSelect.addEventListener('change', updateModeState);
+updateModeState();
 
 function addMessage(text, type = 'status') {
   const messageDiv = document.createElement('div');
@@ -120,7 +132,8 @@ async function sendMessage() {
         message,
         voice: voiceSelect.value,
         model: modelSelect.value,
-        temperature: parseFloat(tempSlider.value)
+        temperature: parseFloat(tempSlider.value),
+        mode: modeSelect.value
       }),
     });
 
@@ -129,13 +142,24 @@ async function sendMessage() {
       throw new Error(errorData.error || `HTTP ${chatResponse.status}`);
     }
 
+    const contentType = chatResponse.headers.get('Content-Type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await chatResponse.json();
+      if (data.filtered) {
+        removeStatus();
+        addMessage(data.reason || 'Router skipped this message due to high volume.', 'status');
+        return;
+      }
+    }
+
     const audioBlob = await chatResponse.blob();
     statusMsg.textContent = 'Starting animation...';
+    const selectedVoice = chatResponse.headers.get('X-Selected-Voice') || voiceSelect.value;
 
     // Step 2: Send audio to animation server
     const formData = new FormData();
     formData.append('audio', audioBlob, 'audio.mp3');
-    formData.append('character', voiceSelect.value);
+    formData.append('character', selectedVoice);
 
     const animUrl = CONFIG.ANIMATION_SERVER_URL ? `${CONFIG.ANIMATION_SERVER_URL}/render` : '/render';
 
@@ -159,14 +183,14 @@ async function sendMessage() {
       // Just make sure video is unmuted
       characterStream.muted = false;
       characterStream.volume = 1.0;
-      addMessage(`Playing response (${duration.toFixed(1)}s)...`);
+      addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
     } else {
       // SEPARATE MODE: Play audio file separately
       const fullAudioUrl = CONFIG.ANIMATION_SERVER_URL
         ? `${CONFIG.ANIMATION_SERVER_URL}${audioUrl}`
         : audioUrl;
       playAudio(fullAudioUrl);
-      addMessage(`Playing response (${duration.toFixed(1)}s)...`);
+      addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
     }
 
     // Remove status after audio ends
