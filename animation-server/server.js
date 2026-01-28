@@ -9,6 +9,7 @@ const { FFMPEG_PATH } = require('./platform');
 const { analyzeLipSync } = require('./lipsync');
 const BlinkController = require('./blink-controller');
 const { compositeFrame, loadManifest, preloadLayers } = require('./compositor');
+const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
 const StreamManager = require('./stream-manager');
 const SyncedStreamManager = require('./synced-stream-manager');
@@ -57,6 +58,8 @@ let currentSpeaker = null;
 let currentCaption = null;
 let captionUntil = 0;
 let captionTimeout = null;
+let isAudioActive = false;
+const renderQueue = [];
 
 function setCaption(text, durationSeconds) {
   if (!text) return;
@@ -71,6 +74,62 @@ function setCaption(text, durationSeconds) {
     captionTimeout = null;
   }, Math.max(0, durationSeconds) * 1000);
 }
+
+function scheduleAudioCleanup(audioMp3Path, durationSeconds) {
+  setTimeout(() => {
+    try { fs.unlinkSync(audioMp3Path); } catch (e) {}
+  }, (durationSeconds + 5) * 1000);
+}
+
+function handleAudioComplete() {
+  currentSpeaker = null;
+  currentCaption = null;
+  captionUntil = 0;
+  if (captionTimeout) {
+    clearTimeout(captionTimeout);
+    captionTimeout = null;
+  }
+  isAudioActive = false;
+  processQueue();
+}
+
+async function startPlayback(item) {
+  isAudioActive = true;
+  currentSpeaker = item.character;
+
+  if (LIPSYNC_MODE === 'realtime') {
+    syncedPlayback.loadSamples(item.samples, item.duration, item.character);
+    if (STREAM_MODE === 'synced') {
+      streamManager.loadAudio(item.samples, item.sampleRate, item.character, item.duration);
+    } else {
+      syncedPlayback.start();
+    }
+  } else {
+    animationState.startSpeaking(item.character, item.lipSyncCues, item.audioMp3Path, item.duration);
+    setTimeout(handleAudioComplete, Math.max(0, item.duration) * 1000);
+  }
+
+  if (item.messageText) {
+    setCaption(item.messageText, item.duration);
+  }
+
+  scheduleAudioCleanup(item.audioMp3Path, item.duration);
+}
+
+function processQueue() {
+  if (isAudioActive || renderQueue.length === 0) {
+    return;
+  }
+
+  const next = renderQueue.shift();
+  startPlayback(next).catch(err => {
+    console.error('[Queue] Failed to start playback:', err.message);
+    isAudioActive = false;
+    processQueue();
+  });
+}
+
+syncedPlayback.onComplete = handleAudioComplete;
 
 // Frame renderer callback
 // audioProgress is provided by SyncedStreamManager: { playing, frame, total }
@@ -95,6 +154,9 @@ async function renderFrame(frame, audioProgress = null) {
     const state = animationState.getState();
     speakingCharacter = state.speakingCharacter;
     currentPhoneme = state.phoneme || 'A';
+    if (!state.isPlaying && isAudioActive) {
+      handleAudioComplete();
+    }
   }
 
   // Chad gets the phoneme if he's speaking, otherwise neutral
@@ -138,6 +200,8 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   const renderStart = Date.now();
   const character = req.body.character || 'chad';
   const messageText = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+  const mode = req.body.mode || 'direct';
+  const shouldQueue = mode === 'router';
 
   if (!req.file) {
     return res.status(400).json({ error: 'No audio file provided' });
@@ -153,27 +217,38 @@ app.post('/render', upload.single('audio'), async (req, res) => {
     const moveTime = Date.now() - renderStart;
 
     let audioDuration;
+    const response = {
+      streamUrl: streamManager.getStreamUrl(),
+      lipsyncMode: LIPSYNC_MODE,
+      streamMode: STREAM_MODE
+    };
 
     if (LIPSYNC_MODE === 'realtime') {
       // Real-time mode - decode audio for lip sync analysis
       const decodeStart = Date.now();
-      const result = await syncedPlayback.load(audioMp3Path, character);
+      const result = await decodeAudio(audioMp3Path, syncedPlayback.sampleRate);
+      const samples = result.samples;
+      const sampleRate = result.sampleRate;
       audioDuration = result.duration;
       const decodeTime = Date.now() - decodeStart;
 
-      // Set current speaker for frame renderer
-      currentSpeaker = character;
+      const queueItem = {
+        character,
+        messageText,
+        audioMp3Path,
+        duration: audioDuration,
+        samples,
+        sampleRate
+      };
 
-      if (STREAM_MODE === 'synced') {
-        const audioSamples = syncedPlayback.audioSamples;
-        const sampleRate = syncedPlayback.sampleRate;
-        streamManager.loadAudio(audioSamples, sampleRate, character, audioDuration);
+      const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
+      if (queued) {
+        renderQueue.push(queueItem);
+        response.queued = true;
+        response.queuePosition = renderQueue.length;
       } else {
-        syncedPlayback.start();
-      }
-
-      if (messageText) {
-        setCaption(messageText, audioDuration);
+        await startPlayback(queueItem);
+        response.queued = false;
       }
 
       const totalTime = Date.now() - renderStart;
@@ -197,26 +272,26 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         console.log('[Render] [RH] First cues:', lipSyncCues.slice(0, 5).map(c => `${c.start.toFixed(2)}-${c.end.toFixed(2)}: ${c.phoneme}`).join(', '));
       }
 
-      // Update animation state
-      animationState.startSpeaking(character, lipSyncCues, audioMp3Path, audioDuration);
+      const queueItem = {
+        character,
+        messageText,
+        audioMp3Path,
+        duration: audioDuration,
+        lipSyncCues
+      };
+
+      const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
+      if (queued) {
+        renderQueue.push(queueItem);
+        response.queued = true;
+        response.queuePosition = renderQueue.length;
+      } else {
+        await startPlayback(queueItem);
+        response.queued = false;
+      }
     }
 
-    if (messageText) {
-      setCaption(messageText, audioDuration);
-    }
-
-    // Schedule cleanup after audio finishes
-    setTimeout(() => {
-      try { fs.unlinkSync(audioMp3Path); } catch (e) {}
-    }, (audioDuration + 5) * 1000);
-
-    // In synced mode, audio is embedded in video stream
-    const response = {
-      streamUrl: streamManager.getStreamUrl(),
-      duration: audioDuration,
-      lipsyncMode: LIPSYNC_MODE,
-      streamMode: STREAM_MODE
-    };
+    response.duration = audioDuration;
 
     // Only provide separate audio URL in non-synced mode
     if (STREAM_MODE !== 'synced') {
@@ -307,13 +382,7 @@ async function start() {
     // Reset speaker when audio finishes
     streamManager.onAudioComplete = () => {
       console.log('[Server] Audio complete, resetting speaker');
-      currentSpeaker = null;
-      currentCaption = null;
-      captionUntil = 0;
-      if (captionTimeout) {
-        clearTimeout(captionTimeout);
-        captionTimeout = null;
-      }
+      handleAudioComplete();
     };
   } else {
     streamManager = new StreamManager(STREAMS_DIR, 30);

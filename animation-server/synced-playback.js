@@ -50,6 +50,26 @@ class SyncedPlayback {
   }
 
   /**
+   * Load pre-decoded samples and prepare for synchronized playback
+   * @param {Float32Array} samples
+   * @param {number} duration
+   * @param {string} character
+   */
+  loadSamples(samples, duration, character) {
+    this.audioSamples = samples;
+    this.totalFrames = Math.ceil(samples.length / this.samplesPerFrame);
+    this.character = character;
+    this.currentFrame = 0;
+    this.isPlaying = false;
+
+    this.lipSync.calibrate(samples);
+    this.lipSync.reset();
+
+    console.log(`[SyncedPlayback] Loaded samples: ${duration.toFixed(2)}s, ${this.totalFrames} frames`);
+    return { duration, totalFrames: this.totalFrames };
+  }
+
+  /**
    * Start playback
    */
   start() {

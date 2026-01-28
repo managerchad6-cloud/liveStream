@@ -35,9 +35,13 @@ function addMessage(text, type = 'status') {
   return messageDiv;
 }
 
-function removeStatus() {
+function removeStatus(msg) {
+  if (msg) {
+    msg.remove();
+    return;
+  }
   const statusMsgs = messageHistory.querySelectorAll('.status-message');
-  statusMsgs.forEach(msg => msg.remove());
+  statusMsgs.forEach(status => status.remove());
 }
 
 
@@ -113,9 +117,12 @@ function playAudio(audioUrl) {
 async function sendMessage() {
   const message = chatbox.value.trim();
   if (!message) return;
+  const isRouterMode = modeSelect.value === 'router';
 
-  chatbox.disabled = true;
-  submitBtn.disabled = true;
+  if (!isRouterMode) {
+    chatbox.disabled = true;
+    submitBtn.disabled = true;
+  }
   chatbox.value = '';
 
   addMessage(message, 'user');
@@ -146,7 +153,7 @@ async function sendMessage() {
     if (contentType.includes('application/json')) {
       const data = await chatResponse.json();
       if (data.filtered) {
-        removeStatus();
+        removeStatus(statusMsg);
         addMessage(data.reason || 'Router skipped this message due to high volume.', 'status');
         return;
       }
@@ -161,6 +168,7 @@ async function sendMessage() {
     formData.append('audio', audioBlob, 'audio.mp3');
     formData.append('character', selectedVoice);
     formData.append('message', message);
+    formData.append('mode', modeSelect.value);
 
     const animUrl = CONFIG.ANIMATION_SERVER_URL ? `${CONFIG.ANIMATION_SERVER_URL}/render` : '/render';
 
@@ -175,8 +183,12 @@ async function sendMessage() {
     }
 
     const renderData = await renderResponse.json();
-    const { audioUrl, duration, streamMode } = renderData;
-    removeStatus();
+    const { audioUrl, duration, streamMode, queued, queuePosition } = renderData;
+    if (queued) {
+      statusMsg.textContent = `Queued ${selectedVoice} response (#${queuePosition})...`;
+    } else {
+      removeStatus(statusMsg);
+    }
 
     // Step 3: Play audio
     if (streamMode === 'synced' || !audioUrl) {
@@ -184,28 +196,36 @@ async function sendMessage() {
       // Just make sure video is unmuted
       characterStream.muted = false;
       characterStream.volume = 1.0;
-      addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
+      if (!queued) {
+        addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
+      }
     } else {
       // SEPARATE MODE: Play audio file separately
       const fullAudioUrl = CONFIG.ANIMATION_SERVER_URL
         ? `${CONFIG.ANIMATION_SERVER_URL}${audioUrl}`
         : audioUrl;
       playAudio(fullAudioUrl);
-      addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
+      if (!queued) {
+        addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
+      }
     }
 
     // Remove status after audio ends
     setTimeout(() => {
-      removeStatus();
+      if (!queued) {
+        removeStatus(statusMsg);
+      }
     }, duration * 1000 + 500);
 
   } catch (error) {
     console.error('Error:', error);
-    removeStatus();
+    removeStatus(statusMsg);
     addMessage(`Error: ${error.message}`, 'error');
   } finally {
-    chatbox.disabled = false;
-    submitBtn.disabled = false;
+    if (!isRouterMode) {
+      chatbox.disabled = false;
+      submitBtn.disabled = false;
+    }
     chatbox.focus();
   }
 }
