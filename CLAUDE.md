@@ -69,12 +69,51 @@ Two personalities based on the Virgin vs Chad meme:
 
 v3 stability values must be: `0.0` (Creative), `0.5` (Natural), or `1.0` (Robust)
 
-### Frontend (`public/index.html`)
+### Frontend (`frontend/`)
 
-- Two-column layout: 16:9 viewport placeholder (left), chatbox (right)
+- Two-column layout: 16:9 video viewport (left), chatbox (right)
 - Dark theme, vanilla JS
-- Controls: Voice selector, Model selector (v3/v2), Temperature slider
-- Auto-plays MP3 response
+- Controls: Voice selector, Model selector (v2 turbo default), Temperature slider
+- HLS.js video player for live animation stream
+- Audio synced into video stream (no separate audio player)
+
+### Animation Server (`animation-server/`)
+
+Separate Express server that renders animated characters with real-time lip sync.
+
+**Port:** 3003 (set via `ANIMATION_PORT` env var)
+
+**Key endpoints:**
+- `POST /render` - Receive audio, start lip-synced animation
+- `GET /streams/live/stream.m3u8` - HLS live stream
+- `GET /health` - Server status
+
+**Environment variables:**
+- `LIPSYNC_MODE`: `realtime` (default) or `rhubarb` (legacy)
+- `STREAM_MODE`: `synced` (audio in video) or `separate`
+
+**Key files:**
+- `server.js` - Main Express server
+- `compositor.js` - Sharp-based frame compositing with caching
+- `continuous-stream-manager.js` - FFmpeg HLS streaming with audio muxing
+- `realtime-lipsync.js` - Real-time phoneme detection (90Hz analysis)
+- `synced-playback.js` - Frame-synchronized audio playback
+- `audio-decoder.js` - FFmpeg pipe-based audio decoding
+
+**How it works:**
+1. Audio received via `/render` endpoint
+2. Decoded to PCM samples (pipe, no temp file)
+3. Calibrated on first 1s of audio
+4. Fed to continuous FFmpeg process (video + audio pipes)
+5. Real-time phoneme detection at 90Hz (3x per video frame)
+6. Frame compositor uses caching for identical states
+7. HLS stream with 2-second segments at 720p 15fps
+
+**Systemd service:**
+```bash
+sudo systemctl status|start|stop|restart animation
+sudo journalctl -u animation -f
+```
 
 ## VPS Deployment
 
@@ -117,8 +156,22 @@ Main branch: `master`
 
 ## Key Files
 
-- `server.js` - Express server, API endpoints
+**Chat API:**
+- `server.js` - Express server, chat API endpoints
 - `voices.js` - Voice configurations (prompts, ElevenLabs settings)
 - `webhook.js` - Standalone GitHub webhook listener
-- `public/index.html` - Frontend UI
+
+**Frontend:**
+- `frontend/index.html` - Main UI
+- `frontend/app.js` - Chat logic, HLS player
+- `frontend/config.js` - Server URLs
+
+**Animation Server:**
+- `animation-server/server.js` - Animation API server
+- `animation-server/compositor.js` - Frame rendering with Sharp
+- `animation-server/continuous-stream-manager.js` - FFmpeg HLS streaming
+- `animation-server/realtime-lipsync.js` - Phoneme detection
+- `exported-layers/` - Character PSD layers as PNGs
+
+**Config:**
 - `.env` - API keys and config (not in repo)

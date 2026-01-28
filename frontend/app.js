@@ -50,10 +50,16 @@ function connectToLiveStream() {
     hlsPlayer = new Hls({
       enableWorker: true,
       lowLatencyMode: true,
-      liveSyncDuration: 1,
-      liveMaxLatencyDuration: 3,
+      liveSyncDuration: 2,          // Stay 2s behind (1 segment)
+      liveMaxLatencyDuration: 5,
       liveDurationInfinity: true,
-      highBufferWatchdogPeriod: 1
+      highBufferWatchdogPeriod: 1,
+      maxBufferLength: 8,
+      maxMaxBufferLength: 12,
+      backBufferLength: 4,
+      startLevel: -1,
+      autoStartLoad: true,
+      startFragPrefetch: true
     });
 
     hlsPlayer.loadSource(streamUrl);
@@ -61,6 +67,7 @@ function connectToLiveStream() {
 
     hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
       console.log('Live stream connected');
+      // Start muted for autoplay to work, will unmute on user interaction
       characterStream.play().catch(e => {
         console.warn('Autoplay blocked, click to play');
         addMessage('Click anywhere to start video', 'status');
@@ -149,17 +156,26 @@ async function sendMessage() {
       throw new Error(errorData.error || 'Animation render failed');
     }
 
-    const { audioUrl, duration } = await renderResponse.json();
+    const renderData = await renderResponse.json();
+    const { audioUrl, duration, streamMode } = renderData;
     removeStatus();
     showLoading(false);
 
-    // Step 3: Play audio (video stream already running with lip-sync)
-    const fullAudioUrl = CONFIG.ANIMATION_SERVER_URL
-      ? `${CONFIG.ANIMATION_SERVER_URL}${audioUrl}`
-      : audioUrl;
-
-    playAudio(fullAudioUrl);
-    addMessage(`Playing response (${duration.toFixed(1)}s)...`);
+    // Step 3: Play audio
+    if (streamMode === 'synced' || !audioUrl) {
+      // SYNCED MODE: Audio is embedded in the HLS video stream
+      // Just make sure video is unmuted
+      characterStream.muted = false;
+      characterStream.volume = 1.0;
+      addMessage(`Playing response (${duration.toFixed(1)}s)...`);
+    } else {
+      // SEPARATE MODE: Play audio file separately
+      const fullAudioUrl = CONFIG.ANIMATION_SERVER_URL
+        ? `${CONFIG.ANIMATION_SERVER_URL}${audioUrl}`
+        : audioUrl;
+      playAudio(fullAudioUrl);
+      addMessage(`Playing response (${duration.toFixed(1)}s)...`);
+    }
 
     // Remove status after audio ends
     setTimeout(() => {
@@ -188,17 +204,23 @@ chatbox.addEventListener('keypress', (e) => {
   }
 });
 
-// Click to play (for autoplay restrictions)
+// Click to play and unmute (for autoplay restrictions)
 document.addEventListener('click', () => {
   if (characterStream.paused) {
     characterStream.play().catch(() => {});
   }
+  // Unmute on first user interaction
+  characterStream.muted = false;
+  characterStream.volume = 1.0;
+  console.log('User interaction - video unmuted');
 }, { once: true });
 
 // Connect to live stream on page load
 window.addEventListener('load', () => {
   // Small delay to ensure HLS.js is loaded
   setTimeout(connectToLiveStream, 500);
+  // Remind user to enable audio
+  addMessage('Click anywhere to enable audio', 'status');
 });
 
 // Focus on load

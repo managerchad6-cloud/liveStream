@@ -12,7 +12,7 @@
   <div class="main-container">
     <div class="viewport-container">
       <div id="viewport">
-        <video id="character-stream" autoplay playsinline></video>
+        <video id="character-stream" autoplay playsinline muted></video>
         <div id="loading-indicator">Waiting for response...</div>
       </div>
     </div>
@@ -31,8 +31,8 @@
         <div class="control-row">
           <label for="modelSelect">TTS Model:</label>
           <select id="modelSelect">
-            <option value="eleven_v3">v3 (Expressive)</option>
             <option value="eleven_turbo_v2">v2 Turbo (Fast)</option>
+            <option value="eleven_v3">v3 (Expressive)</option>
           </select>
         </div>
         <div class="control-row">
