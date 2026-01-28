@@ -17,7 +17,7 @@ class ContinuousStreamManager {
     this.frameCount = 0;
     this.lastFrameTime = 0;
     this.frameQueue = [];
-    this.maxQueueSize = 3;
+    this.maxQueueSize = 10;
     this.liveDir = null;
 
     // Audio configuration
@@ -96,9 +96,9 @@ class ContinuousStreamManager {
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
       '-crf', '23',
-      '-r', '15',
-      '-g', '15',
-      '-keyint_min', '15',
+      '-r', String(this.fps),
+      '-g', String(this.fps),
+      '-keyint_min', String(this.fps),
       '-sc_threshold', '0',
       '-bf', '0',
       // Audio encoding
@@ -109,9 +109,9 @@ class ContinuousStreamManager {
       '-vsync', 'cfr',
       // Output - 2 second segments (stable real-time encoding)
       '-f', 'hls',
-      '-hls_time', '2',             // 2 second segments
-      '-hls_list_size', '6',        // Keep 6 segments
-      '-hls_flags', 'delete_segments+append_list',
+      '-hls_time', '4',             // 4 second segments (more stable buffering)
+      '-hls_list_size', '8',        // Keep 8 segments
+      '-hls_flags', 'delete_segments+append_list+independent_segments',
       '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', segmentPath,
       outputPath

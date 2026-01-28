@@ -45,10 +45,10 @@ const upload = multer({
 
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
-const syncedPlayback = new SyncedPlayback(16000, 30);  // New: real-time mode
+const syncedPlayback = new SyncedPlayback(16000, 15);  // New: real-time mode
 const blinkControllers = {
-  chad: new BlinkController(30),
-  virgin: new BlinkController(30)
+  chad: new BlinkController(15),
+  virgin: new BlinkController(15)
 };
 let streamManager = null;  // Will be either StreamManager or SyncedStreamManager
 let frameCount = 0;
@@ -378,7 +378,7 @@ async function start() {
 
   // Start live stream
   if (STREAM_MODE === 'synced') {
-    streamManager = new ContinuousStreamManager(STREAMS_DIR, 30);
+    streamManager = new ContinuousStreamManager(STREAMS_DIR, 15);
     // Reset speaker when audio finishes
     streamManager.onAudioComplete = () => {
       console.log('[Server] Audio complete, resetting speaker');

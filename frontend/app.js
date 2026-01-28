@@ -17,7 +17,13 @@ tempSlider.addEventListener('input', () => {
 
 function updateModeState() {
   const isRouterMode = modeSelect.value === 'router';
-  voiceSelect.disabled = isRouterMode;
+  const isAutoMode = modeSelect.value === 'auto';
+  const hideVoice = isRouterMode || isAutoMode;
+  voiceSelect.disabled = hideVoice;
+  const voiceRow = voiceSelect.closest('.control-row') || voiceSelect.parentElement;
+  if (voiceRow) {
+    voiceRow.style.display = hideVoice ? 'none' : '';
+  }
   voiceSelect.title = isRouterMode
     ? 'Voice is chosen automatically by the router'
     : '';
@@ -59,14 +65,14 @@ function connectToLiveStream() {
 
     hlsPlayer = new Hls({
       enableWorker: true,
-      lowLatencyMode: true,
-      liveSyncDuration: 2,          // Stay 2s behind (1 segment)
-      liveMaxLatencyDuration: 5,
+      lowLatencyMode: false,
+      liveSyncDuration: 8,          // Target ~2 segments behind
+      liveMaxLatencyDuration: 20,
       liveDurationInfinity: true,
-      highBufferWatchdogPeriod: 1,
-      maxBufferLength: 8,
-      maxMaxBufferLength: 12,
-      backBufferLength: 4,
+      highBufferWatchdogPeriod: 2,
+      maxBufferLength: 20,
+      maxMaxBufferLength: 30,
+      backBufferLength: 10,
       startLevel: -1,
       autoStartLoad: true,
       startFragPrefetch: true
@@ -118,8 +124,9 @@ async function sendMessage() {
   const message = chatbox.value.trim();
   if (!message) return;
   const isRouterMode = modeSelect.value === 'router';
+  const isAutoMode = modeSelect.value === 'auto';
 
-  if (!isRouterMode) {
+  if (!isRouterMode && !isAutoMode) {
     chatbox.disabled = true;
     submitBtn.disabled = true;
   }
@@ -127,6 +134,36 @@ async function sendMessage() {
 
   addMessage(message, 'user');
   const statusMsg = addMessage('Generating response...');
+
+  if (isAutoMode) {
+    try {
+      const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/auto` : '/api/auto';
+      const autoResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seed: message,
+          turns: 12,
+          temperature: parseFloat(tempSlider.value)
+        })
+      });
+
+      if (!autoResponse.ok) {
+        const errorData = await autoResponse.json().catch(() => ({ error: 'Request failed' }));
+        throw new Error(errorData.error || `HTTP ${autoResponse.status}`);
+      }
+
+      const autoData = await autoResponse.json();
+      statusMsg.textContent = `Auto conversation started (${autoData.turns || 0} turns)...`;
+    } catch (error) {
+      console.error('Error:', error);
+      removeStatus(statusMsg);
+      addMessage(`Error: ${error.message}`, 'error');
+    } finally {
+      chatbox.focus();
+    }
+    return;
+  }
 
   try {
     // Step 1: Get audio from chat API
