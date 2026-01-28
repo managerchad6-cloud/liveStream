@@ -4,174 +4,264 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LiveStream Chatbox MVP - A web application providing a chatbox interface with two distinct AI personalities (Chad and Virgin from the Virgin vs Chad meme). Integrates OpenAI API for conversational responses and ElevenLabs API for text-to-speech with expressive audio tags.
+**LiveStream Chatbox** - An animated chatbot with real-time lip-synced characters (Chad and Virgin from the Virgin vs Chad meme). Features OpenAI for conversation, ElevenLabs for TTS, and a custom animation system with HLS video streaming.
 
-Tech stack: Node.js/Express backend, vanilla HTML/CSS/JS frontend, no build step.
+**Tech Stack:** Node.js/Express, Sharp (image compositing), FFmpeg (video encoding), HLS.js (video playback), vanilla HTML/CSS/JS frontend.
+
+## Architecture
+
+The system consists of **two separate servers**:
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│    Frontend     │────▶│   Chat API       │     │ Animation Server│
+│  (HLS Player)   │     │   (Port 3002)    │     │   (Port 3003)   │
+│                 │────▶│                  │     │                 │
+│                 │◀────────────────────────────▶│  HLS Stream     │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
+
+1. **Chat API Server** (port 3002): Handles OpenAI chat + ElevenLabs TTS
+2. **Animation Server** (port 3003): Renders animated characters, produces HLS video stream
+
+## Directory Structure
+
+```
+/home/liveStream/
+├── server.js              # Chat API server (OpenAI + ElevenLabs)
+├── voices.js              # Character personalities and voice configs
+├── webhook.js             # GitHub webhook for auto-deploy
+├── package.json           # Main dependencies
+│
+├── frontend/              # Web UI
+│   ├── index.html         # Main page with HLS video player
+│   ├── app.js             # Chat logic, HLS.js player setup
+│   ├── config.js          # Server URL configuration
+│   └── style.css          # Styles
+│
+├── animation-server/      # Animation rendering server
+│   ├── server.js          # Express server, /render endpoint
+│   ├── compositor.js      # Sharp-based frame compositing
+│   ├── continuous-stream-manager.js  # FFmpeg HLS streaming
+│   ├── realtime-lipsync.js    # Real-time phoneme detection
+│   ├── synced-playback.js     # Frame-synchronized audio
+│   ├── audio-decoder.js       # FFmpeg pipe-based decoding
+│   ├── blink-controller.js    # Natural blinking animation
+│   ├── platform.js            # Cross-platform path helpers
+│   └── package.json           # Animation server dependencies
+│
+├── exported-layers/       # Character PSD layers as PNGs
+│   ├── manifest.json      # Layer metadata (positions, z-index)
+│   ├── chad/              # Chad character layers
+│   │   ├── mouth/         # Phoneme mouth shapes (A-H)
+│   │   └── *.png          # Body, face, eyes, blink layers
+│   └── virgin/            # Virgin character layers
+│       ├── mouth/
+│       └── *.png
+│
+├── streams/               # Runtime: HLS output
+│   └── live/              # Live stream segments (.ts) and playlist (.m3u8)
+│
+├── tools/
+│   └── export-psd.js      # Extract layers from Stream.psd
+│
+├── vps-setup/             # Systemd service files
+│   ├── livestream.service # Chat API service
+│   ├── animation.service  # Animation server service
+│   └── webhook.service    # GitHub webhook service
+│
+└── Stream.psd             # Source Photoshop file with all layers
+```
 
 ## Development Commands
 
 ```bash
-npm install          # Install dependencies (one time)
-npm start            # Start server (node server.js)
+# Install dependencies (both servers)
+npm install
+cd animation-server && npm install
+
+# Run chat API server
+npm start                    # Port 3002
+
+# Run animation server
+npm run animation            # Port 3003
+
+# Run both servers
+npm run dev
+
+# Export layers from PSD (after modifying Stream.psd)
+npm run export-psd
 ```
 
 ## Environment Variables
 
-Create `.env` file with:
+Create `.env` in project root:
 ```
-OPENAI_API_KEY=your_api_key_here
-ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
-GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
+OPENAI_API_KEY=sk-...
+ELEVENLABS_API_KEY=...
 MODEL=gpt-4o-mini
 PORT=3002
 ```
 
-## Architecture
+Animation server environment (set in service or shell):
+```
+ANIMATION_PORT=3003
+LIPSYNC_MODE=realtime       # or 'rhubarb' (legacy)
+STREAM_MODE=synced          # or 'separate'
+```
 
-### Backend (`server.js`)
+## API Endpoints
 
-**Endpoints:**
-- `POST /chat` - Main chat endpoint
-- `GET /voices` - Returns available voice options
+### Chat API Server (Port 3002)
 
-**Request body for `/chat`:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/chat` | POST | Send message, get audio response |
+| `/api/voices` | GET | List available voices |
+| `/api/health` | GET | Health check |
+| `/` | GET | Serve frontend |
+
+**POST /api/chat:**
 ```json
 {
-  "message": "string",
-  "voice": "chad | virgin",
-  "model": "eleven_v3 | eleven_turbo_v2",
-  "temperature": 0.0-1.0
+  "message": "Hello!",
+  "voice": "chad",              // or "virgin"
+  "model": "eleven_turbo_v2",   // or "eleven_v3" (expressive)
+  "temperature": 0.7
 }
 ```
+Returns: `audio/mpeg` blob
 
-**Response:** Raw MP3 audio blob
+### Animation Server (Port 3003)
 
-### Voice System (`voices.js`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/render` | POST | Submit audio for lip-synced animation |
+| `/streams/live/stream.m3u8` | GET | HLS live stream playlist |
+| `/health` | GET | Health check |
 
-Two personalities based on the Virgin vs Chad meme:
+**POST /render:**
+- Content-Type: `multipart/form-data`
+- Fields: `audio` (file), `character` (string)
+- Returns: `{ streamUrl, duration, streamMode }`
 
-**Chad:**
-- Effortlessly successful, things just work out
-- Casual humble brags, funny anecdotes
-- Charming and likeable, not arrogant
+## Voice System
+
+Two personalities in `voices.js`:
+
+### Chad
+- ElevenLabs Voice ID: `nPczCjzI2devNBz1zQrb`
+- Personality: Effortlessly successful, casual humble brags, charming
+- Voice Settings: stability=0.0, similarity=0.8, style=0.6
 - Audio tags (v3 only): `[chuckles]`, `[laughs]`, `[sighs contentedly]`
 
-**Virgin:**
-- Chronically insecure, overthinks everything
-- Stammering delivery with "um", "uh", qualifiers
-- Self-deprecating humor, apologizes randomly
-- Audio tags (v3 only): `[nervous laugh]`, `[sighs]`, `[clears throat]`, `[mumbles]`
+### Virgin
+- ElevenLabs Voice ID: `mrQhZWGbb2k9qWJb5qeA`
+- Personality: Insecure, overthinks, stammering, self-deprecating
+- Voice Settings: stability=1.0, similarity=0.5, style=0.2
+- Audio tags (v3 only): `[nervous laugh]`, `[sighs]`, `[clears throat]`
 
-### ElevenLabs Models
+### TTS Models
+- **eleven_turbo_v2** (default): Fast, no audio tag support
+- **eleven_v3**: Expressive, interprets audio tags like `[laughs]`
 
-- **eleven_v3**: Expressive model with audio tag support (tags like `[laughs]` are interpreted)
-- **eleven_turbo_v2**: Faster model, no audio tags (tags stripped from prompt automatically)
+## Animation System
 
-v3 stability values must be: `0.0` (Creative), `0.5` (Natural), or `1.0` (Robust)
+### How It Works
+1. Audio uploaded to `/render` endpoint
+2. Decoded to PCM via FFmpeg pipe (no temp files)
+3. Calibrated on first 1 second of audio
+4. Fed to continuous FFmpeg process
+5. Real-time phoneme detection at 90Hz
+6. Frame compositor renders characters with mouth/blink states
+7. Output as HLS stream (720p @ 15fps, 2-second segments)
 
-### Frontend (`frontend/`)
+### Phoneme Detection (Preston Blair Set)
+| Phoneme | Mouth Shape | Sound |
+|---------|-------------|-------|
+| A | Closed | Silence, M, B, P |
+| B | Slightly open | Soft sounds |
+| C | Open with teeth | E, I |
+| D | Wide open | A, AH |
+| E | Rounded | O |
+| F | Teeth on lip | F, V |
+| G | Tongue behind teeth | TH, L |
+| H | Wide with tongue | L |
 
-- Two-column layout: 16:9 video viewport (left), chatbox (right)
-- Dark theme, vanilla JS
-- Controls: Voice selector, Model selector (v2 turbo default), Temperature slider
-- HLS.js video player for live animation stream
-- Audio synced into video stream (no separate audio player)
+### Compositor Features
+- Pre-composited static base image
+- Frame caching for identical states (huge performance boost)
+- Renders at 1/3 scale (1280x720 from 3840x2160 source)
+- JPEG output at quality 80
 
-### Animation Server (`animation-server/`)
-
-Separate Express server that renders animated characters with real-time lip sync.
-
-**Port:** 3003 (set via `ANIMATION_PORT` env var)
-
-**Key endpoints:**
-- `POST /render` - Receive audio, start lip-synced animation
-- `GET /streams/live/stream.m3u8` - HLS live stream
-- `GET /health` - Server status
-
-**Environment variables:**
-- `LIPSYNC_MODE`: `realtime` (default) or `rhubarb` (legacy)
-- `STREAM_MODE`: `synced` (audio in video) or `separate`
-
-**Key files:**
-- `server.js` - Main Express server
-- `compositor.js` - Sharp-based frame compositing with caching
-- `continuous-stream-manager.js` - FFmpeg HLS streaming with audio muxing
-- `realtime-lipsync.js` - Real-time phoneme detection (90Hz analysis)
-- `synced-playback.js` - Frame-synchronized audio playback
-- `audio-decoder.js` - FFmpeg pipe-based audio decoding
-
-**How it works:**
-1. Audio received via `/render` endpoint
-2. Decoded to PCM samples (pipe, no temp file)
-3. Calibrated on first 1s of audio
-4. Fed to continuous FFmpeg process (video + audio pipes)
-5. Real-time phoneme detection at 90Hz (3x per video frame)
-6. Frame compositor uses caching for identical states
-7. HLS stream with 2-second segments at 720p 15fps
-
-**Systemd service:**
-```bash
-sudo systemctl status|start|stop|restart animation
-sudo journalctl -u animation -f
-```
+### Stream Configuration
+- Resolution: 1280x720
+- Framerate: 15fps (sufficient for character animation)
+- Segment duration: 2 seconds
+- Codec: H.264 (libx264 ultrafast)
+- Audio: AAC 128kbps, stereo, 44.1kHz
 
 ## VPS Deployment
 
-**Production URL:** `http://93.127.214.75:3002`
+**Production URL:** `http://93.127.214.75`
+- Chat API: Port 3002
+- Animation: Port 3003
 
 ### Systemd Services
 
-**Main app (`livestream.service`):**
 ```bash
+# Chat API
 sudo systemctl status|start|stop|restart livestream
 sudo journalctl -u livestream -f
-```
 
-**GitHub webhook (`webhook.service`):**
-- Listens on port 3001 for GitHub push events
-- Auto-pulls changes when triggered
-```bash
+# Animation Server
+sudo systemctl status|start|stop|restart animation
+sudo journalctl -u animation -f
+
+# GitHub Webhook (auto-deploy on push)
 sudo systemctl status|start|stop|restart webhook
 sudo journalctl -u webhook -f
 ```
 
-### Service Files Location
-- `/home/liveStream/vps-setup/livestream.service`
-- `/home/liveStream/vps-setup/webhook.service`
+### Service Files
+Located in `/home/liveStream/vps-setup/`:
+- `livestream.service` - Chat API (port 3002)
+- `animation.service` - Animation server (port 3003)
+- `webhook.service` - GitHub webhook (port 3001)
 
-### GitHub Webhook Setup
-1. Webhook URL: `http://93.127.214.75:3001/webhook`
-2. Content type: `application/json`
-3. Secret: Must match `GITHUB_WEBHOOK_SECRET` in `.env`
-4. Events: Just the push event
+### GitHub Webhook
+- URL: `http://93.127.214.75:3001/webhook`
+- Content type: `application/json`
+- Secret: Must match `GITHUB_WEBHOOK_SECRET` in `.env`
+- Events: Push only
+
+## Frontend Configuration
+
+`frontend/config.js` auto-detects environment:
+- **Production**: Uses same origin for API, explicit IP for animation
+- **Local**: Uses localhost:3002 and localhost:3003
+- **File protocol**: Uses explicit localhost URLs
+
+## Adding/Modifying Characters
+
+1. Edit `Stream.psd` in Photoshop
+2. Layer naming convention:
+   - `static_<character>_<part>` - Static body parts
+   - `mouth_<character>_<phoneme>` - Mouth shapes (A-H)
+   - `blink_<character>_closed` - Blink overlay
+3. Run `npm run export-psd` to regenerate layers
+4. Restart animation server
 
 ## Git Workflow
 
-From `.cursorrules`:
-- Auto-commit and push after task completion (unless told not to)
-- Use present tense commit messages: "Add feature" not "Added feature"
-- Be specific: "Add voice selection dropdown", "Fix audio playback error handling"
+- Main branch: `master`
+- Auto-deploy via webhook on push
+- Commit style: Present tense, specific ("Add feature" not "Added feature")
 
-Main branch: `master`
+## Key Performance Notes
 
-## Key Files
-
-**Chat API:**
-- `server.js` - Express server, chat API endpoints
-- `voices.js` - Voice configurations (prompts, ElevenLabs settings)
-- `webhook.js` - Standalone GitHub webhook listener
-
-**Frontend:**
-- `frontend/index.html` - Main UI
-- `frontend/app.js` - Chat logic, HLS player
-- `frontend/config.js` - Server URLs
-
-**Animation Server:**
-- `animation-server/server.js` - Animation API server
-- `animation-server/compositor.js` - Frame rendering with Sharp
-- `animation-server/continuous-stream-manager.js` - FFmpeg HLS streaming
-- `animation-server/realtime-lipsync.js` - Phoneme detection
-- `exported-layers/` - Character PSD layers as PNGs
-
-**Config:**
-- `.env` - API keys and config (not in repo)
+- Frame caching eliminates redundant compositing for idle frames
+- Pipe-based audio decoding avoids disk I/O
+- Calibration limited to first 1 second for speed
+- 90Hz phoneme detection captures fast speech
+- 2-second HLS segments balance latency vs encoding stability
