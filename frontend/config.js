@@ -11,7 +11,7 @@ const CONFIG = {
 
   ANIMATION_SERVER_URL: isFileProtocol
     ? 'http://localhost:3003'
-    : (isLocalhost ? 'http://localhost:3003' : '')
+    : (isLocalhost ? 'http://localhost:3003' : 'http://93.127.214.75:3003')
 };
 
 console.log('Config:', CONFIG);

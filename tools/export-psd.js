@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { createCanvas } = require('canvas');
 
 // Cross-platform paths
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -9,8 +10,12 @@ const MANIFEST_PATH = path.join(OUTPUT_DIR, 'manifest.json');
 
 async function main() {
   // Dynamic imports for ES modules
-  const { readPsd } = await import('ag-psd');
+  const agPsd = await import('ag-psd');
+  const { readPsd, initializeCanvas } = agPsd;
   const sharp = (await import('sharp')).default;
+
+  // Initialize ag-psd with node-canvas
+  initializeCanvas(createCanvas);
 
   const manifest = {
     width: 0,

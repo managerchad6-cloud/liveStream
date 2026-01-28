@@ -8,6 +8,8 @@ const MANIFEST_PATH = path.join(LAYERS_DIR, 'manifest.json');
 
 let manifest = null;
 let layerBuffers = {};
+let scaledLayerBuffers = {};
+const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 
 function loadManifest() {
   if (!manifest) {
@@ -34,17 +36,28 @@ async function preloadLayers() {
     }
 
     try {
-      layerBuffers[layer.id] = await sharp(layerPath).png().toBuffer();
+      // Load and pre-scale layer for faster compositing
+      const scaledWidth = Math.round(layer.width * OUTPUT_SCALE);
+      const scaledHeight = Math.round(layer.height * OUTPUT_SCALE);
+
+      if (scaledWidth > 0 && scaledHeight > 0) {
+        scaledLayerBuffers[layer.id] = await sharp(layerPath)
+          .resize(scaledWidth, scaledHeight)
+          .png()
+          .toBuffer();
+      }
     } catch (err) {
       console.warn(`Warning: Could not load ${layer.id}:`, err.message);
     }
   }
 
-  console.log(`Preloaded ${Object.keys(layerBuffers).length} layers`);
+  console.log(`Preloaded ${Object.keys(scaledLayerBuffers).length} layers at ${OUTPUT_SCALE * 100}% scale`);
 }
 
 async function compositeFrame(character, phoneme, isBlinking) {
   const m = loadManifest();
+  const outputWidth = Math.round(m.width * OUTPUT_SCALE);
+  const outputHeight = Math.round(m.height * OUTPUT_SCALE);
 
   // Sort layers by zIndex
   const sortedLayers = [...m.layers].sort((a, b) => a.zIndex - b.zIndex);
@@ -67,41 +80,46 @@ async function compositeFrame(character, phoneme, isBlinking) {
       if (!isBlinking) continue;
     }
 
-    // Get layer buffer
-    const buffer = layerBuffers[layer.id];
+    // Get pre-scaled layer buffer
+    let buffer = scaledLayerBuffers[layer.id];
     if (!buffer) {
       // Try to load on-demand
       const layerPath = path.join(LAYERS_DIR, ...layer.path.split('/'));
       if (!fs.existsSync(layerPath)) continue;
 
       try {
-        layerBuffers[layer.id] = await sharp(layerPath).png().toBuffer();
+        const scaledWidth = Math.round(layer.width * OUTPUT_SCALE);
+        const scaledHeight = Math.round(layer.height * OUTPUT_SCALE);
+        if (scaledWidth > 0 && scaledHeight > 0) {
+          buffer = await sharp(layerPath).resize(scaledWidth, scaledHeight).png().toBuffer();
+          scaledLayerBuffers[layer.id] = buffer;
+        }
       } catch (err) {
         continue;
       }
     }
 
-    if (layerBuffers[layer.id]) {
+    if (buffer) {
       compositeOps.push({
-        input: layerBuffers[layer.id],
-        left: Math.round(layer.x),
-        top: Math.round(layer.y),
+        input: buffer,
+        left: Math.round(layer.x * OUTPUT_SCALE),
+        top: Math.round(layer.y * OUTPUT_SCALE),
         blend: 'over'
       });
     }
   }
 
-  // Composite all layers onto canvas
+  // Composite all layers onto scaled canvas
   const result = await sharp({
     create: {
-      width: m.width,
-      height: m.height,
+      width: outputWidth,
+      height: outputHeight,
       channels: 4,
       background: { r: 0, g: 0, b: 0, alpha: 1 }
     }
   })
   .composite(compositeOps)
-  .png()
+  .jpeg({ quality: 80 })
   .toBuffer();
 
   return result;
@@ -109,11 +127,18 @@ async function compositeFrame(character, phoneme, isBlinking) {
 
 function clearCache() {
   layerBuffers = {};
+  scaledLayerBuffers = {};
 }
 
 function getManifestDimensions() {
   const m = loadManifest();
-  return { width: m.width, height: m.height };
+  return {
+    width: Math.round(m.width * OUTPUT_SCALE),
+    height: Math.round(m.height * OUTPUT_SCALE),
+    originalWidth: m.width,
+    originalHeight: m.height,
+    scale: OUTPUT_SCALE
+  };
 }
 
 module.exports = {

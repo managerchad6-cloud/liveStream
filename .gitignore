@@ -30,3 +30,8 @@ logs/
 dist/
 build/
 *.zip
+
+# Generated files
+exported-layers/
+streams/
+animation-server/temp/

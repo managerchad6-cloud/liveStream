@@ -9,6 +9,7 @@ const characterStream = document.getElementById('character-stream');
 const loadingIndicator = document.getElementById('loading-indicator');
 
 let hlsPlayer = null;
+let audioPlayer = null;
 
 tempSlider.addEventListener('input', () => {
   tempValue.textContent = tempSlider.value;
@@ -32,6 +33,68 @@ function showLoading(show) {
   if (loadingIndicator) {
     loadingIndicator.style.display = show ? 'block' : 'none';
   }
+}
+
+// Connect to live stream on page load
+function connectToLiveStream() {
+  const animUrl = CONFIG.ANIMATION_SERVER_URL || '';
+  const streamUrl = `${animUrl}/streams/live/stream.m3u8`;
+
+  console.log('Connecting to live stream:', streamUrl);
+
+  if (Hls.isSupported()) {
+    if (hlsPlayer) {
+      hlsPlayer.destroy();
+    }
+
+    hlsPlayer = new Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      liveSyncDuration: 1,
+      liveMaxLatencyDuration: 3,
+      liveDurationInfinity: true,
+      highBufferWatchdogPeriod: 1
+    });
+
+    hlsPlayer.loadSource(streamUrl);
+    hlsPlayer.attachMedia(characterStream);
+
+    hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+      console.log('Live stream connected');
+      characterStream.play().catch(e => {
+        console.warn('Autoplay blocked, click to play');
+        addMessage('Click anywhere to start video', 'status');
+      });
+    });
+
+    hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+      if (data.fatal) {
+        console.error('HLS fatal error:', data);
+        // Try to reconnect after a delay
+        setTimeout(connectToLiveStream, 3000);
+      }
+    });
+  } else if (characterStream.canPlayType('application/vnd.apple.mpegurl')) {
+    characterStream.src = streamUrl;
+    characterStream.play().catch(e => console.warn('Autoplay blocked:', e));
+  } else {
+    addMessage('HLS not supported in this browser', 'error');
+  }
+}
+
+// Play audio synchronized with video
+function playAudio(audioUrl) {
+  if (audioPlayer) {
+    audioPlayer.pause();
+    audioPlayer = null;
+  }
+
+  audioPlayer = new Audio(audioUrl);
+  audioPlayer.play().catch(e => console.warn('Audio play failed:', e));
+
+  audioPlayer.onended = () => {
+    audioPlayer = null;
+  };
 }
 
 async function sendMessage() {
@@ -66,7 +129,7 @@ async function sendMessage() {
     }
 
     const audioBlob = await chatResponse.blob();
-    statusMsg.textContent = 'Rendering animation...';
+    statusMsg.textContent = 'Starting animation...';
     showLoading(true);
 
     // Step 2: Send audio to animation server
@@ -86,16 +149,22 @@ async function sendMessage() {
       throw new Error(errorData.error || 'Animation render failed');
     }
 
-    const { streamUrl } = await renderResponse.json();
+    const { audioUrl, duration } = await renderResponse.json();
     removeStatus();
+    showLoading(false);
 
-    // Step 3: Play video stream
-    const fullStreamUrl = CONFIG.ANIMATION_SERVER_URL
-      ? `${CONFIG.ANIMATION_SERVER_URL}${streamUrl}`
-      : streamUrl;
+    // Step 3: Play audio (video stream already running with lip-sync)
+    const fullAudioUrl = CONFIG.ANIMATION_SERVER_URL
+      ? `${CONFIG.ANIMATION_SERVER_URL}${audioUrl}`
+      : audioUrl;
 
-    playStream(fullStreamUrl);
-    addMessage('Playing response...');
+    playAudio(fullAudioUrl);
+    addMessage(`Playing response (${duration.toFixed(1)}s)...`);
+
+    // Remove status after audio ends
+    setTimeout(() => {
+      removeStatus();
+    }, duration * 1000 + 500);
 
   } catch (error) {
     console.error('Error:', error);
@@ -109,40 +178,6 @@ async function sendMessage() {
   }
 }
 
-function playStream(url) {
-  showLoading(false);
-
-  // Clean up previous player
-  if (hlsPlayer) {
-    hlsPlayer.destroy();
-    hlsPlayer = null;
-  }
-
-  if (Hls.isSupported()) {
-    hlsPlayer = new Hls({
-      enableWorker: true,
-      lowLatencyMode: true
-    });
-    hlsPlayer.loadSource(url);
-    hlsPlayer.attachMedia(characterStream);
-    hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
-      characterStream.play().catch(e => console.warn('Autoplay blocked:', e));
-    });
-    hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
-      console.error('HLS error:', data);
-      if (data.fatal) {
-        addMessage('Video playback error', 'error');
-      }
-    });
-  } else if (characterStream.canPlayType('application/vnd.apple.mpegurl')) {
-    // Native HLS support (Safari)
-    characterStream.src = url;
-    characterStream.play().catch(e => console.warn('Autoplay blocked:', e));
-  } else {
-    addMessage('HLS not supported in this browser', 'error');
-  }
-}
-
 // Event listeners
 submitBtn.addEventListener('click', sendMessage);
 
@@ -151,6 +186,19 @@ chatbox.addEventListener('keypress', (e) => {
     e.preventDefault();
     sendMessage();
   }
+});
+
+// Click to play (for autoplay restrictions)
+document.addEventListener('click', () => {
+  if (characterStream.paused) {
+    characterStream.play().catch(() => {});
+  }
+}, { once: true });
+
+// Connect to live stream on page load
+window.addEventListener('load', () => {
+  // Small delay to ensure HLS.js is loaded
+  setTimeout(connectToLiveStream, 500);
 });
 
 // Focus on load

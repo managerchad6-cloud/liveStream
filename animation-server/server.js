@@ -3,16 +3,14 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
-const ffmpeg = require('fluent-ffmpeg');
+const crypto = require('crypto');
 
-const { isWindows, FFMPEG_PATH } = require('./platform');
-const { analyzeLipSync, getPhonemeAtTime } = require('./lipsync');
+const { FFMPEG_PATH } = require('./platform');
+const { analyzeLipSync } = require('./lipsync');
 const BlinkController = require('./blink-controller');
-const { compositeFrame, loadManifest, preloadLayers, getManifestDimensions } = require('./compositor');
-
-// Set FFmpeg path
-ffmpeg.setFfmpegPath(FFMPEG_PATH);
+const { compositeFrame, loadManifest, preloadLayers } = require('./compositor');
+const AnimationState = require('./state');
+const StreamManager = require('./stream-manager');
 
 const app = express();
 const port = process.env.ANIMATION_PORT || 3003;
@@ -20,10 +18,12 @@ const port = process.env.ANIMATION_PORT || 3003;
 const ROOT_DIR = path.resolve(__dirname, '..');
 const STREAMS_DIR = path.join(ROOT_DIR, 'streams');
 const TEMP_DIR = path.join(__dirname, 'temp');
+const AUDIO_DIR = path.join(STREAMS_DIR, 'audio');
 
 // Ensure directories exist
 fs.mkdirSync(STREAMS_DIR, { recursive: true });
 fs.mkdirSync(TEMP_DIR, { recursive: true });
+fs.mkdirSync(AUDIO_DIR, { recursive: true });
 
 app.use(cors());
 
@@ -33,9 +33,45 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-// Render endpoint
+// Global state
+const animationState = new AnimationState();
+const blinkControllers = {
+  chad: new BlinkController(30),
+  virgin: new BlinkController(30)
+};
+let streamManager = null;
+let frameCount = 0;
+
+// Frame renderer callback
+async function renderFrame(frame) {
+  frameCount = frame;
+  const state = animationState.getState();
+
+  // Determine which character to animate
+  const activeCharacter = state.speakingCharacter || 'chad';
+  const phoneme = state.phoneme || 'A';
+
+  // Update blink for non-speaking character (or both if idle)
+  const isSpeaking = state.isPlaying;
+  const chadBlinking = blinkControllers.chad.update(frame, activeCharacter === 'chad' && isSpeaking);
+  const virginBlinking = blinkControllers.virgin.update(frame, activeCharacter === 'virgin' && isSpeaking);
+
+  try {
+    // Composite frame with current state
+    const buffer = await compositeFrame(
+      activeCharacter,
+      phoneme,
+      activeCharacter === 'chad' ? chadBlinking : virginBlinking
+    );
+    return buffer;
+  } catch (err) {
+    console.error('[Render] Frame error:', err.message);
+    return null;
+  }
+}
+
+// Queue audio for playback
 app.post('/render', upload.single('audio'), async (req, res) => {
-  const sessionId = uuidv4();
   const character = req.body.character || 'chad';
 
   if (!req.file) {
@@ -43,123 +79,81 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   }
 
   const audioPath = req.file.path;
-  const audioMp3Path = audioPath + '.mp3';
-  const sessionDir = path.join(STREAMS_DIR, sessionId);
-  const framesDir = path.join(sessionDir, 'frames');
-
-  fs.mkdirSync(framesDir, { recursive: true });
+  const audioId = crypto.randomBytes(8).toString('hex');
+  const audioMp3Path = path.join(AUDIO_DIR, `${audioId}.mp3`);
 
   try {
-    // Rename to .mp3
+    // Move to audio directory
     fs.renameSync(audioPath, audioMp3Path);
 
-    console.log(`[${sessionId}] Analyzing lip sync for ${character}...`);
+    console.log(`[Render] Analyzing lip sync for ${character}...`);
     const lipSyncCues = await analyzeLipSync(audioMp3Path);
-
-    console.log(`[${sessionId}] Rendering frames...`);
-    const fps = 30;
-    const blinkController = new BlinkController(fps);
 
     // Get audio duration from cues
     const audioDuration = lipSyncCues.length > 0
       ? Math.max(...lipSyncCues.map(c => c.end))
       : 5;
 
-    const totalFrames = Math.ceil(audioDuration * fps);
-    console.log(`[${sessionId}] Total frames: ${totalFrames} (${audioDuration.toFixed(2)}s)`);
+    console.log(`[Render] Got ${lipSyncCues.length} cues, duration: ${audioDuration.toFixed(2)}s`);
 
-    // Render each frame
-    for (let frame = 0; frame < totalFrames; frame++) {
-      const timeInSeconds = frame / fps;
-      const phoneme = getPhonemeAtTime(lipSyncCues, timeInSeconds);
-      const isSpeaking = phoneme !== 'A';
-      const isBlinking = blinkController.update(frame, isSpeaking);
+    // Update animation state
+    animationState.startSpeaking(character, lipSyncCues, audioMp3Path, audioDuration);
 
-      const frameBuffer = await compositeFrame(character, phoneme, isBlinking);
-      const framePath = path.join(framesDir, `frame_${String(frame).padStart(5, '0')}.png`);
-      fs.writeFileSync(framePath, frameBuffer);
+    // Schedule cleanup after audio finishes
+    setTimeout(() => {
+      try { fs.unlinkSync(audioMp3Path); } catch (e) {}
+    }, (audioDuration + 5) * 1000);
 
-      if (frame % 30 === 0) {
-        console.log(`[${sessionId}] Frame ${frame}/${totalFrames} (phoneme: ${phoneme})`);
-      }
-    }
-
-    console.log(`[${sessionId}] Encoding video...`);
-
-    const outputPath = path.join(sessionDir, 'stream.m3u8');
-    const framePattern = path.join(framesDir, 'frame_%05d.png');
-    const segmentPattern = path.join(sessionDir, 'segment_%03d.ts');
-
-    await new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(framePattern)
-        .inputFPS(fps)
-        .input(audioMp3Path)
-        .outputOptions([
-          '-c:v libx264',
-          '-preset ultrafast',
-          '-tune stillimage',
-          '-c:a aac',
-          '-b:a 128k',
-          '-pix_fmt yuv420p',
-          '-shortest',
-          '-hls_time 2',
-          '-hls_list_size 0',
-          '-hls_segment_filename', segmentPattern
-        ])
-        .output(outputPath)
-        .on('start', cmd => console.log(`[${sessionId}] FFmpeg: ${cmd}`))
-        .on('end', () => {
-          console.log(`[${sessionId}] Encoding complete`);
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error(`[${sessionId}] FFmpeg error:`, err.message);
-          reject(err);
-        })
-        .run();
+    res.json({
+      streamUrl: streamManager.getStreamUrl(),
+      audioUrl: `/audio/${audioId}.mp3`,
+      duration: audioDuration
     });
 
-    // Clean up temp files
-    try {
-      fs.unlinkSync(audioMp3Path);
-      fs.rmSync(framesDir, { recursive: true });
-    } catch (e) {}
-
-    const streamUrl = `/streams/${sessionId}/stream.m3u8`;
-    console.log(`[${sessionId}] Stream ready: ${streamUrl}`);
-
-    res.json({ streamUrl, sessionId });
-
   } catch (error) {
-    console.error(`[${sessionId}] Error:`, error);
+    console.error('[Render] Error:', error);
     res.status(500).json({ error: error.message });
-
-    // Clean up on error
-    try {
-      fs.unlinkSync(audioMp3Path);
-      fs.rmSync(sessionDir, { recursive: true });
-    } catch (e) {}
+    try { fs.unlinkSync(audioMp3Path); } catch (e) {}
   }
 });
+
+// Serve audio files
+app.use('/audio', express.static(AUDIO_DIR, {
+  setHeaders: (res) => {
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+}));
 
 // Serve HLS streams
 app.use('/streams', express.static(STREAMS_DIR, {
   setHeaders: (res, filePath) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     if (filePath.endsWith('.m3u8')) {
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Cache-Control', 'no-cache');
     } else if (filePath.endsWith('.ts')) {
       res.setHeader('Content-Type', 'video/mp2t');
     }
   }
 }));
 
+// Get current stream info
+app.get('/stream-info', (req, res) => {
+  res.json({
+    streamUrl: streamManager ? streamManager.getStreamUrl() : null,
+    state: animationState.getState(),
+    frameCount
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     platform: process.platform,
-    ffmpeg: FFMPEG_PATH
+    ffmpeg: FFMPEG_PATH,
+    streaming: streamManager ? streamManager.isRunning : false
   });
 });
 
@@ -174,8 +168,13 @@ async function start() {
     console.warn('Run "node tools/export-psd.js" to generate layers from PSD');
   }
 
+  // Start live stream
+  streamManager = new StreamManager(STREAMS_DIR, 30);
+  streamManager.start(renderFrame);
+
   app.listen(port, () => {
     console.log(`Animation server running on http://localhost:${port}`);
+    console.log(`Live stream: http://localhost:${port}${streamManager.getStreamUrl()}`);
     console.log(`Platform: ${process.platform}`);
   });
 }
