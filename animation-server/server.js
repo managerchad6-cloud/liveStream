@@ -12,7 +12,6 @@ const { compositeFrame, loadManifest, preloadLayers } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
 const StreamManager = require('./stream-manager');
-const SyncedStreamManager = require('./synced-stream-manager');
 const ContinuousStreamManager = require('./continuous-stream-manager');
 const SyncedPlayback = require('./synced-playback');
 
@@ -50,7 +49,7 @@ const blinkControllers = {
   chad: new BlinkController(15),
   virgin: new BlinkController(15)
 };
-let streamManager = null;  // Will be either StreamManager or SyncedStreamManager
+let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
 let frameCount = 0;
 
 // Track current speaking state for synced mode
@@ -132,7 +131,7 @@ function processQueue() {
 syncedPlayback.onComplete = handleAudioComplete;
 
 // Frame renderer callback
-// audioProgress is provided by SyncedStreamManager: { playing, frame, total }
+// audioProgress is provided by ContinuousStreamManager: { playing, frame, total }
 async function renderFrame(frame, audioProgress = null) {
   frameCount = frame;
 
