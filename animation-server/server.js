@@ -8,7 +8,23 @@ const crypto = require('crypto');
 const { FFMPEG_PATH } = require('./platform');
 const { analyzeLipSync } = require('./lipsync');
 const BlinkController = require('./blink-controller');
-const { compositeFrame, loadManifest, preloadLayers, setTVFrame, getTVViewport } = require('./compositor');
+const {
+  compositeFrame,
+  loadManifest,
+  preloadLayers,
+  setTVFrame,
+  getTVViewport,
+  setEmissionOpacity,
+  getEmissionOpacity,
+  setEmissionLayerBlend,
+  getEmissionLayerBlend,
+  setLightsOnOpacity,
+  getLightsOnOpacity,
+  setLightsMode,
+  getLightsMode,
+  setLightingHue,
+  getLightingHue
+} = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
 const StreamManager = require('./stream-manager');
@@ -45,6 +61,165 @@ app.use(express.json());
 const upload = multer({
   dest: TEMP_DIR,
   limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+const lightingState = {
+  rainbow: { enabled: false, rpm: 1, timer: null, lastTick: 0, busy: false },
+  flicker: { enabled: false, opacity: 1, timer: null }
+};
+
+function wrapHue(value) {
+  const wrapped = ((value + 180) % 360 + 360) % 360 - 180;
+  return Math.max(-180, Math.min(180, wrapped));
+}
+
+async function tickRainbow() {
+  const rainbow = lightingState.rainbow;
+  if (!rainbow.enabled) return;
+  if (rainbow.busy) return;
+  rainbow.busy = true;
+  try {
+    const now = Date.now();
+    const last = rainbow.lastTick || now;
+    const elapsed = Math.max(0, now - last);
+    rainbow.lastTick = now;
+    const rpm = Math.max(0, Number(rainbow.rpm) || 0);
+    if (rpm > 0 && elapsed > 0) {
+      const delta = (rpm * 360) * (elapsed / 60000);
+      const nextHue = wrapHue(getLightingHue() + delta);
+      await setLightingHue(nextHue);
+    }
+  } finally {
+    rainbow.busy = false;
+  }
+}
+
+function startRainbow() {
+  const rainbow = lightingState.rainbow;
+  if (rainbow.timer) return;
+  rainbow.lastTick = Date.now();
+  rainbow.timer = setInterval(() => {
+    tickRainbow().catch(() => {});
+  }, 100);
+}
+
+function stopRainbow() {
+  const rainbow = lightingState.rainbow;
+  if (rainbow.timer) {
+    clearInterval(rainbow.timer);
+    rainbow.timer = null;
+  }
+}
+
+function stopFlicker() {
+  const flicker = lightingState.flicker;
+  if (flicker.timer) {
+    clearTimeout(flicker.timer);
+    flicker.timer = null;
+  }
+}
+
+function scheduleFlicker() {
+  const flicker = lightingState.flicker;
+  if (!flicker.enabled) return;
+  const baseOpacity = Math.max(0, Math.min(1, Number(flicker.opacity) || 0));
+  const roll = Math.random();
+  let target = baseOpacity;
+  let duration = 60 + Math.random() * 140;
+  if (roll < 0.08) {
+    target = Math.min(1, baseOpacity + Math.random() * (1 - baseOpacity));
+    duration = 40 + Math.random() * 80;
+  } else if (roll < 0.35) {
+    target = baseOpacity * (0.2 + Math.random() * 0.5);
+    duration = 50 + Math.random() * 100;
+  } else {
+    target = baseOpacity * (0.7 + Math.random() * 0.3);
+    duration = 80 + Math.random() * 160;
+  }
+
+  setLightsOnOpacity(target);
+
+  flicker.timer = setTimeout(() => {
+    setLightsOnOpacity(baseOpacity);
+    if (!flicker.enabled) return;
+    const gap = 80 + Math.random() * 240;
+    flicker.timer = setTimeout(scheduleFlicker, gap);
+  }, duration);
+}
+
+app.get('/lighting', (req, res) => {
+  res.sendFile(path.join(ROOT_DIR, 'frontend', 'lighting-control.html'));
+});
+
+app.get('/lighting/status', (req, res) => {
+  res.json({
+    hue: getLightingHue(),
+    emissionOpacity: getEmissionOpacity(),
+    emissionLayerBlends: getEmissionLayerBlend(),
+    rainbow: {
+      enabled: lightingState.rainbow.enabled,
+      rpm: lightingState.rainbow.rpm
+    },
+    flicker: {
+      enabled: lightingState.flicker.enabled,
+      opacity: lightingState.flicker.opacity
+    },
+    lights: {
+      mode: getLightsMode(),
+      opacity: getLightsOnOpacity()
+    }
+  });
+});
+
+app.post('/lighting/hue', async (req, res) => {
+  const hue = req.body?.hue;
+  const value = await setLightingHue(hue);
+  res.json({ hue: value });
+});
+
+app.post('/lighting/emission-opacity', async (req, res) => {
+  const opacity = req.body?.opacity;
+  const value = await setEmissionOpacity(opacity);
+  res.json({ opacity: value });
+});
+
+app.post('/lighting/emission-layer-blend', async (req, res) => {
+  const name = req.body?.name;
+  const blend = req.body?.blend;
+  const blends = await setEmissionLayerBlend(name, blend);
+  res.json({ blends });
+});
+
+app.post('/lighting/rainbow', (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  const rpm = Math.max(0, Number(req.body?.rpm) || 0);
+  lightingState.rainbow.enabled = enabled;
+  lightingState.rainbow.rpm = rpm;
+  if (enabled && rpm > 0) {
+    startRainbow();
+  } else {
+    stopRainbow();
+  }
+  res.json({ enabled, rpm });
+});
+
+app.post('/lighting/flicker', (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  const opacity = Math.max(0, Math.min(1, Number(req.body?.opacity) || 0));
+  lightingState.flicker.enabled = enabled;
+  lightingState.flicker.opacity = opacity;
+  stopFlicker();
+  setLightsOnOpacity(opacity);
+  if (enabled) {
+    scheduleFlicker();
+  }
+  res.json({ enabled, opacity });
+});
+
+app.post('/lighting/lights', (req, res) => {
+  const mode = req.body?.mode;
+  const value = setLightsMode(mode);
+  res.json({ mode: value });
 });
 
 // Global state

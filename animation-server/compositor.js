@@ -15,12 +15,54 @@ const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
 let outputHeight = 0;
+let staticLayerEntries = [];
+let staticBaseVersion = 0;
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
 let currentTVFrame = null; // Current TV frame buffer for compositing
 let tvReflectionBuffer = null; // TV reflection layer (composited above TV content)
 let tvReflectionPos = { x: 0, y: 0 }; // Position of TV reflection layer
+let foregroundEmissionBuffer = null; // Foreground LED emission (composited above all)
+let foregroundEmissionPos = { x: 0, y: 0 };
+let foregroundEmissionLayerId = null;
+let lightsOnBuffer = null;
+let lightsOnPos = { x: 0, y: 0 };
+let lightsOnOpacity = 1;
+let lightsMode = 'on'; // 'on' or 'off'
+let emissionOpacity = 1;
+let emissionBaseBuffers = {};
+let emissionLayerMeta = {};
+let emissionLayerBlend = {};
+let lightingHue = 0;
+let lightingUpdateId = 0;
+let lightingBaseBuffers = {};
+let lightingLayerMeta = {};
+
+const EMISSION_LAYER_KEYS = {
+  foreground: 'LED light Emission (Foreground)',
+  middleground: 'LED light Emission (Middleground)',
+  background: 'LED light Emission (Background)'
+};
+let emissionLayerEnabled = {
+  [EMISSION_LAYER_KEYS.foreground]: true,
+  [EMISSION_LAYER_KEYS.middleground]: true,
+  [EMISSION_LAYER_KEYS.background]: true
+};
+const EMISSION_LAYER_NAMES = new Set([
+  EMISSION_LAYER_KEYS.foreground,
+  EMISSION_LAYER_KEYS.middleground,
+  EMISSION_LAYER_KEYS.background
+]);
+const LIGHTING_LAYER_NAMES = new Set([
+  EMISSION_LAYER_KEYS.foreground,
+  EMISSION_LAYER_KEYS.middleground,
+  EMISSION_LAYER_KEYS.background,
+  'LED Strip',
+  'Chad Sculpture'
+]);
+
+const LIGHTS_ON_MASK_THRESHOLD = 55;
 
 function loadManifest() {
   if (!manifest) {
@@ -114,6 +156,21 @@ async function preloadLayers() {
   // Separate static and dynamic layers
   const staticLayers = [];
   const dynamicLayers = [];
+  staticLayerEntries = [];
+  foregroundEmissionBuffer = null;
+  foregroundEmissionPos = { x: 0, y: 0 };
+  foregroundEmissionLayerId = null;
+  lightsOnBuffer = null;
+  lightsOnPos = { x: 0, y: 0 };
+  emissionBaseBuffers = {};
+  emissionLayerMeta = {};
+  emissionLayerBlend = {
+    [EMISSION_LAYER_KEYS.foreground]: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light',
+    [EMISSION_LAYER_KEYS.middleground]: emissionLayerBlend[EMISSION_LAYER_KEYS.middleground] || 'soft-light',
+    [EMISSION_LAYER_KEYS.background]: emissionLayerBlend[EMISSION_LAYER_KEYS.background] || 'soft-light'
+  };
+  lightingBaseBuffers = {};
+  lightingLayerMeta = {};
 
   for (const layer of m.layers) {
     const layerPath = path.join(LAYERS_DIR, ...layer.path.split('/'));
@@ -147,7 +204,55 @@ async function preloadLayers() {
         } else if (layer.id === 'mask') {
           // Mask is only used for viewport extraction, not rendering
           console.log('[Compositor] Mask layer excluded from rendering');
+        } else if (layer.name === 'Lights On') {
+          const { data } = await sharp(buffer)
+            .ensureAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const max = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            if (max <= LIGHTS_ON_MASK_THRESHOLD) {
+              data[i + 3] = 0;
+            }
+          }
+
+          lightsOnBuffer = await sharp(data, {
+            raw: {
+              width: scaledWidth,
+              height: scaledHeight,
+              channels: 4
+            }
+          })
+          .png()
+          .toBuffer();
+          lightsOnPos = {
+            x: Math.round(layer.x * OUTPUT_SCALE),
+            y: Math.round(layer.y * OUTPUT_SCALE)
+          };
+        } else if (layer.name === EMISSION_LAYER_KEYS.foreground) {
+          foregroundEmissionBuffer = buffer;
+          foregroundEmissionLayerId = layer.id;
+          foregroundEmissionPos = {
+            x: Math.round(layer.x * OUTPUT_SCALE),
+            y: Math.round(layer.y * OUTPUT_SCALE)
+          };
+          emissionBaseBuffers[layer.id] = buffer;
+          emissionLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
+          lightingBaseBuffers[layer.id] = buffer;
+          lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
         } else if (layer.type === 'static' && layer.visible !== false) {
+          if (EMISSION_LAYER_NAMES.has(layer.name)) {
+            emissionBaseBuffers[layer.id] = buffer;
+            emissionLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
+          }
+          if (LIGHTING_LAYER_NAMES.has(layer.name)) {
+            lightingBaseBuffers[layer.id] = buffer;
+            lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
+          }
           staticLayers.push({ ...layer, buffer });
         } else {
           dynamicLayers.push(layer);
@@ -162,26 +267,10 @@ async function preloadLayers() {
 
   // Pre-composite static layers into base image
   console.log('Pre-compositing static base image...');
-  staticLayers.sort((a, b) => a.zIndex - b.zIndex);
-
-  const staticOps = staticLayers.map(layer => ({
-    input: layer.buffer,
-    left: Math.round(layer.x * OUTPUT_SCALE),
-    top: Math.round(layer.y * OUTPUT_SCALE),
-    blend: 'over'
-  }));
-
-  staticBaseBuffer = await sharp({
-    create: {
-      width: outputWidth,
-      height: outputHeight,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 1 }
-    }
-  })
-  .composite(staticOps)
-  .png()
-  .toBuffer();
+  staticLayerEntries = staticLayers;
+  staticBaseBuffer = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend, emissionOpacity);
+  staticBaseVersion += 1;
+  frameCache = {};
 
   console.log(`Preloaded ${Object.keys(scaledLayerBuffers).length} layers, static base ready`);
 }
@@ -296,6 +385,54 @@ function getTVViewport() {
   return TV_VIEWPORT;
 }
 
+async function buildStaticBaseFromEntries(entries, layerBlendMap, opacity) {
+  const sorted = [...entries].sort((a, b) => a.zIndex - b.zIndex);
+  const staticOps = sorted.map(layer => ({
+    input: layer.buffer,
+    left: Math.round(layer.x * OUTPUT_SCALE),
+    top: Math.round(layer.y * OUTPUT_SCALE),
+    blend: EMISSION_LAYER_NAMES.has(layer.name)
+      ? (layerBlendMap[layer.name] || 'soft-light')
+      : 'over',
+    opacity: EMISSION_LAYER_NAMES.has(layer.name) ? opacity : 1
+  }));
+
+  return sharp({
+    create: {
+      width: outputWidth,
+      height: outputHeight,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 1 }
+    }
+  })
+  .composite(staticOps)
+  .png()
+  .toBuffer();
+}
+
+async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
+  if (!meta) return baseBuffer;
+  if (opacity >= 0.999) return baseBuffer;
+  const { data } = await sharp(baseBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  for (let i = 3; i < data.length; i += 4) {
+    data[i] = Math.round(data[i] * opacity);
+  }
+
+  return sharp(data, {
+    raw: {
+      width: meta.width,
+      height: meta.height,
+      channels: 4
+    }
+  })
+  .png()
+  .toBuffer();
+}
+
 /**
  * Composite a frame with both characters visible
  * Uses caching for common frame states (most frames are identical)
@@ -311,7 +448,7 @@ async function compositeFrame(state) {
   } = state;
 
   // Create cache key from state (TV content is NOT cached - changes every frame)
-  const cacheKey = `${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  const cacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
 
   let baseBuffer = frameCache[cacheKey];
 
@@ -396,7 +533,33 @@ async function compositeFrame(state) {
       .toBuffer();
   }
 
+  // Overlay foreground LED emission above everything (including mouths/blinks)
+  if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
+    frameWithTV = await sharp(frameWithTV)
+      .composite([{
+        input: foregroundEmissionBuffer,
+        left: foregroundEmissionPos.x,
+        top: foregroundEmissionPos.y,
+        blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light',
+        opacity: emissionOpacity
+      }])
+      .jpeg({ quality: JPEG_QUALITY })
+      .toBuffer();
+  }
+
   if (!caption) {
+    if (lightsMode === 'on' && lightsOnBuffer) {
+      return sharp(frameWithTV)
+        .composite([{
+          input: lightsOnBuffer,
+          left: lightsOnPos.x,
+          top: lightsOnPos.y,
+          blend: 'over',
+          opacity: lightsOnOpacity
+        }])
+        .jpeg({ quality: JPEG_QUALITY })
+        .toBuffer();
+    }
     return frameWithTV;
   }
 
@@ -409,6 +572,19 @@ async function compositeFrame(state) {
     .composite([{ input: captionSvg, left: 0, top: 0, blend: 'over' }])
     .jpeg({ quality: JPEG_QUALITY })
     .toBuffer();
+
+  if (lightsMode === 'on' && lightsOnBuffer) {
+    return sharp(withCaption)
+      .composite([{
+        input: lightsOnBuffer,
+        left: lightsOnPos.x,
+        top: lightsOnPos.y,
+        blend: 'over',
+        opacity: lightsOnOpacity
+      }])
+      .jpeg({ quality: JPEG_QUALITY })
+      .toBuffer();
+  }
 
   return withCaption;
 }
@@ -430,6 +606,163 @@ function getManifestDimensions() {
   };
 }
 
+async function setEmissionOpacity(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return emissionOpacity;
+  const nextOpacity = Math.max(0, Math.min(1, parsed));
+  if (nextOpacity === emissionOpacity) return emissionOpacity;
+
+  const updatedBuffers = {};
+  for (const layerId of Object.keys(emissionBaseBuffers)) {
+    const base = emissionBaseBuffers[layerId];
+    const meta = emissionLayerMeta[layerId];
+    if (!meta) continue;
+    updatedBuffers[layerId] = await applyOpacityToBuffer(base, meta, nextOpacity);
+  }
+
+  const updatedScaled = { ...scaledLayerBuffers, ...updatedBuffers };
+  const updatedEntries = staticLayerEntries.map(entry => ({
+    ...entry,
+    buffer: updatedScaled[entry.id] || entry.buffer
+  }));
+
+  const nextBase = await buildStaticBaseFromEntries(updatedEntries, emissionLayerBlend, nextOpacity);
+
+  scaledLayerBuffers = updatedScaled;
+  staticLayerEntries = updatedEntries;
+  staticBaseBuffer = nextBase;
+  staticBaseVersion += 1;
+  frameCache = {};
+  emissionOpacity = nextOpacity;
+  if (foregroundEmissionLayerId && updatedScaled[foregroundEmissionLayerId]) {
+    foregroundEmissionBuffer = updatedScaled[foregroundEmissionLayerId];
+  }
+  return emissionOpacity;
+}
+
+async function setEmissionLayerBlend(name, blend) {
+  const allowed = new Set([
+    'over',
+    'multiply',
+    'screen',
+    'overlay',
+    'darken',
+    'lighten',
+    'hard-light',
+    'soft-light',
+    'difference',
+    'exclusion',
+    'add',
+    'subtract',
+    'divide'
+  ]);
+  if (!EMISSION_LAYER_NAMES.has(name)) return emissionLayerBlend;
+  if (!allowed.has(blend)) return emissionLayerBlend;
+  emissionLayerBlend[name] = blend;
+  const nextBase = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend, emissionOpacity);
+  staticBaseBuffer = nextBase;
+  staticBaseVersion += 1;
+  frameCache = {};
+  return emissionLayerBlend;
+}
+
+function getEmissionLayerBlend() {
+  return { ...emissionLayerBlend };
+}
+
+function getEmissionOpacity() {
+  return emissionOpacity;
+}
+
+function setLightsOnOpacity(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return lightsOnOpacity;
+  lightsOnOpacity = Math.max(0, Math.min(1, parsed));
+  return lightsOnOpacity;
+}
+
+function getLightsOnOpacity() {
+  return lightsOnOpacity;
+}
+
+function setLightsMode(mode) {
+  if (mode !== 'on' && mode !== 'off') return lightsMode;
+  lightsMode = mode;
+  return lightsMode;
+}
+
+function getLightsMode() {
+  return lightsMode;
+}
+
+async function setLightingHue(hue) {
+  const parsed = Number(hue);
+  if (!Number.isFinite(parsed)) return lightingHue;
+  const nextHue = Math.max(-180, Math.min(180, parsed));
+  if (nextHue === lightingHue) return lightingHue;
+
+  const updateId = ++lightingUpdateId;
+  const hueForSharp = Math.round(((nextHue % 360) + 360) % 360);
+  const updatedLighting = {};
+
+  for (const layerId of Object.keys(lightingBaseBuffers)) {
+    const base = lightingBaseBuffers[layerId];
+    const updated = nextHue === 0
+      ? base
+      : await sharp(base).modulate({ hue: hueForSharp }).png().toBuffer();
+    if (updateId !== lightingUpdateId) {
+      return lightingHue;
+    }
+    updatedLighting[layerId] = updated;
+  }
+
+  const updatedScaled = { ...scaledLayerBuffers };
+  const updatedEntries = staticLayerEntries.map(entry => ({ ...entry }));
+  const updatedEmissionBase = { ...emissionBaseBuffers };
+  let updatedForegroundBuffer = foregroundEmissionBuffer;
+
+  for (const layerId of Object.keys(updatedLighting)) {
+    const meta = lightingLayerMeta[layerId];
+    const name = meta?.name;
+    const updated = updatedLighting[layerId];
+    if (name && EMISSION_LAYER_NAMES.has(name)) {
+      updatedEmissionBase[layerId] = updated;
+      const withOpacity = await applyOpacityToBuffer(updated, emissionLayerMeta[layerId], emissionOpacity);
+      updatedScaled[layerId] = withOpacity;
+      if (foregroundEmissionLayerId === layerId) {
+        updatedForegroundBuffer = withOpacity;
+      }
+    } else {
+      updatedScaled[layerId] = updated;
+    }
+  }
+
+  for (const entry of updatedEntries) {
+    if (updatedScaled[entry.id]) {
+      entry.buffer = updatedScaled[entry.id];
+    }
+  }
+
+  const nextBase = await buildStaticBaseFromEntries(updatedEntries, emissionLayerBlend, emissionOpacity);
+  if (updateId !== lightingUpdateId) {
+    return lightingHue;
+  }
+
+  scaledLayerBuffers = updatedScaled;
+  staticLayerEntries = updatedEntries;
+  emissionBaseBuffers = updatedEmissionBase;
+  foregroundEmissionBuffer = updatedForegroundBuffer;
+  staticBaseBuffer = nextBase;
+  staticBaseVersion += 1;
+  frameCache = {};
+  lightingHue = nextHue;
+  return lightingHue;
+}
+
+function getLightingHue() {
+  return lightingHue;
+}
+
 module.exports = {
   compositeFrame,
   loadManifest,
@@ -438,5 +771,15 @@ module.exports = {
   getManifestDimensions,
   setTVFrame,
   getTVFrame,
-  getTVViewport
+  getTVViewport,
+  setEmissionOpacity,
+  getEmissionOpacity,
+  setEmissionLayerBlend,
+  getEmissionLayerBlend,
+  setLightsOnOpacity,
+  getLightsOnOpacity,
+  setLightsMode,
+  getLightsMode,
+  setLightingHue,
+  getLightingHue
 };

@@ -2,12 +2,12 @@
 
 class AnimationState {
   constructor() {
-    this.speakingCharacter = null;  // 'chad' | 'virgin' | null
-    this.currentPhoneme = 'A';      // Current mouth shape
-    this.phonemeCues = [];          // Lip-sync timeline
-    this.audioStartTime = null;     // When current audio started
-    this.audioDuration = 0;         // Duration of current audio
-    this.audioPath = null;          // Path to current audio file
+    this.speakingCharacter = null;
+    this.currentPhoneme = 'A';
+    this.phonemeCues = [];
+    this.audioStartTime = null;
+    this.audioDuration = 0;
+    this.audioPath = null;
     this.isPlaying = false;
   }
 
@@ -15,11 +15,11 @@ class AnimationState {
     this.speakingCharacter = character;
     this.phonemeCues = cues;
     this.audioStartTime = Date.now();
-    this.audioDuration = duration * 1000; // Convert to ms
+    this.audioDuration = duration * 1000;
     this.audioPath = audioPath;
     this.isPlaying = true;
     this.currentPhoneme = 'A';
-    console.log(`[State] ${character} started speaking (${duration.toFixed(2)}s)`);
+    console.log(`[State] ${character} started speaking (${duration.toFixed(2)}s, ${cues.length} cues)`);
   }
 
   update() {
@@ -28,15 +28,13 @@ class AnimationState {
       return;
     }
 
-    const elapsed = (Date.now() - this.audioStartTime) / 1000; // seconds
+    const elapsed = (Date.now() - this.audioStartTime) / 1000;
 
-    // Check if audio finished
     if (elapsed >= this.audioDuration / 1000) {
       this.stopSpeaking();
       return;
     }
 
-    // Find current phoneme from cues
     for (const cue of this.phonemeCues) {
       if (elapsed >= cue.start && elapsed < cue.end) {
         this.currentPhoneme = cue.phoneme;

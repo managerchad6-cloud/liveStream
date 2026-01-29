@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lighting Controller</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+    .left {
+      flex: 1.2;
+      background: #020617;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      padding: 16px;
+    }
+    .stream-wrap {
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1e293b;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      position: relative;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+      object-fit: cover;
+    }
+    .right {
+      flex: 0.8;
+      max-width: 520px;
+      padding: 24px;
+      background: #0b1224;
+      border-left: 1px solid #1e293b;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.4em;
+      color: #38bdf8;
+    }
+    .panel {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .panel h2 {
+      margin: 0 0 12px 0;
+      font-size: 1em;
+      color: #93c5fd;
+      font-weight: 600;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .toggle input {
+      width: 18px;
+      height: 18px;
+    }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    input[type="range"] {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 8px;
+      background: #1e293b;
+      border-radius: 999px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      background: #38bdf8;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: #38bdf8;
+      border-radius: 50%;
+      cursor: pointer;
+      border: none;
+    }
+    .value {
+      min-width: 56px;
+      text-align: right;
+      color: #cbd5f5;
+      font-variant-numeric: tabular-nums;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    select {
+      width: 100%;
+      background: #0b1224;
+      color: #e2e8f0;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    button {
+      background: #38bdf8;
+      color: #0b1224;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #1e293b;
+      color: #e2e8f0;
+    }
+    ul {
+      margin: 8px 0 0 18px;
+      color: #94a3b8;
+      font-size: 0.9em;
+    }
+    .note {
+      color: #64748b;
+      font-size: 0.85em;
+      margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="left">
+    <div class="stream-wrap">
+      <video id="stream" autoplay muted playsinline></video>
+      <div id="stream-overlay" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);color:#e2e8f0;font-weight:600;">
+        <button id="stream-play-btn">Click to start video</button>
+      </div>
+    </div>
+  </div>
+  <div class="right">
+    <h1>Lighting Controller</h1>
+
+    <div class="panel">
+      <h2>Hue Rotation</h2>
+      <div class="slider-row">
+        <input type="range" id="hue" min="-180" max="180" step="1" value="0">
+        <div class="value" id="hue-value">0°</div>
+      </div>
+      <div class="row">
+        <button onclick="resetHue()">Reset</button>
+      </div>
+      <div class="note">Applies hue shift to lighting layers.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Rainbow Mode</h2>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="rainbow-enabled">
+          <span>Enable</span>
+        </label>
+        <div class="row" style="margin:0;">
+          <input type="number" id="rainbow-rpm" min="0" max="60" step="0.1" value="1" style="width:90px;">
+          <span class="value">RPM</span>
+        </div>
+      </div>
+      <div class="note">Loops the hue over the full spectrum.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Neon Flicker</h2>
+      <div class="toggle-row" style="margin-bottom:10px;">
+        <label class="toggle">
+          <input type="checkbox" id="flicker-enabled">
+          <span>Enable</span>
+        </label>
+        <div class="row" style="margin:0;">
+          <input type="range" id="flicker-opacity" min="0" max="100" step="1" value="100">
+          <div class="value" id="flicker-opacity-value">100%</div>
+        </div>
+      </div>
+      <div class="row" style="margin:0;">
+        <select id="lights-mode">
+          <option value="on">Lights On</option>
+          <option value="off">Lights Off</option>
+        </select>
+      </div>
+      <div class="note">Random organic flickers with occasional bursts.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Emission Blend</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <label class="toggle">Background
+          <select id="emission-bg-blend">
+            <option value="soft-light" selected>Soft Light</option>
+            <option value="overlay">Overlay</option>
+            <option value="screen">Screen</option>
+            <option value="multiply">Multiply</option>
+            <option value="hard-light">Hard Light</option>
+            <option value="lighten">Lighten</option>
+            <option value="darken">Darken</option>
+            <option value="difference">Difference</option>
+            <option value="exclusion">Exclusion</option>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+            <option value="divide">Divide</option>
+            <option value="over">Normal</option>
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-bottom:10px;">
+        <label class="toggle">Middleground
+          <select id="emission-mid-blend">
+            <option value="soft-light" selected>Soft Light</option>
+            <option value="overlay">Overlay</option>
+            <option value="screen">Screen</option>
+            <option value="multiply">Multiply</option>
+            <option value="hard-light">Hard Light</option>
+            <option value="lighten">Lighten</option>
+            <option value="darken">Darken</option>
+            <option value="difference">Difference</option>
+            <option value="exclusion">Exclusion</option>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+            <option value="divide">Divide</option>
+            <option value="over">Normal</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="toggle">Foreground
+          <select id="emission-fg-blend">
+            <option value="soft-light" selected>Soft Light</option>
+            <option value="overlay">Overlay</option>
+            <option value="screen">Screen</option>
+            <option value="multiply">Multiply</option>
+            <option value="hard-light">Hard Light</option>
+            <option value="lighten">Lighten</option>
+            <option value="darken">Darken</option>
+            <option value="difference">Difference</option>
+            <option value="exclusion">Exclusion</option>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+            <option value="divide">Divide</option>
+            <option value="over">Normal</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Emission Opacity</h2>
+      <div class="slider-row">
+        <input type="range" id="emission-opacity" min="0" max="100" step="1" value="100">
+        <div class="value" id="emission-opacity-value">100%</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.hostname === 'localhost'
+      ? 'http://localhost:3003'
+      : `http://${window.location.hostname}:3003`;
+
+    const streamEl = document.getElementById('stream');
+    const streamOverlay = document.getElementById('stream-overlay');
+    const streamPlayBtn = document.getElementById('stream-play-btn');
+    const hueSlider = document.getElementById('hue');
+    const hueValue = document.getElementById('hue-value');
+    const emissionOpacity = document.getElementById('emission-opacity');
+    const emissionOpacityValue = document.getElementById('emission-opacity-value');
+    const rainbowEnabled = document.getElementById('rainbow-enabled');
+    const rainbowRpm = document.getElementById('rainbow-rpm');
+    const flickerEnabled = document.getElementById('flicker-enabled');
+    const flickerOpacity = document.getElementById('flicker-opacity');
+    const flickerOpacityValue = document.getElementById('flicker-opacity-value');
+    const lightsMode = document.getElementById('lights-mode');
+    const emissionBgBlend = document.getElementById('emission-bg-blend');
+    const emissionMidBlend = document.getElementById('emission-mid-blend');
+    const emissionFgBlend = document.getElementById('emission-fg-blend');
+
+    let hlsPlayer = null;
+
+    function connectStream() {
+      const streamUrl = `${API_BASE}/streams/live/stream.m3u8`;
+      if (window.Hls && Hls.isSupported()) {
+        if (hlsPlayer) {
+          hlsPlayer.destroy();
+        }
+        hlsPlayer = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          liveSyncDuration: 2,
+          maxBufferLength: 6,
+          maxLiveSyncPlaybackRate: 1.5
+        });
+        hlsPlayer.loadSource(streamUrl);
+        hlsPlayer.attachMedia(streamEl);
+        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+          streamEl.play().catch(() => {
+            streamOverlay.style.display = 'flex';
+          });
+        });
+        hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            setTimeout(connectStream, 2000);
+          }
+        });
+      } else if (streamEl.canPlayType('application/vnd.apple.mpegurl')) {
+        streamEl.src = streamUrl;
+        streamEl.play().catch(() => {
+          streamOverlay.style.display = 'flex';
+        });
+      }
+    }
+
+    let hueDebounce = null;
+    let opacityDebounce = null;
+    function updateHueDisplay(value) {
+      hueValue.textContent = `${value}°`;
+    }
+
+    function sendHue(value) {
+      fetch(`${API_BASE}/lighting/hue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hue: value })
+      }).catch(() => {});
+    }
+
+
+    function sendOpacity(value) {
+      fetch(`${API_BASE}/lighting/emission-opacity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opacity: value / 100 })
+      }).catch(() => {});
+    }
+
+    function sendRainbow() {
+      const enabled = rainbowEnabled.checked;
+      const rpm = parseFloat(rainbowRpm.value) || 0;
+      fetch(`${API_BASE}/lighting/rainbow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, rpm })
+      }).catch(() => {});
+    }
+
+    function sendFlicker() {
+      const enabled = flickerEnabled.checked;
+      const opacity = (parseInt(flickerOpacity.value, 10) || 0) / 100;
+      fetch(`${API_BASE}/lighting/flicker`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, opacity })
+      }).catch(() => {});
+    }
+
+    function sendLightsMode() {
+      fetch(`${API_BASE}/lighting/lights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: lightsMode.value })
+      }).catch(() => {});
+    }
+
+    function sendEmissionLayerBlend(name, blend) {
+      fetch(`${API_BASE}/lighting/emission-layer-blend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, blend })
+      }).catch(() => {});
+    }
+
+    hueSlider.addEventListener('input', (e) => {
+      const value = parseInt(e.target.value, 10) || 0;
+      updateHueDisplay(value);
+      if (hueDebounce) clearTimeout(hueDebounce);
+      hueDebounce = setTimeout(() => sendHue(value), 80);
+    });
+
+
+    emissionOpacity.addEventListener('input', (e) => {
+      const value = parseInt(e.target.value, 10) || 0;
+      emissionOpacityValue.textContent = `${value}%`;
+      if (opacityDebounce) clearTimeout(opacityDebounce);
+      opacityDebounce = setTimeout(() => sendOpacity(value), 80);
+    });
+
+    rainbowEnabled.addEventListener('change', () => {
+      sendRainbow();
+    });
+
+    rainbowRpm.addEventListener('change', () => {
+      sendRainbow();
+    });
+
+    flickerEnabled.addEventListener('change', () => {
+      sendFlicker();
+    });
+
+    flickerOpacity.addEventListener('input', () => {
+      const value = parseInt(flickerOpacity.value, 10) || 0;
+      flickerOpacityValue.textContent = `${value}%`;
+      sendFlicker();
+    });
+
+    lightsMode.addEventListener('change', () => {
+      sendLightsMode();
+    });
+
+    emissionBgBlend.addEventListener('change', () => {
+      sendEmissionLayerBlend('LED light Emission (Background)', emissionBgBlend.value);
+    });
+    emissionMidBlend.addEventListener('change', () => {
+      sendEmissionLayerBlend('LED light Emission (Middleground)', emissionMidBlend.value);
+    });
+    emissionFgBlend.addEventListener('change', () => {
+      sendEmissionLayerBlend('LED light Emission (Foreground)', emissionFgBlend.value);
+    });
+
+    function resetHue() {
+      hueSlider.value = 0;
+      updateHueDisplay(0);
+      sendHue(0);
+    }
+
+    async function loadHue() {
+      try {
+        const res = await fetch(`${API_BASE}/lighting/status`);
+        const data = await res.json();
+        const value = Math.round(Number(data.hue) || 0);
+        hueSlider.value = value;
+        updateHueDisplay(value);
+        if (typeof data.emissionOpacity === 'number') {
+          const pct = Math.round(data.emissionOpacity * 100);
+          emissionOpacity.value = pct;
+          emissionOpacityValue.textContent = `${pct}%`;
+        }
+        if (data.rainbow) {
+          rainbowEnabled.checked = Boolean(data.rainbow.enabled);
+          if (typeof data.rainbow.rpm === 'number') {
+            rainbowRpm.value = data.rainbow.rpm;
+          }
+        }
+        if (data.flicker) {
+          flickerEnabled.checked = Boolean(data.flicker.enabled);
+          if (typeof data.flicker.opacity === 'number') {
+            const pct = Math.round(data.flicker.opacity * 100);
+            flickerOpacity.value = pct;
+            flickerOpacityValue.textContent = `${pct}%`;
+          }
+        }
+        if (data.lights && data.lights.mode) {
+          lightsMode.value = data.lights.mode;
+        }
+        if (data.emissionLayerBlends) {
+          if (data.emissionLayerBlends['LED light Emission (Background)']) {
+            emissionBgBlend.value = data.emissionLayerBlends['LED light Emission (Background)'];
+          }
+          if (data.emissionLayerBlends['LED light Emission (Middleground)']) {
+            emissionMidBlend.value = data.emissionLayerBlends['LED light Emission (Middleground)'];
+          }
+          if (data.emissionLayerBlends['LED light Emission (Foreground)']) {
+            emissionFgBlend.value = data.emissionLayerBlends['LED light Emission (Foreground)'];
+          }
+        }
+      } catch (err) {}
+    }
+
+    streamPlayBtn.addEventListener('click', () => {
+      streamEl.play().then(() => {
+        streamOverlay.style.display = 'none';
+      }).catch(() => {});
+    });
+
+    connectStream();
+    loadHue();
+  </script>
+</body>
+</html>

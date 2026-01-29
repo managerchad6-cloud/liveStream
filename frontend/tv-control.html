@@ -361,17 +361,15 @@
 
     /* Upload Tracker */
     .upload-tracker {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      width: 320px;
-      max-height: 400px;
+      width: 100%;
+      max-height: 240px;
       overflow-y: auto;
       background: #16213e;
       border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-      z-index: 1000;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
       display: none;
+      margin-top: 12px;
+      border: 1px solid #222;
     }
     .upload-tracker.visible {
       display: block;
@@ -559,6 +557,16 @@
           </div>
           <button onclick="uploadFile()">⬆ Upload & Add</button>
         </div>
+
+        <!-- Upload Progress -->
+        <div class="upload-tracker" id="upload-tracker">
+          <div class="upload-tracker-header">
+            <h3>Uploading Files</h3>
+            <button class="upload-tracker-close" onclick="hideUploadTracker()">✕</button>
+          </div>
+          <div class="upload-tracker-list" id="upload-tracker-list">
+          </div>
+        </div>
       </div>
     </div>
 
@@ -586,16 +594,6 @@
           <small>Content is auto-scaled to fit</small>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- Floating Upload Tracker -->
-  <div class="upload-tracker" id="upload-tracker">
-    <div class="upload-tracker-header">
-      <h3>Uploading Files</h3>
-      <button class="upload-tracker-close" onclick="hideUploadTracker()">✕</button>
-    </div>
-    <div class="upload-tracker-list" id="upload-tracker-list">
     </div>
   </div>
 

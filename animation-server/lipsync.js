@@ -42,7 +42,8 @@ async function analyzeLipSync(audioPath) {
   const quotedOutput = isWindows ? `"${outputPath}"` : `'${outputPath}'`;
   const quotedRhubarb = isWindows ? `"${RHUBARB_PATH}"` : RHUBARB_PATH;
 
-  const cmd = `${quotedRhubarb} -f json ${quotedAudio} -o ${quotedOutput}`;
+  // Use phonetic recognizer (faster than pocketSphinx)
+  const cmd = `${quotedRhubarb} -r phonetic -f json ${quotedAudio} -o ${quotedOutput}`;
 
   try {
     console.log('Running Rhubarb:', cmd);

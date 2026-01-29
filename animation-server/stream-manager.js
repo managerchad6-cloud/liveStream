@@ -12,10 +12,12 @@ class StreamManager {
     this.ffmpegProcess = null;
     this.isRunning = false;
     this.frameInterval = 1000 / fps;
-    this.onFrameRequest = null; // Callback to get next frame
+    this.onFrameRequest = null;
     this.frameCount = 0;
-    this.currentAudioPath = null;
-    this.audioProcess = null;
+    this.lastFrameTime = 0;
+    this.frameQueue = [];
+    this.maxQueueSize = 3; // Smaller buffer for lower latency
+    this.isRendering = false;
   }
 
   start(onFrameRequest) {
@@ -23,8 +25,8 @@ class StreamManager {
 
     this.onFrameRequest = onFrameRequest;
     this.isRunning = true;
+    this.lastFrameTime = Date.now();
 
-    // Ensure stream directory exists
     const liveDir = path.join(this.streamsDir, 'live');
     fs.mkdirSync(liveDir, { recursive: true });
 
@@ -37,7 +39,8 @@ class StreamManager {
     } catch (e) {}
 
     this.startFFmpeg(liveDir);
-    this.startFrameLoop();
+    this.startRenderLoop();
+    this.startOutputLoop();
 
     console.log('[StreamManager] Live stream started');
   }
@@ -46,17 +49,17 @@ class StreamManager {
     const outputPath = path.join(liveDir, 'stream.m3u8');
     const segmentPath = path.join(liveDir, 'segment_%03d.ts');
 
-    // FFmpeg args for live HLS from pipe input
     const args = [
       '-y',
       '-f', 'image2pipe',
       '-framerate', String(this.fps),
-      '-i', '-',  // Read frames from stdin
+      '-i', '-',
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
-      '-g', String(this.fps), // Keyframe every second
+      '-crf', '23',
+      '-g', String(this.fps),
       '-sc_threshold', '0',
       '-f', 'hls',
       '-hls_time', '1',
@@ -83,45 +86,69 @@ class StreamManager {
     this.ffmpegProcess.on('close', (code) => {
       console.log('[StreamManager] FFmpeg closed with code:', code);
       if (this.isRunning) {
-        // Restart if unexpected close
         console.log('[StreamManager] Restarting FFmpeg...');
         setTimeout(() => this.startFFmpeg(liveDir), 1000);
       }
     });
   }
 
-  startFrameLoop() {
-    const loop = async () => {
+  // Render frames as fast as possible into queue
+  startRenderLoop() {
+    const render = async () => {
       if (!this.isRunning) return;
 
-      try {
-        if (this.onFrameRequest && this.ffmpegProcess && this.ffmpegProcess.stdin.writable) {
+      const canRender = this.frameQueue.length < this.maxQueueSize && this.onFrameRequest;
+      if (canRender) {
+        try {
           const frameBuffer = await this.onFrameRequest(this.frameCount);
-          if (frameBuffer && this.ffmpegProcess.stdin.writable) {
-            this.ffmpegProcess.stdin.write(frameBuffer);
+          if (frameBuffer) {
+            this.frameQueue.push(frameBuffer);
+            this.frameCount++;
           }
-          this.frameCount++;
+        } catch (err) {
+          console.error('[StreamManager] Render error:', err.message);
         }
-      } catch (err) {
-        console.error('[StreamManager] Frame error:', err.message);
       }
 
       if (this.isRunning) {
-        setTimeout(loop, this.frameInterval);
+        if (canRender) {
+          setImmediate(render);
+        } else {
+          setTimeout(render, Math.max(5, Math.floor(this.frameInterval / 4)));
+        }
       }
     };
 
-    loop();
+    render();
   }
 
-  // Play audio through a separate stream (for now, audio handled by frontend)
-  setAudio(audioPath) {
-    this.currentAudioPath = audioPath;
-    // Audio will be served separately and synced by frontend
+  // Output frames at consistent FPS
+  startOutputLoop() {
+    const output = () => {
+      if (!this.isRunning) return;
+
+      const now = Date.now();
+      const elapsed = now - this.lastFrameTime;
+
+      if (elapsed >= this.frameInterval) {
+        if (this.frameQueue.length > 0 && this.ffmpegProcess && this.ffmpegProcess.stdin.writable) {
+          const frame = this.frameQueue.shift();
+          this.ffmpegProcess.stdin.write(frame);
+        }
+        this.lastFrameTime = now - (elapsed % this.frameInterval); // Maintain rhythm
+      }
+
+      if (this.isRunning) {
+        setTimeout(output, Math.max(1, this.frameInterval - (Date.now() - now)));
+      }
+    };
+
+    output();
   }
 
   stop() {
     this.isRunning = false;
+    this.frameQueue = [];
     if (this.ffmpegProcess) {
       this.ffmpegProcess.stdin.end();
       this.ffmpegProcess.kill('SIGTERM');
@@ -132,6 +159,10 @@ class StreamManager {
 
   getStreamUrl() {
     return '/streams/live/stream.m3u8';
+  }
+
+  getQueueSize() {
+    return this.frameQueue.length;
   }
 }
 
