@@ -842,13 +842,13 @@ class BlinkController {
     this.isBlinking = false;
     this.blinkStartFrame = 0;
     this.nextBlinkFrame = this.getRandomBlinkFrame(0);
-    this.blinkDurationFrames = 4; // ~133ms at 30fps
+    this.blinkDurationFrames = 2; // ~67ms at 30fps (faster blink)
   }
 
   getRandomBlinkFrame(currentFrame) {
-    // Random blink every 3-5 seconds
-    const minFrames = 3 * this.fps;
-    const maxFrames = 5 * this.fps;
+    // Random blink every 1.5-3 seconds (faster than 3-5s)
+    const minFrames = 1.5 * this.fps;
+    const maxFrames = 3 * this.fps;
     return currentFrame + minFrames + Math.floor(Math.random() * (maxFrames - minFrames));
   }
 
