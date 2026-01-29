@@ -5,6 +5,7 @@ const sharp = require('sharp');
 const ROOT_DIR = path.resolve(__dirname, '..');
 const LAYERS_DIR = path.join(ROOT_DIR, 'exported-layers');
 const MANIFEST_PATH = path.join(LAYERS_DIR, 'manifest.json');
+const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 
 let manifest = null;
 let scaledLayerBuffers = {};
@@ -14,6 +15,12 @@ const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
 let outputHeight = 0;
+
+// TV viewport bounds (extracted from mask.png, scaled to output resolution)
+let TV_VIEWPORT = null;
+let currentTVFrame = null; // Current TV frame buffer for compositing
+let tvReflectionBuffer = null; // TV reflection layer (composited above TV content)
+let tvReflectionPos = { x: 0, y: 0 }; // Position of TV reflection layer
 
 function loadManifest() {
   if (!manifest) {
@@ -37,10 +44,70 @@ function loadManifest() {
   return manifest;
 }
 
+/**
+ * Extract TV viewport bounds from mask.png
+ * Finds the bounding box of non-transparent pixels
+ */
+async function extractTVViewport() {
+  if (!fs.existsSync(MASK_PATH)) {
+    console.warn('[Compositor] mask.png not found, TV viewport disabled');
+    return null;
+  }
+
+  try {
+    const image = sharp(MASK_PATH);
+    const { width, height, channels } = await image.metadata();
+
+    // Get raw pixel data
+    const { data } = await image.raw().toBuffer({ resolveWithObject: true });
+
+    let minX = width, minY = height, maxX = 0, maxY = 0;
+    let found = false;
+
+    // Find bounding box of non-transparent pixels
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * channels;
+        const alpha = channels === 4 ? data[idx + 3] : 255;
+
+        if (alpha > 0) {
+          found = true;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (!found) {
+      console.warn('[Compositor] No non-transparent pixels found in mask.png');
+      return null;
+    }
+
+    // Scale to output resolution
+    const viewport = {
+      x: Math.round(minX * OUTPUT_SCALE),
+      y: Math.round(minY * OUTPUT_SCALE),
+      width: Math.round((maxX - minX + 1) * OUTPUT_SCALE),
+      height: Math.round((maxY - minY + 1) * OUTPUT_SCALE)
+    };
+
+    console.log(`[Compositor] TV viewport extracted: ${viewport.x},${viewport.y} ${viewport.width}x${viewport.height}`);
+    return viewport;
+  } catch (err) {
+    console.error('[Compositor] Failed to extract TV viewport:', err.message);
+    return null;
+  }
+}
+
 async function preloadLayers() {
   const m = loadManifest();
   outputWidth = Math.round(m.width * OUTPUT_SCALE);
   outputHeight = Math.round(m.height * OUTPUT_SCALE);
+
+  // Extract TV viewport bounds from mask.png
+  TV_VIEWPORT = await extractTVViewport();
 
   console.log('Preloading layer images...');
 
@@ -69,7 +136,18 @@ async function preloadLayers() {
         scaledLayerBuffers[layer.id] = buffer;
 
         // Categorize layer
-        if (layer.type === 'static' && layer.visible !== false) {
+        // TV Reflection is handled separately (composited above TV content)
+        if (layer.id === 'TV_Reflection_') {
+          tvReflectionBuffer = buffer;
+          tvReflectionPos = {
+            x: Math.round(layer.x * OUTPUT_SCALE),
+            y: Math.round(layer.y * OUTPUT_SCALE)
+          };
+          console.log('[Compositor] TV Reflection layer stored for overlay');
+        } else if (layer.id === 'mask') {
+          // Mask is only used for viewport extraction, not rendering
+          console.log('[Compositor] Mask layer excluded from rendering');
+        } else if (layer.type === 'static' && layer.visible !== false) {
           staticLayers.push({ ...layer, buffer });
         } else {
           dynamicLayers.push(layer);
@@ -195,8 +273,33 @@ function buildCaptionSvg(text) {
 }
 
 /**
+ * Set the current TV frame buffer for compositing
+ * @param {Buffer|null} buffer - PNG buffer scaled to viewport size, or null to clear
+ */
+function setTVFrame(buffer) {
+  currentTVFrame = buffer;
+}
+
+/**
+ * Get the current TV frame buffer
+ * @returns {Buffer|null}
+ */
+function getTVFrame() {
+  return currentTVFrame;
+}
+
+/**
+ * Get TV viewport dimensions
+ * @returns {Object|null} - {x, y, width, height} or null if not available
+ */
+function getTVViewport() {
+  return TV_VIEWPORT;
+}
+
+/**
  * Composite a frame with both characters visible
  * Uses caching for common frame states (most frames are identical)
+ * TV content is composited before character layers (appears behind them)
  */
 async function compositeFrame(state) {
   const {
@@ -207,7 +310,7 @@ async function compositeFrame(state) {
     caption = null
   } = state;
 
-  // Create cache key from state
+  // Create cache key from state (TV content is NOT cached - changes every frame)
   const cacheKey = `${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
 
   let baseBuffer = frameCache[cacheKey];
@@ -266,16 +369,43 @@ async function compositeFrame(state) {
     }
   }
 
+  // If we have TV content, composite it onto the frame
+  // TV content changes every frame so we can't cache this
+  let frameWithTV = baseBuffer;
+  if (currentTVFrame && TV_VIEWPORT) {
+    const tvOps = [{
+      input: currentTVFrame,
+      left: TV_VIEWPORT.x,
+      top: TV_VIEWPORT.y,
+      blend: 'over'
+    }];
+
+    // Add TV reflection on top of TV content
+    if (tvReflectionBuffer) {
+      tvOps.push({
+        input: tvReflectionBuffer,
+        left: tvReflectionPos.x,
+        top: tvReflectionPos.y,
+        blend: 'over'
+      });
+    }
+
+    frameWithTV = await sharp(baseBuffer)
+      .composite(tvOps)
+      .jpeg({ quality: JPEG_QUALITY })
+      .toBuffer();
+  }
+
   if (!caption) {
-    return baseBuffer;
+    return frameWithTV;
   }
 
   const captionSvg = buildCaptionSvg(caption);
   if (!captionSvg) {
-    return baseBuffer;
+    return frameWithTV;
   }
 
-  const withCaption = await sharp(baseBuffer)
+  const withCaption = await sharp(frameWithTV)
     .composite([{ input: captionSvg, left: 0, top: 0, blend: 'over' }])
     .jpeg({ quality: JPEG_QUALITY })
     .toBuffer();
@@ -305,5 +435,8 @@ module.exports = {
   loadManifest,
   preloadLayers,
   clearCache,
-  getManifestDimensions
+  getManifestDimensions,
+  setTVFrame,
+  getTVFrame,
+  getTVViewport
 };

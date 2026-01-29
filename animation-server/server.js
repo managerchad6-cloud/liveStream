@@ -8,12 +8,13 @@ const crypto = require('crypto');
 const { FFMPEG_PATH } = require('./platform');
 const { analyzeLipSync } = require('./lipsync');
 const BlinkController = require('./blink-controller');
-const { compositeFrame, loadManifest, preloadLayers } = require('./compositor');
+const { compositeFrame, loadManifest, preloadLayers, setTVFrame, getTVViewport } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
 const StreamManager = require('./stream-manager');
 const ContinuousStreamManager = require('./continuous-stream-manager');
 const SyncedPlayback = require('./synced-playback');
+const TVContentService = require('./tv-content');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
@@ -23,18 +24,22 @@ const STREAM_MODE = process.env.STREAM_MODE || 'synced';
 
 const app = express();
 const port = process.env.ANIMATION_PORT || 3003;
+const host = process.env.ANIMATION_HOST || '0.0.0.0';
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const STREAMS_DIR = path.join(ROOT_DIR, 'streams');
 const TEMP_DIR = path.join(__dirname, 'temp');
 const AUDIO_DIR = path.join(STREAMS_DIR, 'audio');
+const TV_CONTENT_DIR = path.join(__dirname, 'tv-content', 'content');
 
 // Ensure directories exist
 fs.mkdirSync(STREAMS_DIR, { recursive: true });
 fs.mkdirSync(TEMP_DIR, { recursive: true });
 fs.mkdirSync(AUDIO_DIR, { recursive: true });
+fs.mkdirSync(TV_CONTENT_DIR, { recursive: true });
 
 app.use(cors());
+app.use(express.json());
 
 // Configure multer
 const upload = multer({
@@ -51,6 +56,7 @@ const blinkControllers = {
 };
 let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
 let frameCount = 0;
+let tvService = null;  // TV content service (initialized after preloadLayers)
 
 // Track current speaking state for synced mode
 let currentSpeaker = null;
@@ -169,13 +175,21 @@ async function renderFrame(frame, audioProgress = null) {
   const virginBlinking = blinkControllers.virgin.update(frame, speakingCharacter === 'virgin');
   const caption = currentCaption && Date.now() < captionUntil ? currentCaption : null;
 
+  // Update TV content - tick advances frame, get current frame for compositing
+  if (tvService) {
+    tvService.tick();
+    const tvFrame = await tvService.getCurrentFrame();
+    setTVFrame(tvFrame);
+  }
+
   // Debug log every 30 frames (once per second)
   if (frame % 30 === 0) {
     const mode = STREAM_MODE === 'synced' ? 'SY' : (LIPSYNC_MODE === 'realtime' ? 'RT' : 'RH');
     const stateStr = speakingCharacter
       ? `${speakingCharacter} speaking (${currentPhoneme})`
       : 'idle';
-    console.log(`[Frame ${frame}] [${mode}] ${stateStr} | chad:${chadPhoneme}${chadBlinking?'(blink)':''} virgin:${virginPhoneme}${virginBlinking?'(blink)':''}`);
+    const tvState = tvService ? tvService.state : 'off';
+    console.log(`[Frame ${frame}] [${mode}] ${stateStr} | chad:${chadPhoneme}${chadBlinking?'(blink)':''} virgin:${virginPhoneme}${virginBlinking?'(blink)':''} | TV:${tvState}`);
   }
 
   try {
@@ -352,6 +366,268 @@ app.get('/stream-info', (req, res) => {
   });
 });
 
+// Serve TV control panel
+app.get('/tv', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'tv-control.html'));
+});
+
+// ============== TV Content API ==============
+
+const { spawn } = require('child_process');
+
+// Helper: Extract audio from video file
+function extractAudioFromVideo(videoPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn(FFMPEG_PATH, [
+      '-i', videoPath,
+      '-vn',                    // No video
+      '-acodec', 'libmp3lame',  // MP3 codec
+      '-ab', '128k',            // 128kbps bitrate
+      '-ar', '44100',           // 44.1kHz sample rate
+      '-y',                     // Overwrite output
+      outputPath
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let hasAudio = true;
+    let stderr = '';
+
+    ffmpeg.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    ffmpeg.on('close', (code) => {
+      // Check if video had no audio stream
+      if (stderr.includes('does not contain any stream') ||
+          stderr.includes('Output file is empty') ||
+          !fs.existsSync(outputPath) ||
+          fs.statSync(outputPath).size < 1000) {
+        // No audio or extraction failed - clean up and resolve with null
+        try { fs.unlinkSync(outputPath); } catch (e) {}
+        resolve(null);
+        return;
+      }
+
+      if (code !== 0) {
+        resolve(null);  // Don't fail upload if audio extraction fails
+        return;
+      }
+
+      resolve(outputPath);
+    });
+
+    ffmpeg.on('error', () => {
+      resolve(null);  // Don't fail upload if audio extraction fails
+    });
+  });
+}
+
+// Configure multer for TV content uploads
+const tvUpload = multer({
+  dest: TV_CONTENT_DIR,
+  limits: { fileSize: 100 * 1024 * 1024 }  // 100MB limit for videos
+});
+
+// Add item to TV playlist
+app.post('/tv/playlist/add', async (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  const { type, source, duration } = req.body;
+
+  if (!type || !source) {
+    return res.status(400).json({ error: 'Missing required fields: type, source' });
+  }
+
+  if (type !== 'image' && type !== 'video') {
+    return res.status(400).json({ error: 'Invalid type. Must be "image" or "video"' });
+  }
+
+  try {
+    const item = await tvService.addItem({ type, source, duration });
+    res.json({ success: true, item });
+  } catch (err) {
+    console.error('[TV] Add item error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload and add file to TV playlist
+app.post('/tv/upload', tvUpload.single('file'), async (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file provided' });
+  }
+
+  const type = req.body.type || (req.file.mimetype.startsWith('video/') ? 'video' : 'image');
+  const duration = req.body.duration ? parseFloat(req.body.duration) : undefined;
+
+  // Generate a proper filename
+  const ext = path.extname(req.file.originalname) || (type === 'video' ? '.mp4' : '.png');
+  const newPath = path.join(TV_CONTENT_DIR, `${req.file.filename}${ext}`);
+  fs.renameSync(req.file.path, newPath);
+
+  let audioPath = null;
+
+  // Extract audio for videos
+  if (type === 'video') {
+    const audioFilePath = path.join(TV_CONTENT_DIR, `${req.file.filename}.mp3`);
+    audioPath = await extractAudioFromVideo(newPath, audioFilePath);
+    if (audioPath) {
+      console.log(`[TV] Extracted audio: ${audioPath}`);
+    }
+  }
+
+  try {
+    const item = await tvService.addItem({ type, source: newPath, duration, audioPath });
+    res.json({ success: true, item });
+  } catch (err) {
+    console.error('[TV] Upload error:', err);
+    try { fs.unlinkSync(newPath); } catch (e) {}
+    if (audioPath) {
+      try { fs.unlinkSync(audioPath); } catch (e) {}
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove item from TV playlist
+app.delete('/tv/playlist/:id', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  const success = tvService.removeItem(req.params.id);
+  if (success) {
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: 'Item not found' });
+  }
+});
+
+// Get TV playlist
+app.get('/tv/playlist', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  res.json({
+    playlist: tvService.getPlaylist(),
+    status: tvService.getStatus()
+  });
+});
+
+// Clear TV playlist
+app.post('/tv/playlist/clear', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  tvService.clear();
+  res.json({ success: true });
+});
+
+// TV playback control
+app.post('/tv/control', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  const { action } = req.body;
+
+  if (!action) {
+    return res.status(400).json({ error: 'Missing action' });
+  }
+
+  let success = false;
+  switch (action) {
+    case 'play':
+      success = tvService.play();
+      break;
+    case 'pause':
+      success = tvService.pause();
+      break;
+    case 'stop':
+      success = tvService.stop();
+      break;
+    case 'next':
+      success = tvService.next();
+      break;
+    case 'prev':
+      success = tvService.prev();
+      break;
+    default:
+      return res.status(400).json({ error: `Unknown action: ${action}` });
+  }
+
+  res.json({ success, status: tvService.getStatus() });
+});
+
+// Get TV status
+app.get('/tv/status', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  const viewport = getTVViewport();
+  res.json({
+    status: tvService.getStatus(),
+    viewport
+  });
+});
+
+// Set hold mode (lock current item, prevent auto-advance)
+app.post('/tv/hold', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  const { enabled } = req.body;
+  const hold = tvService.setHold(enabled);
+  res.json({ success: true, hold, status: tvService.getStatus() });
+});
+
+// Set/get TV volume
+app.post('/tv/volume', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  const { volume } = req.body;
+  if (typeof volume !== 'number' || volume < 0 || volume > 1) {
+    return res.status(400).json({ error: 'Volume must be a number between 0 and 1' });
+  }
+
+  const newVolume = tvService.setVolume(volume);
+  res.json({ success: true, volume: newVolume });
+});
+
+app.get('/tv/volume', (req, res) => {
+  if (!tvService) {
+    return res.status(503).json({ error: 'TV service not initialized' });
+  }
+
+  res.json({ volume: tvService.getVolume() });
+});
+
+// Serve TV content audio files
+app.get('/tv/audio/:filename', (req, res) => {
+  const filePath = path.join(TV_CONTENT_DIR, req.params.filename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Audio file not found' });
+  }
+
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Accept-Ranges', 'bytes');
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// ============== End TV Content API ==============
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -360,7 +636,8 @@ app.get('/health', (req, res) => {
     ffmpeg: FFMPEG_PATH,
     streaming: streamManager ? streamManager.isRunning : false,
     lipsyncMode: LIPSYNC_MODE,
-    streamMode: STREAM_MODE
+    streamMode: STREAM_MODE,
+    tvService: tvService ? tvService.state : 'not initialized'
   });
 });
 
@@ -373,6 +650,15 @@ async function start() {
   } catch (err) {
     console.warn('Warning:', err.message);
     console.warn('Run "node tools/export-psd.js" to generate layers from PSD');
+  }
+
+  // Initialize TV content service with viewport dimensions from compositor
+  const viewport = getTVViewport();
+  if (viewport) {
+    tvService = new TVContentService(viewport.width, viewport.height, 15);
+    console.log(`[TV] Service initialized with viewport ${viewport.width}x${viewport.height}`);
+  } else {
+    console.warn('[TV] Service disabled - no viewport defined');
   }
 
   // Start live stream
@@ -388,11 +674,12 @@ async function start() {
   }
   streamManager.start(renderFrame);
 
-  app.listen(port, () => {
-    console.log(`Animation server running on http://localhost:${port}`);
-    console.log(`Live stream: http://localhost:${port}${streamManager.getStreamUrl()}`);
+  app.listen(port, host, () => {
+    console.log(`Animation server running on http://${host}:${port}`);
+    console.log(`Live stream: http://${host}:${port}${streamManager.getStreamUrl()}`);
     console.log(`Platform: ${process.platform}`);
     console.log(`Lip sync mode: ${LIPSYNC_MODE} | Stream mode: ${STREAM_MODE}`);
+    console.log(`TV content: ${tvService ? 'enabled' : 'disabled'}`);
   });
 }
 

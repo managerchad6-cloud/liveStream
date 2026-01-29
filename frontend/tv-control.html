@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TV Content Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: #00d4ff;
+      margin-bottom: 5px;
+    }
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+    }
+    .panel {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .panel h2 {
+      margin-top: 0;
+      color: #00d4ff;
+      font-size: 1.1em;
+      border-bottom: 1px solid #333;
+      padding-bottom: 10px;
+    }
+
+    /* Status */
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 15px;
+    }
+    .status-item {
+      background: #1a1a2e;
+      padding: 15px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .status-item .label {
+      font-size: 0.8em;
+      color: #666;
+      text-transform: uppercase;
+    }
+    .status-item .value {
+      font-size: 1.4em;
+      font-weight: bold;
+      margin-top: 5px;
+    }
+    .status-item .value.playing { color: #4ade80; }
+    .status-item .value.paused { color: #fbbf24; }
+    .status-item .value.stopped { color: #888; }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: #00d4ff;
+      color: #000;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 1em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover {
+      background: #00b8e6;
+      transform: translateY(-1px);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    button.secondary {
+      background: #333;
+      color: #fff;
+    }
+    button.secondary:hover {
+      background: #444;
+    }
+    button.danger {
+      background: #dc2626;
+      color: #fff;
+    }
+    button.danger:hover {
+      background: #b91c1c;
+    }
+    button.hold-active {
+      background: #f59e0b;
+      color: #000;
+    }
+    button.hold-active:hover {
+      background: #d97706;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Add Content Form */
+    .add-form {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    .form-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .form-row label {
+      min-width: 80px;
+      color: #888;
+    }
+    input, select {
+      flex: 1;
+      background: #1a1a2e;
+      border: 1px solid #333;
+      color: #fff;
+      padding: 10px 15px;
+      border-radius: 6px;
+      font-size: 1em;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: #00d4ff;
+    }
+    input[type="file"] {
+      padding: 8px;
+    }
+    .tabs {
+      display: flex;
+      gap: 5px;
+      margin-bottom: 15px;
+    }
+    .tab {
+      padding: 8px 16px;
+      background: #1a1a2e;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      border-radius: 6px;
+      font-size: 0.9em;
+    }
+    .tab.active {
+      background: #00d4ff;
+      color: #000;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Playlist */
+    .playlist {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .playlist-empty {
+      text-align: center;
+      color: #666;
+      padding: 40px;
+    }
+    .playlist-item {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      background: #1a1a2e;
+      padding: 15px;
+      border-radius: 8px;
+      border: 2px solid transparent;
+    }
+    .playlist-item.current {
+      border-color: #00d4ff;
+    }
+    .playlist-item .index {
+      font-size: 1.2em;
+      font-weight: bold;
+      color: #666;
+      min-width: 30px;
+    }
+    .playlist-item.current .index {
+      color: #00d4ff;
+    }
+    .playlist-item .info {
+      flex: 1;
+      min-width: 0;
+    }
+    .playlist-item .source {
+      font-size: 0.9em;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .playlist-item .meta {
+      font-size: 0.8em;
+      color: #666;
+      margin-top: 4px;
+    }
+    .playlist-item .type {
+      background: #333;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75em;
+      text-transform: uppercase;
+    }
+    .playlist-item .type.video { background: #7c3aed; }
+    .playlist-item .type.image { background: #2563eb; }
+    .playlist-item .status-badge {
+      font-size: 0.75em;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #333;
+    }
+    .playlist-item .status-badge.playing {
+      background: #4ade80;
+      color: #000;
+    }
+    .playlist-item .status-badge.loading {
+      background: #fbbf24;
+      color: #000;
+    }
+    .playlist-item .status-badge.error {
+      background: #dc2626;
+    }
+    .playlist-item .remove-btn {
+      background: transparent;
+      color: #666;
+      padding: 8px;
+      font-size: 1.2em;
+    }
+    .playlist-item .remove-btn:hover {
+      color: #dc2626;
+      background: transparent;
+    }
+
+    /* Viewport Preview */
+    .viewport-info {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .viewport-preview {
+      width: 158px;
+      height: 84px;
+      background: #000;
+      border: 2px solid #333;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #444;
+      font-size: 0.8em;
+    }
+    .viewport-details {
+      font-size: 0.9em;
+      color: #888;
+    }
+    .viewport-details span {
+      color: #fff;
+    }
+
+    /* Volume Control */
+    .volume-control {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      padding: 10px 0;
+    }
+    .volume-icon {
+      font-size: 1.3em;
+      cursor: pointer;
+      user-select: none;
+    }
+    .volume-slider {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      outline: none;
+    }
+    .volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      background: #00d4ff;
+      border-radius: 50%;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .volume-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.1);
+    }
+    .volume-slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: #00d4ff;
+      border-radius: 50%;
+      cursor: pointer;
+      border: none;
+    }
+    .volume-value {
+      min-width: 45px;
+      text-align: right;
+      color: #888;
+      font-size: 0.9em;
+    }
+    .audio-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85em;
+      color: #666;
+      margin-top: 10px;
+    }
+    .audio-indicator.active {
+      color: #4ade80;
+    }
+    .audio-indicator .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #333;
+    }
+    .audio-indicator.active .dot {
+      background: #4ade80;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* Upload Tracker */
+    .upload-tracker {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 320px;
+      max-height: 400px;
+      overflow-y: auto;
+      background: #16213e;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      z-index: 1000;
+      display: none;
+    }
+    .upload-tracker.visible {
+      display: block;
+    }
+    .upload-tracker-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 15px;
+      border-bottom: 1px solid #333;
+      position: sticky;
+      top: 0;
+      background: #16213e;
+    }
+    .upload-tracker-header h3 {
+      margin: 0;
+      font-size: 0.9em;
+      color: #00d4ff;
+    }
+    .upload-tracker-close {
+      background: transparent;
+      border: none;
+      color: #666;
+      cursor: pointer;
+      padding: 0;
+      font-size: 1.2em;
+      line-height: 1;
+    }
+    .upload-tracker-close:hover {
+      color: #fff;
+      background: transparent;
+      transform: none;
+    }
+    .upload-tracker-list {
+      padding: 10px;
+    }
+    .upload-item {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .upload-item:last-child {
+      margin-bottom: 0;
+    }
+    .upload-item-name {
+      font-size: 0.85em;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 8px;
+    }
+    .upload-item-progress {
+      height: 6px;
+      background: #333;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 6px;
+    }
+    .upload-item-progress-bar {
+      height: 100%;
+      background: #00d4ff;
+      border-radius: 3px;
+      transition: width 0.2s;
+    }
+    .upload-item-progress-bar.complete {
+      background: #4ade80;
+    }
+    .upload-item-progress-bar.error {
+      background: #dc2626;
+    }
+    .upload-item-status {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75em;
+      color: #666;
+    }
+    .upload-item-status.complete {
+      color: #4ade80;
+    }
+    .upload-item-status.error {
+      color: #dc2626;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📺 TV Content Control</h1>
+    <p class="subtitle">Manage the in-scene TV viewport playlist</p>
+
+    <!-- Status Panel -->
+    <div class="panel">
+      <h2>Status</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <div class="label">State</div>
+          <div class="value" id="state">--</div>
+        </div>
+        <div class="status-item">
+          <div class="label">Current</div>
+          <div class="value" id="current-index">--</div>
+        </div>
+        <div class="status-item">
+          <div class="label">Frame</div>
+          <div class="value" id="frame-index">--</div>
+        </div>
+        <div class="status-item">
+          <div class="label">Items</div>
+          <div class="value" id="playlist-length">--</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Playback Controls -->
+    <div class="panel">
+      <h2>Playback</h2>
+      <div class="controls">
+        <button onclick="control('prev')" class="secondary">⏮ Prev</button>
+        <button onclick="control('stop')" class="secondary">⏹ Stop</button>
+        <button onclick="control('pause')" class="secondary">⏸ Pause</button>
+        <button onclick="control('play')">▶ Play</button>
+        <button onclick="control('next')" class="secondary">⏭ Next</button>
+        <button onclick="toggleHold()" id="hold-btn" class="secondary">🔓 Auto</button>
+      </div>
+    </div>
+
+    <!-- Volume Control -->
+    <div class="panel">
+      <h2>TV Audio</h2>
+      <div class="volume-control">
+        <span class="volume-icon" onclick="toggleMute()" id="volume-icon">🔊</span>
+        <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="50" oninput="setVolume(this.value)">
+        <span class="volume-value" id="volume-value">50%</span>
+      </div>
+      <div class="audio-indicator" id="audio-indicator">
+        <span class="dot"></span>
+        <span id="audio-status">No audio playing</span>
+      </div>
+    </div>
+
+    <!-- Hidden audio element for TV sound -->
+    <audio id="tv-audio" preload="auto"></audio>
+
+    <!-- Add Content -->
+    <div class="panel">
+      <h2>Add Content</h2>
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('url')">URL / Path</button>
+        <button class="tab" onclick="switchTab('upload')">Upload File</button>
+      </div>
+
+      <div id="tab-url" class="tab-content active">
+        <div class="add-form">
+          <div class="form-row">
+            <label>Type</label>
+            <select id="add-type">
+              <option value="image">Image</option>
+              <option value="video">Video</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Source</label>
+            <input type="text" id="add-source" placeholder="/path/to/file or https://...">
+          </div>
+          <div class="form-row" id="duration-row">
+            <label>Duration</label>
+            <input type="number" id="add-duration" value="10" min="1" max="300">
+            <span style="color:#666">seconds</span>
+          </div>
+          <button onclick="addItem()">+ Add to Playlist</button>
+        </div>
+      </div>
+
+      <div id="tab-upload" class="tab-content">
+        <div class="add-form">
+          <div class="form-row">
+            <label>Files</label>
+            <input type="file" id="upload-file" accept="image/*,video/*" multiple>
+          </div>
+          <div class="form-row" id="upload-duration-row">
+            <label>Duration</label>
+            <input type="number" id="upload-duration" value="10" min="1" max="300">
+            <span style="color:#666">seconds (images only)</span>
+          </div>
+          <button onclick="uploadFile()">⬆ Upload & Add</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Playlist -->
+    <div class="panel">
+      <h2>Playlist</h2>
+      <div id="playlist" class="playlist">
+        <div class="playlist-empty">No items in playlist</div>
+      </div>
+      <div style="margin-top:15px; text-align:right;">
+        <button onclick="clearPlaylist()" class="danger" id="clear-btn" disabled>🗑 Clear All</button>
+      </div>
+    </div>
+
+    <!-- Viewport Info -->
+    <div class="panel">
+      <h2>Viewport</h2>
+      <div class="viewport-info">
+        <div class="viewport-preview" id="viewport-preview">
+          316 × 167
+        </div>
+        <div class="viewport-details">
+          Position: <span id="viewport-pos">546, 112</span><br>
+          Size: <span id="viewport-size">316 × 167</span><br>
+          <small>Content is auto-scaled to fit</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Upload Tracker -->
+  <div class="upload-tracker" id="upload-tracker">
+    <div class="upload-tracker-header">
+      <h3>Uploading Files</h3>
+      <button class="upload-tracker-close" onclick="hideUploadTracker()">✕</button>
+    </div>
+    <div class="upload-tracker-list" id="upload-tracker-list">
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.hostname === 'localhost'
+      ? 'http://localhost:3003'
+      : `http://${window.location.hostname}:3003`;
+
+    let currentStatus = null;
+    let currentPlaylist = [];
+    let refreshInterval = null;
+    let currentAudioItemId = null;
+    let isMuted = false;
+    let savedVolume = 50;
+
+    // Upload tracking
+    let activeUploads = new Map();
+    let uploadIdCounter = 0;
+
+    // Audio elements
+    const tvAudio = document.getElementById('tv-audio');
+
+    // Fetch and update status
+    async function fetchStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/tv/playlist`);
+        const data = await res.json();
+        updateUI(data);
+      } catch (err) {
+        console.error('Failed to fetch status:', err);
+      }
+    }
+
+    function updateUI(data) {
+      const { playlist, status } = data;
+      const prevStatus = currentStatus;
+      currentStatus = status;
+      currentPlaylist = playlist;
+
+      // Update status display
+      const stateEl = document.getElementById('state');
+      stateEl.textContent = status.state;
+      stateEl.className = `value ${status.state}`;
+
+      document.getElementById('current-index').textContent =
+        status.playlistLength > 0 ? `${status.currentIndex + 1}/${status.playlistLength}` : '--';
+      document.getElementById('frame-index').textContent =
+        status.currentItem ? status.frameIndex : '--';
+      document.getElementById('playlist-length').textContent = status.playlistLength;
+
+      // Update hold button
+      const holdBtn = document.getElementById('hold-btn');
+      if (status.hold) {
+        holdBtn.textContent = '🔒 Hold';
+        holdBtn.classList.add('hold-active');
+        holdBtn.classList.remove('secondary');
+      } else {
+        holdBtn.textContent = '🔓 Auto';
+        holdBtn.classList.remove('hold-active');
+        holdBtn.classList.add('secondary');
+      }
+
+      // Sync audio playback
+      syncAudio(status, prevStatus);
+
+      // Update playlist
+      const playlistEl = document.getElementById('playlist');
+      const clearBtn = document.getElementById('clear-btn');
+
+      if (playlist.length === 0) {
+        playlistEl.innerHTML = '<div class="playlist-empty">No items in playlist</div>';
+        clearBtn.disabled = true;
+      } else {
+        clearBtn.disabled = false;
+        playlistEl.innerHTML = playlist.map((item, idx) => {
+          const isCurrent = idx === status.currentIndex;
+          const filename = item.source.split('/').pop();
+          const statusBadge = item.error
+            ? '<span class="status-badge error">Error</span>'
+            : !item.loaded
+              ? '<span class="status-badge loading">Loading...</span>'
+              : isCurrent && status.state === 'playing'
+                ? '<span class="status-badge playing">Playing</span>'
+                : '';
+
+          const hasAudio = item.audioPath ? '🔊' : '';
+
+          return `
+            <div class="playlist-item ${isCurrent ? 'current' : ''}">
+              <div class="index">${idx + 1}</div>
+              <div class="info">
+                <div class="source" title="${item.source}">${filename} ${hasAudio}</div>
+                <div class="meta">
+                  <span class="type ${item.type}">${item.type}</span>
+                  ${item.duration ? `${item.duration}s` : ''}
+                  ${item.frameCount ? `• ${item.frameCount} frames` : ''}
+                  ${statusBadge}
+                </div>
+              </div>
+              <button class="remove-btn" onclick="removeItem('${item.id}')" title="Remove">✕</button>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    // Playback control
+    async function control(action) {
+      try {
+        await fetch(`${API_BASE}/tv/control`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action })
+        });
+        fetchStatus();
+      } catch (err) {
+        alert('Control failed: ' + err.message);
+      }
+    }
+
+    // Toggle hold mode
+    async function toggleHold() {
+      try {
+        const newHold = !currentStatus?.hold;
+        await fetch(`${API_BASE}/tv/hold`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: newHold })
+        });
+        fetchStatus();
+      } catch (err) {
+        alert('Toggle hold failed: ' + err.message);
+      }
+    }
+
+    // Add item
+    async function addItem() {
+      const type = document.getElementById('add-type').value;
+      const source = document.getElementById('add-source').value.trim();
+      const duration = parseInt(document.getElementById('add-duration').value) || 10;
+
+      if (!source) {
+        alert('Please enter a source path or URL');
+        return;
+      }
+
+      try {
+        const body = { type, source };
+        if (type === 'image') body.duration = duration;
+
+        const res = await fetch(`${API_BASE}/tv/playlist/add`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        document.getElementById('add-source').value = '';
+        fetchStatus();
+      } catch (err) {
+        alert('Failed to add item: ' + err.message);
+      }
+    }
+
+    // Upload file(s) with progress tracking
+    function uploadFile() {
+      const fileInput = document.getElementById('upload-file');
+      const duration = parseInt(document.getElementById('upload-duration').value) || 10;
+
+      if (!fileInput.files.length) {
+        alert('Please select one or more files');
+        return;
+      }
+
+      const files = Array.from(fileInput.files);
+      fileInput.value = '';
+
+      // Show upload tracker
+      showUploadTracker();
+
+      // Start all uploads
+      for (const file of files) {
+        uploadSingleFile(file, duration);
+      }
+    }
+
+    // Upload a single file with progress tracking
+    function uploadSingleFile(file, duration) {
+      const uploadId = ++uploadIdCounter;
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('duration', duration);
+
+      // Add to tracker UI
+      addUploadItem(uploadId, file.name, file.size);
+
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          updateUploadProgress(uploadId, percent, e.loaded, e.total);
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300 && !data.error) {
+            completeUpload(uploadId, true);
+            fetchStatus();
+          } else {
+            completeUpload(uploadId, false, data.error || 'Upload failed');
+          }
+        } catch (e) {
+          completeUpload(uploadId, false, 'Invalid response');
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        completeUpload(uploadId, false, 'Network error');
+      });
+
+      xhr.addEventListener('abort', () => {
+        completeUpload(uploadId, false, 'Cancelled');
+      });
+
+      xhr.open('POST', `${API_BASE}/tv/upload`);
+      xhr.send(formData);
+
+      // Store for potential cancellation
+      activeUploads.set(uploadId, xhr);
+    }
+
+    // Upload tracker UI functions
+    function showUploadTracker() {
+      document.getElementById('upload-tracker').classList.add('visible');
+    }
+
+    function hideUploadTracker() {
+      document.getElementById('upload-tracker').classList.remove('visible');
+      // Clear completed uploads from list
+      const list = document.getElementById('upload-tracker-list');
+      list.querySelectorAll('.upload-item.complete, .upload-item.error').forEach(el => el.remove());
+    }
+
+    function addUploadItem(id, name, size) {
+      const list = document.getElementById('upload-tracker-list');
+      const sizeStr = formatFileSize(size);
+
+      const item = document.createElement('div');
+      item.className = 'upload-item';
+      item.id = `upload-item-${id}`;
+      item.innerHTML = `
+        <div class="upload-item-name" title="${name}">${name}</div>
+        <div class="upload-item-progress">
+          <div class="upload-item-progress-bar" id="upload-bar-${id}" style="width: 0%"></div>
+        </div>
+        <div class="upload-item-status" id="upload-status-${id}">
+          <span>0% of ${sizeStr}</span>
+          <span>Uploading...</span>
+        </div>
+      `;
+      list.appendChild(item);
+    }
+
+    function updateUploadProgress(id, percent, loaded, total) {
+      const bar = document.getElementById(`upload-bar-${id}`);
+      const status = document.getElementById(`upload-status-${id}`);
+      if (bar) bar.style.width = `${percent}%`;
+      if (status) {
+        status.innerHTML = `
+          <span>${percent}% of ${formatFileSize(total)}</span>
+          <span>${formatFileSize(loaded)} uploaded</span>
+        `;
+      }
+    }
+
+    function completeUpload(id, success, errorMsg) {
+      const item = document.getElementById(`upload-item-${id}`);
+      const bar = document.getElementById(`upload-bar-${id}`);
+      const status = document.getElementById(`upload-status-${id}`);
+
+      activeUploads.delete(id);
+
+      if (item) {
+        item.classList.add(success ? 'complete' : 'error');
+      }
+      if (bar) {
+        bar.style.width = '100%';
+        bar.classList.add(success ? 'complete' : 'error');
+      }
+      if (status) {
+        status.className = `upload-item-status ${success ? 'complete' : 'error'}`;
+        status.innerHTML = success
+          ? '<span>Complete</span><span>Added to playlist</span>'
+          : `<span>Failed</span><span>${errorMsg || 'Unknown error'}</span>`;
+      }
+
+      // Auto-hide tracker if all uploads complete
+      setTimeout(() => {
+        if (activeUploads.size === 0) {
+          const hasErrors = document.querySelectorAll('.upload-item.error').length > 0;
+          if (!hasErrors) {
+            hideUploadTracker();
+          }
+        }
+      }, 2000);
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    // Remove item
+    async function removeItem(id) {
+      try {
+        await fetch(`${API_BASE}/tv/playlist/${id}`, { method: 'DELETE' });
+        fetchStatus();
+      } catch (err) {
+        alert('Failed to remove item: ' + err.message);
+      }
+    }
+
+    // Clear playlist
+    async function clearPlaylist() {
+      if (!confirm('Clear all items from playlist?')) return;
+
+      try {
+        await fetch(`${API_BASE}/tv/playlist/clear`, { method: 'POST' });
+        fetchStatus();
+      } catch (err) {
+        alert('Failed to clear playlist: ' + err.message);
+      }
+    }
+
+    // Tab switching
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+      document.getElementById(`tab-${tab}`).classList.add('active');
+    }
+
+    // Show/hide duration based on type
+    document.getElementById('add-type').addEventListener('change', (e) => {
+      document.getElementById('duration-row').style.display =
+        e.target.value === 'image' ? 'flex' : 'none';
+    });
+
+    // Fetch viewport info
+    async function fetchViewport() {
+      try {
+        const res = await fetch(`${API_BASE}/tv/status`);
+        const data = await res.json();
+        if (data.viewport) {
+          document.getElementById('viewport-pos').textContent =
+            `${data.viewport.x}, ${data.viewport.y}`;
+          document.getElementById('viewport-size').textContent =
+            `${data.viewport.width} × ${data.viewport.height}`;
+          document.getElementById('viewport-preview').textContent =
+            `${data.viewport.width} × ${data.viewport.height}`;
+        }
+      } catch (err) {
+        console.error('Failed to fetch viewport:', err);
+      }
+    }
+
+    // ============== Audio Sync & Volume Control ==============
+
+    // Sync audio playback with current TV state
+    function syncAudio(status, prevStatus) {
+      const audioIndicator = document.getElementById('audio-indicator');
+      const audioStatusEl = document.getElementById('audio-status');
+      const currentItem = status.currentItem;
+
+      // Check if we need to change the audio source
+      const itemChanged = currentItem?.id !== currentAudioItemId;
+      const stateChanged = prevStatus?.state !== status.state;
+      const indexChanged = prevStatus?.currentIndex !== status.currentIndex;
+
+      // Find the current item in the playlist to get audioPath
+      const playlistItem = currentPlaylist.find(p => p.id === currentItem?.id);
+      const audioPath = playlistItem?.audioPath;
+
+      // Stop audio if stopped, no current item, or no audio
+      if (status.state === 'stopped' || !currentItem || !audioPath) {
+        if (!tvAudio.paused) {
+          tvAudio.pause();
+          tvAudio.currentTime = 0;
+        }
+        currentAudioItemId = null;
+        audioIndicator.classList.remove('active');
+        audioStatusEl.textContent = audioPath ? 'Audio paused' : 'No audio playing';
+        return;
+      }
+
+      // Handle item change - load new audio
+      if (itemChanged || indexChanged) {
+        const audioFilename = audioPath.split('/').pop();
+        const audioUrl = `${API_BASE}/tv/audio/${audioFilename}`;
+
+        currentAudioItemId = currentItem.id;
+        tvAudio.src = audioUrl;
+        tvAudio.load();
+
+        // Seek to approximate position based on frame index
+        if (status.frameIndex > 0 && currentItem.frameCount > 0) {
+          const progress = status.frameIndex / currentItem.frameCount;
+          tvAudio.currentTime = (currentItem.duration || 10) * progress;
+        }
+      }
+
+      // Handle play/pause state
+      if (status.state === 'playing') {
+        if (tvAudio.paused && tvAudio.src) {
+          tvAudio.play().catch(e => console.log('Audio play blocked:', e.message));
+        }
+        audioIndicator.classList.add('active');
+        audioStatusEl.textContent = 'Playing audio';
+      } else if (status.state === 'paused') {
+        if (!tvAudio.paused) {
+          tvAudio.pause();
+        }
+        audioIndicator.classList.remove('active');
+        audioStatusEl.textContent = 'Audio paused';
+      }
+    }
+
+    // Set volume (0-100)
+    function setVolume(value) {
+      const volume = parseInt(value);
+      savedVolume = volume;
+      tvAudio.volume = volume / 100;
+      document.getElementById('volume-value').textContent = `${volume}%`;
+
+      // Update icon
+      updateVolumeIcon(volume);
+
+      // Also update server volume (fire and forget)
+      fetch(`${API_BASE}/tv/volume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume: volume / 100 })
+      }).catch(() => {});
+    }
+
+    // Toggle mute
+    function toggleMute() {
+      const slider = document.getElementById('volume-slider');
+      isMuted = !isMuted;
+
+      if (isMuted) {
+        tvAudio.volume = 0;
+        slider.value = 0;
+        document.getElementById('volume-value').textContent = '0%';
+        updateVolumeIcon(0);
+      } else {
+        tvAudio.volume = savedVolume / 100;
+        slider.value = savedVolume;
+        document.getElementById('volume-value').textContent = `${savedVolume}%`;
+        updateVolumeIcon(savedVolume);
+      }
+    }
+
+    // Update volume icon based on level
+    function updateVolumeIcon(volume) {
+      const icon = document.getElementById('volume-icon');
+      if (volume === 0) {
+        icon.textContent = '🔇';
+      } else if (volume < 30) {
+        icon.textContent = '🔈';
+      } else if (volume < 70) {
+        icon.textContent = '🔉';
+      } else {
+        icon.textContent = '🔊';
+      }
+    }
+
+    // Fetch initial volume from server
+    async function fetchVolume() {
+      try {
+        const res = await fetch(`${API_BASE}/tv/volume`);
+        const data = await res.json();
+        if (typeof data.volume === 'number') {
+          const volume = Math.round(data.volume * 100);
+          savedVolume = volume;
+          tvAudio.volume = data.volume;
+          document.getElementById('volume-slider').value = volume;
+          document.getElementById('volume-value').textContent = `${volume}%`;
+          updateVolumeIcon(volume);
+        }
+      } catch (err) {
+        console.error('Failed to fetch volume:', err);
+      }
+    }
+
+    // Handle audio ended event - loop if hold mode
+    tvAudio.addEventListener('ended', () => {
+      if (currentStatus?.hold) {
+        tvAudio.currentTime = 0;
+        tvAudio.play().catch(() => {});
+      }
+    });
+
+    // ============== End Audio Sync ==============
+
+    // Initial load
+    fetchStatus();
+    fetchViewport();
+    fetchVolume();
+
+    // Auto-refresh every 2 seconds
+    refreshInterval = setInterval(fetchStatus, 2000);
+  </script>
+</body>
+</html>
