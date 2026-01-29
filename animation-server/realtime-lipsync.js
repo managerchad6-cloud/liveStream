@@ -5,11 +5,12 @@ class RealtimeLipSync {
   constructor(sampleRate = 16000, fps = 30) {
     this.sampleRate = sampleRate;
     this.fps = fps;
-    this.samplesPerFrame = Math.floor(sampleRate / fps); // ~533 samples at 16kHz/30fps
+    this.samplesPerFrame = Math.floor(sampleRate / fps); // ~1066 samples at 16kHz/15fps
 
     // Sub-frame analysis for faster phoneme detection
-    this.analysisMultiplier = 3; // Analyze 3x per video frame (90 Hz effective)
+    this.analysisMultiplier = 6; // Analyze 6x per video frame for quicker phoneme changes
     this.samplesPerAnalysis = Math.floor(this.samplesPerFrame / this.analysisMultiplier);
+    this.analysisHop = Math.max(1, Math.floor(this.samplesPerAnalysis / 2)); // 50% overlap
 
     // Thresholds (tune these based on your audio)
     this.silenceThreshold = 0.015;
@@ -21,7 +22,10 @@ class RealtimeLipSync {
     // Reduced smoothing for faster response
     this.lastPhoneme = 'A';
     this.phonemeHoldFrames = 0;
-    this.minHoldFrames = 1; // Reduced from 2 to 1 for faster transitions
+    this.minHoldFrames = 1; // Slightly more persistence to reduce jitter
+    this.fricativeHoldFrames = 2;
+    this.fricativeHoldCounter = 0;
+    this.fricativeHoldCounter = 0;
 
     // History for advanced analysis
     this.energyHistory = [];
@@ -45,10 +49,9 @@ class RealtimeLipSync {
     // Sub-frame analysis: analyze multiple smaller windows
     // and pick the most significant (most open) phoneme
     let bestPhoneme = 'A';
-    let bestPriority = 0;
+    let bestScore = 0;
 
-    for (let i = 0; i < this.analysisMultiplier; i++) {
-      const start = i * this.samplesPerAnalysis;
+    for (let start = 0; start < samples.length; start += this.analysisHop) {
       const end = Math.min(start + this.samplesPerAnalysis, samples.length);
 
       if (end <= start) continue;
@@ -62,14 +65,19 @@ class RealtimeLipSync {
 
       // Track energy history
       this.updateEnergyHistory(rms);
+      const avgEnergy = this.getAverageEnergy();
 
       // Classify phoneme
-      const phoneme = this.classifyPhoneme(rms, zcr, peak);
+      const phoneme = this.classifyPhoneme(rms, zcr, peak, avgEnergy);
       const priority = this.phonemePriority[phoneme] || 0;
+      const energyScore = this.highEnergyThreshold > 0
+        ? Math.min(1, rms / this.highEnergyThreshold)
+        : 0;
+      const score = priority + energyScore;
 
       // Keep the most "open" phoneme from all sub-chunks
-      if (priority > bestPriority) {
-        bestPriority = priority;
+      if (score > bestScore) {
+        bestScore = score;
         bestPhoneme = phoneme;
       }
     }
@@ -161,30 +169,43 @@ class RealtimeLipSync {
    * - Using C for sustained medium-high energy
    * - Using D sparingly for peaks only
    */
-  classifyPhoneme(rms, zcr, peak) {
+  classifyPhoneme(rms, zcr, peak, avgEnergy) {
+    const silence = avgEnergy > 0 ? Math.min(this.silenceThreshold, avgEnergy * 0.3) : this.silenceThreshold;
+    const low = avgEnergy > 0 ? Math.min(this.lowEnergyThreshold, avgEnergy * 0.7) : this.lowEnergyThreshold;
+    const medium = avgEnergy > 0 ? Math.min(this.mediumEnergyThreshold, avgEnergy * 1.1) : this.mediumEnergyThreshold;
+    const high = avgEnergy > 0 ? Math.min(this.highEnergyThreshold, avgEnergy * 1.4) : this.highEnergyThreshold;
+
     // Silence -> closed mouth
-    if (rms < this.silenceThreshold) {
+    if (rms < silence) {
+      if (peak > silence * 3) {
+        return 'B';
+      }
       return 'A';
     }
 
-    // Fricatives (s, f, sh, th) - high ZCR, any energy level
-    // These have a "hissy" quality with lots of zero crossings
-    if (zcr > this.fricativeZcrThreshold) {
+    // Very low energy: avoid misclassifying as fricatives
+    if (rms < low) {
+      return 'B';
+    }
+
+    // Fricatives (s, f, sh, th) - high ZCR with enough energy
+    // Require a minimum RMS to avoid detecting gaps as hiss
+    if (zcr > this.fricativeZcrThreshold && rms > medium * 0.7) {
       return 'F'; // Upper teeth visible
     }
 
     // Very high energy = wide open (D) - use sparingly
-    if (rms > this.highEnergyThreshold * 1.3) {
+    if (rms > high * 1.3) {
       return 'D';
     }
 
     // High energy with low ZCR = clear vowel
-    if (rms > this.highEnergyThreshold && zcr < 0.15) {
+    if (rms > high && zcr < 0.15) {
       return 'C'; // Open with teeth (like Rhubarb's common choice)
     }
 
     // Medium-high energy = partial open
-    if (rms > this.mediumEnergyThreshold) {
+    if (rms > medium) {
       // Slightly higher ZCR suggests front vowels (E, I)
       if (zcr > 0.12) {
         return 'C';
@@ -194,12 +215,7 @@ class RealtimeLipSync {
     }
 
     // Medium energy = B (most common in speech)
-    if (rms > this.lowEnergyThreshold) {
-      return 'B';
-    }
-
-    // Low but audible energy = slightly open
-    if (rms > this.silenceThreshold) {
+    if (rms > low) {
       return 'B';
     }
 
@@ -210,6 +226,20 @@ class RealtimeLipSync {
    * Smooth phoneme transitions to prevent jitter
    */
   applySmoothing(newPhoneme) {
+    if (this.lastPhoneme === 'F' && newPhoneme !== 'F') {
+      if (this.fricativeHoldCounter < this.fricativeHoldFrames) {
+        this.fricativeHoldCounter++;
+        return this.lastPhoneme;
+      }
+    }
+
+    if (newPhoneme === 'F') {
+      this.fricativeHoldCounter = 0;
+    } else if (this.lastPhoneme !== 'F') {
+      this.fricativeHoldCounter = 0;
+    }
+
+
     // If same phoneme, reset hold counter
     if (newPhoneme === this.lastPhoneme) {
       this.phonemeHoldFrames = 0;
