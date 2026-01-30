@@ -213,6 +213,11 @@
           <div class="value" id="flicker-opacity-value">100%</div>
         </div>
       </div>
+      <div class="slider-row" style="margin-bottom:10px;">
+        <span style="min-width:110px;color:#94a3b8;">Lights Opacity</span>
+        <input type="range" id="lights-opacity" min="0" max="100" step="1" value="100">
+        <div class="value" id="lights-opacity-value">100%</div>
+      </div>
       <div class="row" style="margin:0;">
         <select id="lights-mode">
           <option value="on">Lights On</option>
@@ -309,6 +314,8 @@
     const flickerEnabled = document.getElementById('flicker-enabled');
     const flickerOpacity = document.getElementById('flicker-opacity');
     const flickerOpacityValue = document.getElementById('flicker-opacity-value');
+    const lightsOpacity = document.getElementById('lights-opacity');
+    const lightsOpacityValue = document.getElementById('lights-opacity-value');
     const lightsMode = document.getElementById('lights-mode');
     const emissionBgBlend = document.getElementById('emission-bg-blend');
     const emissionMidBlend = document.getElementById('emission-mid-blend');
@@ -400,6 +407,14 @@
       }).catch(() => {});
     }
 
+    function sendLightsOpacity(value) {
+      fetch(`${API_BASE}/lighting/lights-opacity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opacity: value / 100 })
+      }).catch(() => {});
+    }
+
     function sendEmissionLayerBlend(name, blend) {
       fetch(`${API_BASE}/lighting/emission-layer-blend`, {
         method: 'POST',
@@ -439,6 +454,16 @@
       const value = parseInt(flickerOpacity.value, 10) || 0;
       flickerOpacityValue.textContent = `${value}%`;
       sendFlicker();
+    });
+
+    lightsOpacity.addEventListener('input', () => {
+      const value = parseInt(lightsOpacity.value, 10) || 0;
+      lightsOpacityValue.textContent = `${value}%`;
+      if (flickerEnabled.checked) {
+        flickerEnabled.checked = false;
+        sendFlicker();
+      }
+      sendLightsOpacity(value);
     });
 
     lightsMode.addEventListener('change', () => {
@@ -489,6 +514,11 @@
         }
         if (data.lights && data.lights.mode) {
           lightsMode.value = data.lights.mode;
+        }
+        if (data.lights && typeof data.lights.opacity === 'number') {
+          const pct = Math.round(data.lights.opacity * 100);
+          lightsOpacity.value = pct;
+          lightsOpacityValue.textContent = `${pct}%`;
         }
         if (data.emissionLayerBlends) {
           if (data.emissionLayerBlends['LED light Emission (Background)']) {

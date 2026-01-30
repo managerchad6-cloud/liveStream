@@ -114,37 +114,25 @@ function stopRainbow() {
 function stopFlicker() {
   const flicker = lightingState.flicker;
   if (flicker.timer) {
-    clearTimeout(flicker.timer);
+    clearInterval(flicker.timer);
     flicker.timer = null;
   }
+  flicker.startTime = null;
 }
 
-function scheduleFlicker() {
+function updateFlickerForFrame() {
   const flicker = lightingState.flicker;
   if (!flicker.enabled) return;
   const baseOpacity = Math.max(0, Math.min(1, Number(flicker.opacity) || 0));
-  const roll = Math.random();
-  let target = baseOpacity;
-  let duration = 60 + Math.random() * 140;
-  if (roll < 0.08) {
-    target = Math.min(1, baseOpacity + Math.random() * (1 - baseOpacity));
-    duration = 40 + Math.random() * 80;
-  } else if (roll < 0.35) {
-    target = baseOpacity * (0.2 + Math.random() * 0.5);
-    duration = 50 + Math.random() * 100;
-  } else {
-    target = baseOpacity * (0.7 + Math.random() * 0.3);
-    duration = 80 + Math.random() * 160;
+  if (!flicker.startTime) {
+    flicker.startTime = Date.now();
   }
-
-  setLightsOnOpacity(target);
-
-  flicker.timer = setTimeout(() => {
-    setLightsOnOpacity(baseOpacity);
-    if (!flicker.enabled) return;
-    const gap = 80 + Math.random() * 240;
-    flicker.timer = setTimeout(scheduleFlicker, gap);
-  }, duration);
+  const periodMs = 2000;
+  const elapsed = Date.now() - flicker.startTime;
+  const phase = (elapsed % periodMs) / periodMs;
+  const value = (Math.sin(phase * Math.PI * 2) + 1) / 2;
+  setLightsMode('on');
+  setLightsOnOpacity(baseOpacity * value);
 }
 
 app.get('/lighting', (req, res) => {
@@ -211,7 +199,8 @@ app.post('/lighting/flicker', (req, res) => {
   stopFlicker();
   setLightsOnOpacity(opacity);
   if (enabled) {
-    scheduleFlicker();
+    setLightsMode('on');
+    lightingState.flicker.startTime = Date.now();
   }
   res.json({ enabled, opacity });
 });
@@ -220,6 +209,13 @@ app.post('/lighting/lights', (req, res) => {
   const mode = req.body?.mode;
   const value = setLightsMode(mode);
   res.json({ mode: value });
+});
+
+app.post('/lighting/lights-opacity', (req, res) => {
+  const opacity = Math.max(0, Math.min(1, Number(req.body?.opacity) || 0));
+  setLightsMode('on');
+  const value = setLightsOnOpacity(opacity);
+  res.json({ opacity: value });
 });
 
 // Global state
@@ -315,6 +311,7 @@ syncedPlayback.onComplete = handleAudioComplete;
 // audioProgress is provided by ContinuousStreamManager: { playing, frame, total }
 async function renderFrame(frame, audioProgress = null) {
   frameCount = frame;
+  updateFlickerForFrame();
 
   let speakingCharacter = null;
   let currentPhoneme = 'A';
