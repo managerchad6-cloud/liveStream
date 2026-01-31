@@ -17,7 +17,7 @@ class ContinuousStreamManager {
     this.frameCount = 0;
     this.lastFrameTime = 0;
     this.frameQueue = [];
-    this.maxQueueSize = 10;
+    this.maxQueueSize = 4;
     this.liveDir = null;
 
     // Audio configuration
@@ -37,6 +37,9 @@ class ContinuousStreamManager {
 
     // Silence buffer (pre-generated)
     this.silenceBuffer = Buffer.alloc(this.audioBytesPerFrame, 0);
+
+    // Last frame for repeat on queue underrun (prevents FFmpeg starvation)
+    this.lastVideoFrame = null;
 
     // Callbacks
     this.onAudioComplete = null;
@@ -107,10 +110,10 @@ class ContinuousStreamManager {
       // Force A/V sync
       '-async', '1',
       '-vsync', 'cfr',
-      // Output - shorter segments to reduce live latency
+      // Output - short segments for low latency
       '-f', 'hls',
-      '-hls_time', '2',             // 2 second segments
-      '-hls_list_size', '4',        // Keep 4 segments
+      '-hls_time', '1',             // 1 second segments (was 2)
+      '-hls_list_size', '6',        // Keep 6 segments
       '-hls_flags', 'delete_segments+append_list+independent_segments',
       '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', segmentPath,
@@ -150,31 +153,15 @@ class ContinuousStreamManager {
 
   // Load audio for playback (called by server)
   loadAudio(samples, sampleRate, character, duration) {
-    // Store audio data but don't start yet
-    this.pendingAudio = { samples, sampleRate, character, duration };
+    this.frameQueue = []; // Clear stale frames
+    this.audioSamples = samples;
+    this.audioSampleRate = sampleRate;
+    this.currentCharacter = character;
+    this.audioFrameIndex = 0;
+    this.audioTotalFrames = Math.ceil(duration * this.fps);
+    this.isPlayingAudio = true;
 
-    // Minimal delay - just enough for frame queue to have content
-    const bufferDelay = 50; // 50ms
-
-    console.log(`[ContinuousStreamManager] Audio queued: ${duration.toFixed(2)}s, starting in ${bufferDelay}ms...`);
-
-    setTimeout(() => {
-      if (!this.pendingAudio) return; // Was cancelled
-
-      const { samples, sampleRate, character, duration } = this.pendingAudio;
-      this.pendingAudio = null;
-
-      // Now start the audio
-      this.frameQueue = []; // Clear stale frames
-      this.audioSamples = samples;
-      this.audioSampleRate = sampleRate;
-      this.currentCharacter = character;
-      this.audioFrameIndex = 0;
-      this.audioTotalFrames = Math.ceil(duration * this.fps);
-      this.isPlayingAudio = true;
-
-      console.log(`[ContinuousStreamManager] Audio started: ${duration.toFixed(2)}s, ${this.audioTotalFrames} frames`);
-    }, bufferDelay);
+    console.log(`[ContinuousStreamManager] Audio started: ${duration.toFixed(2)}s, ${this.audioTotalFrames} frames`);
   }
 
   // Get audio chunk for current frame (resampled to output rate)
@@ -272,24 +259,33 @@ class ContinuousStreamManager {
       const now = Date.now();
       const elapsed = now - this.lastFrameTime;
 
-      if (elapsed >= this.frameInterval) {
-        if (this.frameQueue.length > 0 && this.ffmpegProcess) {
-          const frame = this.frameQueue.shift();
+      if (elapsed >= this.frameInterval && this.ffmpegProcess) {
+        let videoData = null;
+        let audioData = this.silenceBuffer;
 
-          // Write video frame
+        if (this.frameQueue.length > 0) {
+          const frame = this.frameQueue.shift();
+          videoData = frame.video;
+          audioData = frame.audio;
+          this.lastVideoFrame = videoData; // Save for underrun repeat
+        } else if (this.lastVideoFrame) {
+          // Queue underrun: repeat last frame + silence to prevent FFmpeg starvation
+          videoData = this.lastVideoFrame;
+        }
+
+        if (videoData) {
           if (this.videoStdin && this.videoStdin.writable) {
             try {
-              this.videoStdin.write(frame.video);
+              this.videoStdin.write(videoData);
             } catch (e) {}
           }
-
-          // Write audio samples
           if (this.audioStdin && this.audioStdin.writable) {
             try {
-              this.audioStdin.write(frame.audio);
+              this.audioStdin.write(audioData);
             } catch (e) {}
           }
         }
+
         this.lastFrameTime = now - (elapsed % this.frameInterval);
       }
 

@@ -20,11 +20,11 @@ tempSlider.addEventListener('input', () => {
 
 function getDelayConfig(level) {
   const table = {
-    1: { lowLatencyMode: true, liveSyncDuration: 1.5, liveMaxLatencyDuration: 4, maxBufferLength: 4, maxMaxBufferLength: 6, backBufferLength: 2 },
-    2: { lowLatencyMode: true, liveSyncDuration: 2.5, liveMaxLatencyDuration: 6, maxBufferLength: 6, maxMaxBufferLength: 10, backBufferLength: 3 },
-    3: { lowLatencyMode: false, liveSyncDuration: 4, liveMaxLatencyDuration: 10, maxBufferLength: 10, maxMaxBufferLength: 16, backBufferLength: 5 },
-    4: { lowLatencyMode: false, liveSyncDuration: 7, liveMaxLatencyDuration: 16, maxBufferLength: 16, maxMaxBufferLength: 24, backBufferLength: 8 },
-    5: { lowLatencyMode: false, liveSyncDuration: 10, liveMaxLatencyDuration: 24, maxBufferLength: 24, maxMaxBufferLength: 36, backBufferLength: 12 }
+    1: { lowLatencyMode: true, liveSyncDuration: 1, liveMaxLatencyDuration: 3, maxBufferLength: 3, maxMaxBufferLength: 5, backBufferLength: 1 },
+    2: { lowLatencyMode: true, liveSyncDuration: 2, liveMaxLatencyDuration: 5, maxBufferLength: 5, maxMaxBufferLength: 8, backBufferLength: 2 },
+    3: { lowLatencyMode: true, liveSyncDuration: 3, liveMaxLatencyDuration: 8, maxBufferLength: 8, maxMaxBufferLength: 14, backBufferLength: 4 },
+    4: { lowLatencyMode: false, liveSyncDuration: 5, liveMaxLatencyDuration: 12, maxBufferLength: 12, maxMaxBufferLength: 20, backBufferLength: 6 },
+    5: { lowLatencyMode: false, liveSyncDuration: 8, liveMaxLatencyDuration: 20, maxBufferLength: 20, maxMaxBufferLength: 30, backBufferLength: 10 }
   };
   return table[level] || table[3];
 }
@@ -381,9 +381,7 @@ document.addEventListener('click', () => {
 
 // Connect to live stream on page load
 window.addEventListener('load', () => {
-  // Small delay to ensure HLS.js is loaded
-  setTimeout(connectToLiveStream, 500);
-  // Remind user to enable audio
+  connectToLiveStream();
   addMessage('Click anywhere to enable audio', 'status');
 });
 

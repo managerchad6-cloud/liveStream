@@ -456,15 +456,14 @@ async function compositeFrame(state) {
   // Create cache key from state (TV content is NOT cached - changes every frame)
   const cacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
 
-  let baseBuffer = frameCache[cacheKey];
+  // Character frame cache stores PNG for fast re-compositing (not JPEG)
+  let charBuffer = frameCache[cacheKey];
 
-  if (!baseBuffer) {
+  if (!charBuffer) {
     const m = loadManifest();
 
-    // Start with static base
-    const compositeOps = [];
-
     // Only add dynamic layers (mouths and blinks)
+    const compositeOps = [];
     const sortedLayers = [...m.layers]
       .filter(l => l.type === 'mouth' || l.type === 'blink')
       .sort((a, b) => a.zIndex - b.zIndex);
@@ -500,99 +499,83 @@ async function compositeFrame(state) {
       }
     }
 
-    // Composite: static base + dynamic layers
-    baseBuffer = await sharp(staticBaseBuffer)
+    // Composite: static base + dynamic layers → cache as PNG (fast to re-decode)
+    charBuffer = await sharp(staticBaseBuffer)
       .composite(compositeOps)
-      .jpeg({ quality: JPEG_QUALITY })
+      .png({ compressionLevel: 1 })
       .toBuffer();
 
     // Cache the result (limit cache size to prevent memory bloat)
     if (Object.keys(frameCache).length < 100) {
-      frameCache[cacheKey] = baseBuffer;
+      frameCache[cacheKey] = charBuffer;
     }
   }
 
-  // If we have TV content, composite it onto the frame
-  // TV content changes every frame so we can't cache this
-  let frameWithTV = baseBuffer;
+  // Build ALL remaining overlays in a single array — ONE Sharp pipeline
+  const overlayOps = [];
+
+  // TV content (behind reflection, emission, caption, lights)
   if (currentTVFrame && TV_VIEWPORT) {
-    const tvOps = [{
+    overlayOps.push({
       input: currentTVFrame,
       left: TV_VIEWPORT.x,
       top: TV_VIEWPORT.y,
       blend: 'over'
-    }];
+    });
 
-    // Add TV reflection on top of TV content
     if (tvReflectionBuffer) {
-      tvOps.push({
+      overlayOps.push({
         input: tvReflectionBuffer,
         left: tvReflectionPos.x,
         top: tvReflectionPos.y,
         blend: 'over'
       });
     }
-
-    frameWithTV = await sharp(baseBuffer)
-      .composite(tvOps)
-      .jpeg({ quality: JPEG_QUALITY })
-      .toBuffer();
   }
 
-  // Overlay foreground LED emission above everything (including mouths/blinks)
+  // Foreground LED emission
   if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
-    frameWithTV = await sharp(frameWithTV)
-      .composite([{
-        input: foregroundEmissionBuffer,
-        left: foregroundEmissionPos.x,
-        top: foregroundEmissionPos.y,
-        blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light',
-        opacity: 1
-      }])
+    overlayOps.push({
+      input: foregroundEmissionBuffer,
+      left: foregroundEmissionPos.x,
+      top: foregroundEmissionPos.y,
+      blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light'
+    });
+  }
+
+  // Caption text
+  const captionSvg = caption ? buildCaptionSvg(caption) : null;
+  if (captionSvg) {
+    overlayOps.push({
+      input: captionSvg,
+      left: 0,
+      top: 0,
+      blend: 'over'
+    });
+  }
+
+  // Lights overlay
+  if (lightsMode === 'on' && lightsOnBuffer) {
+    overlayOps.push({
+      input: lightsOnBuffer,
+      left: lightsOnPos.x,
+      top: lightsOnPos.y,
+      blend: 'over'
+    });
+  }
+
+  // Single pipeline: character frame + all overlays → JPEG output
+  if (overlayOps.length > 0) {
+    return sharp(charBuffer)
+      .composite(overlayOps)
       .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
   }
 
-  if (!caption) {
-    if (lightsMode === 'on' && lightsOnBuffer) {
-      return sharp(frameWithTV)
-        .composite([{
-          input: lightsOnBuffer,
-          left: lightsOnPos.x,
-          top: lightsOnPos.y,
-          blend: 'over',
-          opacity: lightsOnOpacity
-        }])
-        .jpeg({ quality: JPEG_QUALITY })
-        .toBuffer();
-    }
-    return frameWithTV;
-  }
-
-  const captionSvg = buildCaptionSvg(caption);
-  if (!captionSvg) {
-    return frameWithTV;
-  }
-
-  const withCaption = await sharp(frameWithTV)
-    .composite([{ input: captionSvg, left: 0, top: 0, blend: 'over' }])
+  // No overlays — just encode cached PNG to JPEG
+  return sharp(charBuffer)
     .jpeg({ quality: JPEG_QUALITY })
     .toBuffer();
-
-  if (lightsMode === 'on' && lightsOnBuffer) {
-    return sharp(withCaption)
-      .composite([{
-        input: lightsOnBuffer,
-        left: lightsOnPos.x,
-        top: lightsOnPos.y,
-        blend: 'over',
-        opacity: lightsOnOpacity
-      }])
-      .jpeg({ quality: JPEG_QUALITY })
-      .toBuffer();
-  }
-
-  return withCaption;
 }
 
 function clearCache() {
