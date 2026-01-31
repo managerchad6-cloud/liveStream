@@ -290,10 +290,11 @@ app.post('/lighting/lights-opacity', (req, res) => {
 
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
-const syncedPlayback = new SyncedPlayback(16000, 15);  // New: real-time mode
+const STREAM_FPS = 10;  // 10fps: reduces FFmpeg CPU from ~58% to ~38% on 2-core VPS
+const syncedPlayback = new SyncedPlayback(16000, STREAM_FPS);
 const blinkControllers = {
-  chad: new BlinkController(15),
-  virgin: new BlinkController(15)
+  chad: new BlinkController(STREAM_FPS),
+  virgin: new BlinkController(STREAM_FPS)
 };
 let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
 let frameCount = 0;
@@ -897,7 +898,7 @@ async function start() {
   // Initialize TV content service with viewport dimensions from compositor
   const viewport = getTVViewport();
   if (viewport) {
-    tvService = new TVContentService(viewport.width, viewport.height, 15);
+    tvService = new TVContentService(viewport.width, viewport.height, STREAM_FPS);
     console.log(`[TV] Service initialized with viewport ${viewport.width}x${viewport.height}`);
   } else {
     console.warn('[TV] Service disabled - no viewport defined');
@@ -905,7 +906,7 @@ async function start() {
 
   // Start live stream
   if (STREAM_MODE === 'synced') {
-    streamManager = new ContinuousStreamManager(STREAMS_DIR, 15);
+    streamManager = new ContinuousStreamManager(STREAMS_DIR, STREAM_FPS);
     // Reset speaker when audio finishes
     streamManager.onAudioComplete = () => {
       console.log('[Server] Audio complete, resetting speaker');

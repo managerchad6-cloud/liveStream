@@ -93,12 +93,13 @@ class ContinuousStreamManager {
       '-ar', String(this.sampleRate),
       '-ac', String(this.channels),
       '-i', 'pipe:3',
-      // Video encoding - 720p at 15fps with frame caching
+      // Video encoding - 720p, low CPU usage for 2-core VPS
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
-      '-crf', '23',
+      '-crf', '28',
+      '-threads', '1',
       '-r', String(this.fps),
       '-g', String(this.fps),
       '-keyint_min', String(this.fps),
