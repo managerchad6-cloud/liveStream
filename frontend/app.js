@@ -20,11 +20,11 @@ tempSlider.addEventListener('input', () => {
 
 function getDelayConfig(level) {
   const table = {
-    1: { lowLatencyMode: true, liveSyncDuration: 2, liveMaxLatencyDuration: 6, maxBufferLength: 8, maxMaxBufferLength: 12, backBufferLength: 4 },
-    2: { lowLatencyMode: true, liveSyncDuration: 4, liveMaxLatencyDuration: 10, maxBufferLength: 12, maxMaxBufferLength: 18, backBufferLength: 6 },
-    3: { lowLatencyMode: false, liveSyncDuration: 8, liveMaxLatencyDuration: 20, maxBufferLength: 20, maxMaxBufferLength: 30, backBufferLength: 10 },
-    4: { lowLatencyMode: false, liveSyncDuration: 12, liveMaxLatencyDuration: 30, maxBufferLength: 30, maxMaxBufferLength: 45, backBufferLength: 15 },
-    5: { lowLatencyMode: false, liveSyncDuration: 16, liveMaxLatencyDuration: 45, maxBufferLength: 40, maxMaxBufferLength: 60, backBufferLength: 20 }
+    1: { lowLatencyMode: true, liveSyncDuration: 1.5, liveMaxLatencyDuration: 4, maxBufferLength: 4, maxMaxBufferLength: 6, backBufferLength: 2 },
+    2: { lowLatencyMode: true, liveSyncDuration: 2.5, liveMaxLatencyDuration: 6, maxBufferLength: 6, maxMaxBufferLength: 10, backBufferLength: 3 },
+    3: { lowLatencyMode: false, liveSyncDuration: 4, liveMaxLatencyDuration: 10, maxBufferLength: 10, maxMaxBufferLength: 16, backBufferLength: 5 },
+    4: { lowLatencyMode: false, liveSyncDuration: 7, liveMaxLatencyDuration: 16, maxBufferLength: 16, maxMaxBufferLength: 24, backBufferLength: 8 },
+    5: { lowLatencyMode: false, liveSyncDuration: 10, liveMaxLatencyDuration: 24, maxBufferLength: 24, maxMaxBufferLength: 36, backBufferLength: 12 }
   };
   return table[level] || table[3];
 }
@@ -99,6 +99,7 @@ function connectToLiveStream() {
       maxBufferLength: delayConfig.maxBufferLength,
       maxMaxBufferLength: delayConfig.maxMaxBufferLength,
       backBufferLength: delayConfig.backBufferLength,
+      maxLiveSyncPlaybackRate: 1.5,
       startLevel: -1,
       autoStartLoad: true,
       startFragPrefetch: true
@@ -116,16 +117,11 @@ function connectToLiveStream() {
       });
     });
 
-    hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
-      if (data.fatal) {
-        console.error('HLS fatal error:', data);
-        // Try to reconnect after a delay
-        setTimeout(connectToLiveStream, 3000);
-      }
-    });
+    attachLiveCatchup(hlsPlayer, characterStream);
   } else if (characterStream.canPlayType('application/vnd.apple.mpegurl')) {
     characterStream.src = streamUrl;
     characterStream.play().catch(e => console.warn('Autoplay blocked:', e));
+    attachLiveCatchup(null, characterStream);
   } else {
     addMessage('HLS not supported in this browser', 'error');
   }
@@ -137,6 +133,34 @@ function reconnectStream() {
     hlsPlayer = null;
   }
   connectToLiveStream();
+}
+
+function attachLiveCatchup(hls, video) {
+  const MAX_LATENCY = 8;
+  const JUMP_BACK = 2;
+
+  const maybeCatchUp = () => {
+    if (!video.duration || !Number.isFinite(video.duration)) return;
+    const latency = video.duration - video.currentTime;
+    if (latency > MAX_LATENCY) {
+      const target = Math.max(0, video.duration - JUMP_BACK);
+      video.currentTime = target;
+    }
+  };
+
+  if (hls) {
+    hls.on(Hls.Events.FRAG_CHANGED, maybeCatchUp);
+    hls.on(Hls.Events.LEVEL_UPDATED, maybeCatchUp);
+    hls.on(Hls.Events.ERROR, (event, data) => {
+      if (data.fatal) {
+        console.error('HLS fatal error:', data);
+        setTimeout(reconnectStream, 1500);
+      }
+    });
+  }
+
+  video.addEventListener('stalled', maybeCatchUp);
+  video.addEventListener('waiting', () => setTimeout(maybeCatchUp, 500));
 }
 
 // Play audio synchronized with video
@@ -154,11 +178,16 @@ function playAudio(audioUrl) {
   };
 }
 
+function isSlashCommand(text) {
+  return typeof text === 'string' && text.trim().startsWith('/') && text.trim().length > 1;
+}
+
 async function sendMessage() {
   const message = chatbox.value.trim();
   if (!message) return;
   const isRouterMode = modeSelect.value === 'router';
   const isAutoMode = modeSelect.value === 'auto';
+  const isCommand = isSlashCommand(message);
 
   if (!isRouterMode && !isAutoMode) {
     chatbox.disabled = true;
@@ -167,7 +196,35 @@ async function sendMessage() {
   chatbox.value = '';
 
   addMessage(message, 'user');
-  const statusMsg = addMessage('Generating response...');
+  const statusMsg = addMessage(isCommand ? 'Recording vote...' : 'Generating response...');
+
+  if (isCommand) {
+    try {
+      const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/commands` : '/api/commands';
+      const commandResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: message })
+      });
+      const data = await commandResponse.json().catch(() => ({}));
+      if (!commandResponse.ok) {
+        throw new Error(data.error || 'Failed to record command');
+      }
+      removeStatus(statusMsg);
+      addMessage(`Vote registered: ${data.command} (${data.count})`, 'status');
+    } catch (error) {
+      console.error('Error:', error);
+      removeStatus(statusMsg);
+      addMessage(`Error: ${error.message}`, 'error');
+    } finally {
+      if (!isRouterMode) {
+        chatbox.disabled = false;
+        submitBtn.disabled = false;
+      }
+      chatbox.focus();
+    }
+    return;
+  }
 
   if (isAutoMode) {
     try {

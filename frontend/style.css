@@ -94,6 +94,16 @@ h1 {
   font-size: 24px;
 }
 
+.leaderboard-link a {
+  color: #7bd3ff;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.leaderboard-link a:hover {
+  text-decoration: underline;
+}
+
 .controls {
   display: flex;
   flex-direction: column;

@@ -243,6 +243,10 @@
       messageHistory.scrollTop = messageHistory.scrollHeight;
     }
 
+    function isSlashCommand(text) {
+      return typeof text === 'string' && text.trim().startsWith('/') && text.trim().length > 1;
+    }
+
     async function sendMessage() {
       const message = chatbox.value.trim();
       
@@ -256,10 +260,32 @@
 
       // Display user message
       addMessage(message, true);
-      addMessage('Generating response...', false, true);
+      addMessage(isSlashCommand(message) ? 'Recording vote...' : 'Generating response...', false, true);
       chatbox.value = '';
 
       try {
+        if (isSlashCommand(message)) {
+          const response = await fetch('/api/commands', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ command: message }),
+          });
+
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to record command');
+          }
+
+          const statusEl = messageHistory.querySelector('.status-message');
+          if (statusEl) {
+            statusEl.remove();
+          }
+          addMessage(`Vote registered: ${data.command} (${data.count})`, false, true);
+          return;
+        }
+
         const response = await fetch('/chat', {
           method: 'POST',
           headers: {

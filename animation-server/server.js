@@ -67,6 +67,71 @@ const lightingState = {
   rainbow: { enabled: false, rpm: 1, timer: null, lastTick: 0, busy: false },
   flicker: { enabled: false, opacity: 1, timer: null }
 };
+const lightingQueue = {
+  hue: { inFlight: false, pending: null },
+  emissionOpacity: { inFlight: false, pending: null },
+  emissionBlend: { inFlight: false, pendingByName: Object.create(null) }
+};
+
+function startLightingQueue(type) {
+  if (type === 'hue') {
+    if (lightingQueue.hue.inFlight) return;
+    lightingQueue.hue.inFlight = true;
+    setImmediate(async () => {
+      try {
+        while (lightingQueue.hue.pending !== null) {
+          const next = lightingQueue.hue.pending;
+          lightingQueue.hue.pending = null;
+          await setLightingHue(next);
+        }
+      } catch (err) {
+        console.error('[Lighting] Hue update failed:', err.message);
+      } finally {
+        lightingQueue.hue.inFlight = false;
+      }
+    });
+    return;
+  }
+
+  if (type === 'emissionOpacity') {
+    if (lightingQueue.emissionOpacity.inFlight) return;
+    lightingQueue.emissionOpacity.inFlight = true;
+    setImmediate(async () => {
+      try {
+        while (lightingQueue.emissionOpacity.pending !== null) {
+          const next = lightingQueue.emissionOpacity.pending;
+          lightingQueue.emissionOpacity.pending = null;
+          await setEmissionOpacity(next);
+        }
+      } catch (err) {
+        console.error('[Lighting] Emission opacity update failed:', err.message);
+      } finally {
+        lightingQueue.emissionOpacity.inFlight = false;
+      }
+    });
+    return;
+  }
+
+  if (type === 'emissionBlend') {
+    if (lightingQueue.emissionBlend.inFlight) return;
+    lightingQueue.emissionBlend.inFlight = true;
+    setImmediate(async () => {
+      try {
+        while (Object.keys(lightingQueue.emissionBlend.pendingByName).length > 0) {
+          const pending = lightingQueue.emissionBlend.pendingByName;
+          lightingQueue.emissionBlend.pendingByName = Object.create(null);
+          for (const [name, blend] of Object.entries(pending)) {
+            await setEmissionLayerBlend(name, blend);
+          }
+        }
+      } catch (err) {
+        console.error('[Lighting] Emission blend update failed:', err.message);
+      } finally {
+        lightingQueue.emissionBlend.inFlight = false;
+      }
+    });
+  }
+}
 
 function wrapHue(value) {
   const wrapped = ((value + 180) % 360 + 360) % 360 - 180;
@@ -161,21 +226,26 @@ app.get('/lighting/status', (req, res) => {
 
 app.post('/lighting/hue', async (req, res) => {
   const hue = req.body?.hue;
-  const value = await setLightingHue(hue);
-  res.json({ hue: value });
+  lightingQueue.hue.pending = hue;
+  startLightingQueue('hue');
+  res.json({ queued: true, hue: getLightingHue() });
 });
 
 app.post('/lighting/emission-opacity', async (req, res) => {
   const opacity = req.body?.opacity;
-  const value = await setEmissionOpacity(opacity);
-  res.json({ opacity: value });
+  lightingQueue.emissionOpacity.pending = opacity;
+  startLightingQueue('emissionOpacity');
+  res.json({ queued: true, opacity: getEmissionOpacity() });
 });
 
 app.post('/lighting/emission-layer-blend', async (req, res) => {
   const name = req.body?.name;
   const blend = req.body?.blend;
-  const blends = await setEmissionLayerBlend(name, blend);
-  res.json({ blends });
+  if (typeof name === 'string' && typeof blend === 'string') {
+    lightingQueue.emissionBlend.pendingByName[name] = blend;
+  }
+  startLightingQueue('emissionBlend');
+  res.json({ queued: true, blends: getEmissionLayerBlend() });
 });
 
 app.post('/lighting/rainbow', (req, res) => {

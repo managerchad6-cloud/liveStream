@@ -97,7 +97,7 @@ class SyncedStreamManager {
       // Output
       '-f', 'hls',
       '-hls_time', '1',
-      '-hls_list_size', '10',
+      '-hls_list_size', '3',
       '-hls_flags', 'delete_segments+append_list',
       '-hls_segment_filename', segmentPath,
       outputPath
@@ -146,7 +146,7 @@ class SyncedStreamManager {
       // Output
       '-f', 'hls',
       '-hls_time', '1',
-      '-hls_list_size', '10',
+      '-hls_list_size', '3',
       '-hls_flags', 'delete_segments+append_list',
       '-hls_segment_filename', segmentPath,
       outputPath

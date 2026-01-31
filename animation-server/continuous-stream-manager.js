@@ -107,10 +107,10 @@ class ContinuousStreamManager {
       // Force A/V sync
       '-async', '1',
       '-vsync', 'cfr',
-      // Output - 2 second segments (stable real-time encoding)
+      // Output - shorter segments to reduce live latency
       '-f', 'hls',
-      '-hls_time', '4',             // 4 second segments (more stable buffering)
-      '-hls_list_size', '8',        // Keep 8 segments
+      '-hls_time', '2',             // 2 second segments
+      '-hls_list_size', '4',        // Keep 4 segments
       '-hls_flags', 'delete_segments+append_list+independent_segments',
       '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', segmentPath,

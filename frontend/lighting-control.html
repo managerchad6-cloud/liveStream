@@ -332,8 +332,10 @@
         hlsPlayer = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
-          liveSyncDuration: 2,
-          maxBufferLength: 6,
+          liveSyncDuration: 1.5,
+          liveMaxLatencyDuration: 6,
+          maxBufferLength: 4,
+          maxMaxBufferLength: 8,
           maxLiveSyncPlaybackRate: 1.5
         });
         hlsPlayer.loadSource(streamUrl);
@@ -343,17 +345,41 @@
             streamOverlay.style.display = 'flex';
           });
         });
-        hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            setTimeout(connectStream, 2000);
-          }
-        });
+        attachLiveCatchup(hlsPlayer, streamEl);
       } else if (streamEl.canPlayType('application/vnd.apple.mpegurl')) {
         streamEl.src = streamUrl;
         streamEl.play().catch(() => {
           streamOverlay.style.display = 'flex';
         });
+        attachLiveCatchup(null, streamEl);
       }
+    }
+
+    function attachLiveCatchup(hls, video) {
+      const MAX_LATENCY = 8;
+      const JUMP_BACK = 2;
+
+      const maybeCatchUp = () => {
+        if (!video.duration || !Number.isFinite(video.duration)) return;
+        const latency = video.duration - video.currentTime;
+        if (latency > MAX_LATENCY) {
+          const target = Math.max(0, video.duration - JUMP_BACK);
+          video.currentTime = target;
+        }
+      };
+
+      if (hls) {
+        hls.on(Hls.Events.FRAG_CHANGED, maybeCatchUp);
+        hls.on(Hls.Events.LEVEL_UPDATED, maybeCatchUp);
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            setTimeout(connectStream, 1500);
+          }
+        });
+      }
+
+      video.addEventListener('stalled', maybeCatchUp);
+      video.addEventListener('waiting', () => setTimeout(maybeCatchUp, 500));
     }
 
     let hueDebounce = null;
@@ -427,7 +453,7 @@
       const value = parseInt(e.target.value, 10) || 0;
       updateHueDisplay(value);
       if (hueDebounce) clearTimeout(hueDebounce);
-      hueDebounce = setTimeout(() => sendHue(value), 80);
+      hueDebounce = setTimeout(() => sendHue(value), 250);
     });
 
 
@@ -435,7 +461,7 @@
       const value = parseInt(e.target.value, 10) || 0;
       emissionOpacityValue.textContent = `${value}%`;
       if (opacityDebounce) clearTimeout(opacityDebounce);
-      opacityDebounce = setTimeout(() => sendOpacity(value), 80);
+      opacityDebounce = setTimeout(() => sendOpacity(value), 250);
     });
 
     rainbowEnabled.addEventListener('change', () => {
