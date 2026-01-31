@@ -242,10 +242,12 @@ class ContinuousStreamManager {
         } catch (err) {
           console.error('[ContinuousStreamManager] Render error:', err.message);
         }
-      }
 
-      if (this.isRunning) {
-        setImmediate(render);
+        // Frame produced — immediately try next one
+        if (this.isRunning) setImmediate(render);
+      } else {
+        // Queue full — back off to avoid CPU spin loop
+        if (this.isRunning) setTimeout(render, Math.max(1, this.frameInterval / 2));
       }
     };
 
