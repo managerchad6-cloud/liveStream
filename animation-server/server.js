@@ -23,8 +23,7 @@ const {
   setLightsMode,
   getLightsMode,
   setLightingHue,
-  getLightingHue,
-  getManifestDimensions
+  getLightingHue
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -291,7 +290,7 @@ app.post('/lighting/lights-opacity', (req, res) => {
 
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
-const STREAM_FPS = 10;  // 10fps: reduces FFmpeg CPU from ~58% to ~38% on 2-core VPS
+const STREAM_FPS = 15;
 const syncedPlayback = new SyncedPlayback(16000, STREAM_FPS);
 const blinkControllers = {
   chad: new BlinkController(STREAM_FPS),
@@ -907,8 +906,7 @@ async function start() {
 
   // Start live stream
   if (STREAM_MODE === 'synced') {
-    const dims = getManifestDimensions();
-    streamManager = new ContinuousStreamManager(STREAMS_DIR, STREAM_FPS, dims.width, dims.height);
+    streamManager = new ContinuousStreamManager(STREAMS_DIR, STREAM_FPS);
     // Reset speaker when audio finishes
     streamManager.onAudioComplete = () => {
       console.log('[Server] Audio complete, resetting speaker');

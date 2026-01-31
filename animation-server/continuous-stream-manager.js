@@ -7,11 +7,9 @@ const fs = require('fs');
 const { FFMPEG_PATH } = require('./platform');
 
 class ContinuousStreamManager {
-  constructor(streamsDir, fps = 30, frameWidth = 1280, frameHeight = 720) {
+  constructor(streamsDir, fps = 30) {
     this.streamsDir = streamsDir;
     this.fps = fps;
-    this.frameWidth = frameWidth;
-    this.frameHeight = frameHeight;
     this.ffmpegProcess = null;
     this.isRunning = false;
     this.frameInterval = 1000 / fps;
@@ -84,12 +82,10 @@ class ContinuousStreamManager {
     // FFmpeg with TWO pipe inputs: video (stdin) and audio (fd 3)
     const args = [
       '-y',
-      // Video input from stdin (pipe:0) — raw RGB pixels, no decode needed
+      // Video input from stdin (pipe:0)
       '-thread_queue_size', '512',
-      '-f', 'rawvideo',
-      '-pix_fmt', 'rgb24',
-      '-s', `${this.frameWidth}x${this.frameHeight}`,
-      '-r', String(this.fps),
+      '-f', 'image2pipe',
+      '-framerate', String(this.fps),
       '-i', 'pipe:0',
       // Audio input from pipe:3 (raw PCM)
       '-thread_queue_size', '512',
@@ -97,13 +93,12 @@ class ContinuousStreamManager {
       '-ar', String(this.sampleRate),
       '-ac', String(this.channels),
       '-i', 'pipe:3',
-      // Video encoding - 720p, low CPU usage for 2-core VPS
+      // Video encoding
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
-      '-crf', '28',
-      '-threads', '1',
+      '-crf', '23',
       '-r', String(this.fps),
       '-g', String(this.fps),
       '-keyint_min', String(this.fps),
@@ -157,6 +152,7 @@ class ContinuousStreamManager {
   }
 
   // Load audio for playback (called by server)
+  // Pre-computes the entire resampled PCM buffer so per-frame cost is just a slice
   loadAudio(samples, sampleRate, character, duration) {
     this.frameQueue = []; // Clear stale frames
     this.audioSamples = samples;
@@ -166,12 +162,31 @@ class ContinuousStreamManager {
     this.audioTotalFrames = Math.ceil(duration * this.fps);
     this.isPlayingAudio = true;
 
-    console.log(`[ContinuousStreamManager] Audio started: ${duration.toFixed(2)}s, ${this.audioTotalFrames} frames`);
+    // Pre-compute entire resampled audio as Int16 stereo PCM
+    // This eliminates per-frame Buffer allocation and sample-by-sample resampling
+    const totalOutputSamples = this.audioTotalFrames * this.samplesPerFrame;
+    const totalBytes = totalOutputSamples * this.channels * this.bytesPerSample;
+    this.precomputedAudio = Buffer.alloc(totalBytes);
+    const ratio = sampleRate / this.sampleRate;
+
+    for (let i = 0; i < totalOutputSamples; i++) {
+      const srcIdx = Math.floor(i * ratio);
+      let sample = 0;
+      if (srcIdx < samples.length) {
+        sample = Math.max(-1, Math.min(1, samples[srcIdx]));
+        sample = Math.floor(sample * 32767);
+      }
+      const offset = i * 4;
+      this.precomputedAudio.writeInt16LE(sample, offset);     // Left
+      this.precomputedAudio.writeInt16LE(sample, offset + 2); // Right
+    }
+
+    console.log(`[ContinuousStreamManager] Audio started: ${duration.toFixed(2)}s, ${this.audioTotalFrames} frames (pre-resampled)`);
   }
 
-  // Get audio chunk for current frame (resampled to output rate)
+  // Get audio chunk for current frame — just slices the pre-computed buffer
   getAudioChunkForFrame() {
-    if (!this.isPlayingAudio || !this.audioSamples) {
+    if (!this.isPlayingAudio || !this.precomputedAudio) {
       return this.silenceBuffer;
     }
 
@@ -179,39 +194,19 @@ class ContinuousStreamManager {
     if (this.audioFrameIndex >= this.audioTotalFrames) {
       this.isPlayingAudio = false;
       this.currentCharacter = null;
+      this.precomputedAudio = null;
       if (this.onAudioComplete) {
         this.onAudioComplete();
       }
       return this.silenceBuffer;
     }
 
-    // Calculate source samples for this frame
-    const inputSamplesPerFrame = Math.floor(this.audioSampleRate / this.fps);
-    const srcStart = this.audioFrameIndex * inputSamplesPerFrame;
-    const srcEnd = Math.min(srcStart + inputSamplesPerFrame, this.audioSamples.length);
-
-    // Resample from input rate to output rate (simple linear interpolation)
-    const outputBuffer = Buffer.alloc(this.audioBytesPerFrame);
-    const ratio = this.audioSampleRate / this.sampleRate;
-
-    for (let i = 0; i < this.samplesPerFrame; i++) {
-      const srcIdx = srcStart + Math.floor(i * ratio);
-      let sample = 0;
-
-      if (srcIdx < this.audioSamples.length) {
-        // Convert from float [-1, 1] to int16
-        sample = Math.max(-1, Math.min(1, this.audioSamples[srcIdx]));
-        sample = Math.floor(sample * 32767);
-      }
-
-      // Write stereo (duplicate mono to both channels)
-      const offset = i * 4; // 2 bytes per sample * 2 channels
-      outputBuffer.writeInt16LE(sample, offset);     // Left
-      outputBuffer.writeInt16LE(sample, offset + 2); // Right
-    }
+    // Slice pre-computed buffer — zero allocation, zero computation
+    const start = this.audioFrameIndex * this.audioBytesPerFrame;
+    const chunk = this.precomputedAudio.subarray(start, start + this.audioBytesPerFrame);
 
     this.audioFrameIndex++;
-    return outputBuffer;
+    return chunk;
   }
 
   // Get current audio progress for frame renderer

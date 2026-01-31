@@ -10,9 +10,9 @@ const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 let manifest = null;
 let scaledLayerBuffers = {};
 let staticBaseBuffer = null; // Pre-composited static layers
-let frameCache = {};          // Cache for character state (raw RGB buffers)
+let frameCache = {};          // Cache for character state (JPEG buffers)
 let lastOutputKey = null;     // Key of the last full output frame
-let lastOutputBuffer = null;  // Last complete raw RGB output buffer
+let lastOutputBuffer = null;  // Last complete JPEG output buffer
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -458,26 +458,24 @@ async function compositeFrame(state) {
   } = state;
 
   // Build a full output key that includes ALL visual state
-  // TV content pointer identity changes when a new frame is set
   const hasTv = currentTVFrame ? 1 : 0;
-  const hasEmission = (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) ? 1 : 0;
-  const hasLights = (lightsMode === 'on' && lightsOnBuffer) ? 1 : 0;
   const captionKey = caption ? caption.slice(0, 40) : '';
-  const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-em${hasEmission}-lt${hasLights}-c${captionKey}`;
+  const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}`;
 
   // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
   if (outputKey === lastOutputKey && lastOutputBuffer && !hasTv) {
     return lastOutputBuffer;
   }
 
-  // Character frame cache (static base + mouths + blinks) — stored as raw RGB
+  // Character frame cache includes: static base + mouths + blinks + emission + lights
+  // This means idle frames (no TV, no caption) need 0 overlay pipelines
   const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
   let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
     const m = loadManifest();
 
-    // Only add dynamic layers (mouths and blinks)
+    // Dynamic layers: mouths and blinks
     const compositeOps = [];
     const sortedLayers = [...m.layers]
       .filter(l => l.type === 'mouth' || l.type === 'blink')
@@ -514,23 +512,41 @@ async function compositeFrame(state) {
       }
     }
 
-    // Composite: static base + dynamic layers → cache as raw RGB (no encode overhead)
+    // Bake foreground emission into character frame (above mouths/blinks)
+    if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
+      compositeOps.push({
+        input: foregroundEmissionBuffer,
+        left: foregroundEmissionPos.x,
+        top: foregroundEmissionPos.y,
+        blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light'
+      });
+    }
+
+    // Bake lights into character frame (above emission)
+    if (lightsMode === 'on' && lightsOnBuffer) {
+      compositeOps.push({
+        input: lightsOnBuffer,
+        left: lightsOnPos.x,
+        top: lightsOnPos.y,
+        blend: 'over'
+      });
+    }
+
+    // Composite: static base + mouths + blinks + emission + lights → JPEG
     charBuffer = await sharp(staticBaseBuffer)
       .composite(compositeOps)
-      .removeAlpha()
-      .raw()
+      .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
 
-    // Cache the result (limit cache size — raw buffers are ~2.7MB each)
-    if (Object.keys(frameCache).length < 50) {
+    // Cache the result
+    if (Object.keys(frameCache).length < 100) {
       frameCache[charCacheKey] = charBuffer;
     }
   }
 
-  // Build ALL remaining overlays in a single array — ONE Sharp pipeline
+  // Overlays: only TV content and captions (emission + lights are baked into charBuffer)
   const overlayOps = [];
 
-  // TV content (behind reflection, emission, caption, lights)
   if (currentTVFrame && TV_VIEWPORT) {
     overlayOps.push({
       input: currentTVFrame,
@@ -549,17 +565,6 @@ async function compositeFrame(state) {
     }
   }
 
-  // Foreground LED emission
-  if (hasEmission) {
-    overlayOps.push({
-      input: foregroundEmissionBuffer,
-      left: foregroundEmissionPos.x,
-      top: foregroundEmissionPos.y,
-      blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light'
-    });
-  }
-
-  // Caption text
   const captionSvg = caption ? buildCaptionSvg(caption) : null;
   if (captionSvg) {
     overlayOps.push({
@@ -570,30 +575,17 @@ async function compositeFrame(state) {
     });
   }
 
-  // Lights overlay
-  if (hasLights) {
-    overlayOps.push({
-      input: lightsOnBuffer,
-      left: lightsOnPos.x,
-      top: lightsOnPos.y,
-      blend: 'over'
-    });
-  }
-
-  // Single pipeline: character raw frame + all overlays → raw RGB output
   let result;
   if (overlayOps.length > 0) {
-    result = await sharp(charBuffer, { raw: { width: outputWidth, height: outputHeight, channels: 3 } })
+    result = await sharp(charBuffer)
       .composite(overlayOps)
-      .removeAlpha()
-      .raw()
+      .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
   } else {
-    // No overlays — return cached raw buffer directly (0 pipelines)
+    // No TV, no caption — cached JPEG includes everything (0 pipelines)
     result = charBuffer;
   }
 
-  // Cache complete output for fast-path on next identical frame
   lastOutputKey = outputKey;
   lastOutputBuffer = result;
 
@@ -604,8 +596,6 @@ function clearCache() {
   scaledLayerBuffers = {};
   staticBaseBuffer = null;
   frameCache = {};
-  lastOutputKey = null;
-  lastOutputBuffer = null;
   lastOutputKey = null;
   lastOutputBuffer = null;
 }
