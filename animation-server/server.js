@@ -23,7 +23,8 @@ const {
   setLightsMode,
   getLightsMode,
   setLightingHue,
-  getLightingHue
+  getLightingHue,
+  getManifestDimensions
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -906,7 +907,8 @@ async function start() {
 
   // Start live stream
   if (STREAM_MODE === 'synced') {
-    streamManager = new ContinuousStreamManager(STREAMS_DIR, STREAM_FPS);
+    const dims = getManifestDimensions();
+    streamManager = new ContinuousStreamManager(STREAMS_DIR, STREAM_FPS, dims.width, dims.height);
     // Reset speaker when audio finishes
     streamManager.onAudioComplete = () => {
       console.log('[Server] Audio complete, resetting speaker');

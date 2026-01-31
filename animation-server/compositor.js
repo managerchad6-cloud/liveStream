@@ -10,9 +10,9 @@ const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 let manifest = null;
 let scaledLayerBuffers = {};
 let staticBaseBuffer = null; // Pre-composited static layers
-let frameCache = {};          // Cache for character state (static base + mouths + blinks)
+let frameCache = {};          // Cache for character state (raw RGB buffers)
 let lastOutputKey = null;     // Key of the last full output frame
-let lastOutputBuffer = null;  // Last complete JPEG output buffer
+let lastOutputBuffer = null;  // Last complete raw RGB output buffer
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -470,7 +470,7 @@ async function compositeFrame(state) {
     return lastOutputBuffer;
   }
 
-  // Character frame cache (static base + mouths + blinks) — stored as JPEG
+  // Character frame cache (static base + mouths + blinks) — stored as raw RGB
   const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
   let charBuffer = frameCache[charCacheKey];
 
@@ -514,14 +514,15 @@ async function compositeFrame(state) {
       }
     }
 
-    // Composite: static base + dynamic layers → cache as JPEG
+    // Composite: static base + dynamic layers → cache as raw RGB (no encode overhead)
     charBuffer = await sharp(staticBaseBuffer)
       .composite(compositeOps)
-      .jpeg({ quality: JPEG_QUALITY })
+      .removeAlpha()
+      .raw()
       .toBuffer();
 
-    // Cache the result (limit cache size to prevent memory bloat)
-    if (Object.keys(frameCache).length < 100) {
+    // Cache the result (limit cache size — raw buffers are ~2.7MB each)
+    if (Object.keys(frameCache).length < 50) {
       frameCache[charCacheKey] = charBuffer;
     }
   }
@@ -579,15 +580,16 @@ async function compositeFrame(state) {
     });
   }
 
-  // Single pipeline: character frame + all overlays → JPEG output
+  // Single pipeline: character raw frame + all overlays → raw RGB output
   let result;
   if (overlayOps.length > 0) {
-    result = await sharp(charBuffer)
+    result = await sharp(charBuffer, { raw: { width: outputWidth, height: outputHeight, channels: 3 } })
       .composite(overlayOps)
-      .jpeg({ quality: JPEG_QUALITY })
+      .removeAlpha()
+      .raw()
       .toBuffer();
   } else {
-    // No overlays — return cached JPEG directly (0 extra pipelines)
+    // No overlays — return cached raw buffer directly (0 pipelines)
     result = charBuffer;
   }
 

@@ -7,9 +7,11 @@ const fs = require('fs');
 const { FFMPEG_PATH } = require('./platform');
 
 class ContinuousStreamManager {
-  constructor(streamsDir, fps = 30) {
+  constructor(streamsDir, fps = 30, frameWidth = 1280, frameHeight = 720) {
     this.streamsDir = streamsDir;
     this.fps = fps;
+    this.frameWidth = frameWidth;
+    this.frameHeight = frameHeight;
     this.ffmpegProcess = null;
     this.isRunning = false;
     this.frameInterval = 1000 / fps;
@@ -82,10 +84,12 @@ class ContinuousStreamManager {
     // FFmpeg with TWO pipe inputs: video (stdin) and audio (fd 3)
     const args = [
       '-y',
-      // Video input from stdin (pipe:0)
+      // Video input from stdin (pipe:0) — raw RGB pixels, no decode needed
       '-thread_queue_size', '512',
-      '-f', 'image2pipe',
-      '-framerate', String(this.fps),
+      '-f', 'rawvideo',
+      '-pix_fmt', 'rgb24',
+      '-s', `${this.frameWidth}x${this.frameHeight}`,
+      '-r', String(this.fps),
       '-i', 'pipe:0',
       // Audio input from pipe:3 (raw PCM)
       '-thread_queue_size', '512',
