@@ -10,7 +10,9 @@ const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 let manifest = null;
 let scaledLayerBuffers = {};
 let staticBaseBuffer = null; // Pre-composited static layers
-let frameCache = {};          // Cache for common frame states
+let frameCache = {};          // Cache for character state (static base + mouths + blinks)
+let lastOutputKey = null;     // Key of the last full output frame
+let lastOutputBuffer = null;  // Last complete JPEG output buffer
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -275,6 +277,8 @@ async function preloadLayers() {
   staticBaseBuffer = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend);
   staticBaseVersion += 1;
   frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
 
   console.log(`Preloaded ${Object.keys(scaledLayerBuffers).length} layers, static base ready`);
 }
@@ -453,11 +457,22 @@ async function compositeFrame(state) {
     caption = null
   } = state;
 
-  // Create cache key from state (TV content is NOT cached - changes every frame)
-  const cacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  // Build a full output key that includes ALL visual state
+  // TV content pointer identity changes when a new frame is set
+  const hasTv = currentTVFrame ? 1 : 0;
+  const hasEmission = (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) ? 1 : 0;
+  const hasLights = (lightsMode === 'on' && lightsOnBuffer) ? 1 : 0;
+  const captionKey = caption ? caption.slice(0, 40) : '';
+  const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-em${hasEmission}-lt${hasLights}-c${captionKey}`;
 
-  // Character frame cache stores PNG for fast re-compositing (not JPEG)
-  let charBuffer = frameCache[cacheKey];
+  // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
+  if (outputKey === lastOutputKey && lastOutputBuffer && !hasTv) {
+    return lastOutputBuffer;
+  }
+
+  // Character frame cache (static base + mouths + blinks) — stored as JPEG
+  const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
     const m = loadManifest();
@@ -499,15 +514,15 @@ async function compositeFrame(state) {
       }
     }
 
-    // Composite: static base + dynamic layers → cache as PNG (fast to re-decode)
+    // Composite: static base + dynamic layers → cache as JPEG
     charBuffer = await sharp(staticBaseBuffer)
       .composite(compositeOps)
-      .png({ compressionLevel: 1 })
+      .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
 
     // Cache the result (limit cache size to prevent memory bloat)
     if (Object.keys(frameCache).length < 100) {
-      frameCache[cacheKey] = charBuffer;
+      frameCache[charCacheKey] = charBuffer;
     }
   }
 
@@ -534,7 +549,7 @@ async function compositeFrame(state) {
   }
 
   // Foreground LED emission
-  if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
+  if (hasEmission) {
     overlayOps.push({
       input: foregroundEmissionBuffer,
       left: foregroundEmissionPos.x,
@@ -555,7 +570,7 @@ async function compositeFrame(state) {
   }
 
   // Lights overlay
-  if (lightsMode === 'on' && lightsOnBuffer) {
+  if (hasLights) {
     overlayOps.push({
       input: lightsOnBuffer,
       left: lightsOnPos.x,
@@ -565,23 +580,32 @@ async function compositeFrame(state) {
   }
 
   // Single pipeline: character frame + all overlays → JPEG output
+  let result;
   if (overlayOps.length > 0) {
-    return sharp(charBuffer)
+    result = await sharp(charBuffer)
       .composite(overlayOps)
       .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
+  } else {
+    // No overlays — return cached JPEG directly (0 extra pipelines)
+    result = charBuffer;
   }
 
-  // No overlays — just encode cached PNG to JPEG
-  return sharp(charBuffer)
-    .jpeg({ quality: JPEG_QUALITY })
-    .toBuffer();
+  // Cache complete output for fast-path on next identical frame
+  lastOutputKey = outputKey;
+  lastOutputBuffer = result;
+
+  return result;
 }
 
 function clearCache() {
   scaledLayerBuffers = {};
   staticBaseBuffer = null;
   frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
+  lastOutputKey = null;
+  lastOutputBuffer = null;
 }
 
 function getManifestDimensions() {
@@ -622,6 +646,8 @@ async function setEmissionOpacity(value) {
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
   frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
   emissionOpacity = nextOpacity;
   if (foregroundEmissionLayerId && updatedScaled[foregroundEmissionLayerId]) {
     foregroundEmissionBuffer = updatedScaled[foregroundEmissionLayerId];
@@ -652,6 +678,8 @@ async function setEmissionLayerBlend(name, blend) {
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
   frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
   return emissionLayerBlend;
 }
 
@@ -744,6 +772,8 @@ async function setLightingHue(hue) {
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
   frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
   lightingHue = nextHue;
   return lightingHue;
 }
