@@ -16,8 +16,6 @@ class ContinuousStreamManager {
     this.onFrameRequest = null;
     this.frameCount = 0;
     this.lastFrameTime = 0;
-    this.frameQueue = [];
-    this.maxQueueSize = 4;
     this.liveDir = null;
 
     // Audio configuration
@@ -60,8 +58,7 @@ class ContinuousStreamManager {
 
     // Start single FFmpeg instance with both video and audio pipes
     this.startFFmpeg();
-    this.startRenderLoop();
-    this.startOutputLoop();
+    this.startFrameLoop();
 
     console.log('[ContinuousStreamManager] Live stream started');
   }
@@ -154,7 +151,6 @@ class ContinuousStreamManager {
   // Load audio for playback (called by server)
   // Pre-computes the entire resampled PCM buffer so per-frame cost is just a slice
   loadAudio(samples, sampleRate, character, duration) {
-    this.frameQueue = []; // Clear stale frames
     this.audioSamples = samples;
     this.audioSampleRate = sampleRate;
     this.currentCharacter = character;
@@ -222,87 +218,63 @@ class ContinuousStreamManager {
     };
   }
 
-  startRenderLoop() {
-    const render = async () => {
-      if (!this.isRunning) return;
-
-      if (this.frameQueue.length < this.maxQueueSize && this.onFrameRequest) {
-        try {
-          // Get audio progress for frame renderer
-          const audioProgress = this.getAudioProgress();
-
-          const frameBuffer = await this.onFrameRequest(this.frameCount, audioProgress);
-          if (frameBuffer) {
-            // Get audio for this frame
-            const audioBuffer = this.getAudioChunkForFrame();
-
-            this.frameQueue.push({ video: frameBuffer, audio: audioBuffer });
-            this.frameCount++;
-          }
-        } catch (err) {
-          console.error('[ContinuousStreamManager] Render error:', err.message);
-        }
-
-        // Frame produced — immediately try next one
-        if (this.isRunning) setImmediate(render);
-      } else {
-        // Queue full — back off to avoid CPU spin loop
-        if (this.isRunning) setTimeout(render, Math.max(1, this.frameInterval / 2));
-      }
-    };
-
-    render();
-  }
-
-  startOutputLoop() {
-    const output = () => {
+  // Unified render + output loop — single timer, no queue, no spin loop
+  startFrameLoop() {
+    const tick = async () => {
       if (!this.isRunning) return;
 
       const now = Date.now();
-      const elapsed = now - this.lastFrameTime;
 
-      if (elapsed >= this.frameInterval && this.ffmpegProcess) {
+      if (now - this.lastFrameTime >= this.frameInterval && this.ffmpegProcess) {
         let videoData = null;
         let audioData = this.silenceBuffer;
 
-        if (this.frameQueue.length > 0) {
-          const frame = this.frameQueue.shift();
-          videoData = frame.video;
-          audioData = frame.audio;
-          this.lastVideoFrame = videoData; // Save for underrun repeat
-        } else if (this.lastVideoFrame) {
-          // Queue underrun: repeat last frame + silence to prevent FFmpeg starvation
+        // Render a new frame
+        if (this.onFrameRequest) {
+          try {
+            const audioProgress = this.getAudioProgress();
+            const frameBuffer = await this.onFrameRequest(this.frameCount, audioProgress);
+            if (frameBuffer) {
+              audioData = this.getAudioChunkForFrame();
+              videoData = frameBuffer;
+              this.lastVideoFrame = frameBuffer;
+              this.frameCount++;
+            }
+          } catch (err) {
+            console.error('[ContinuousStreamManager] Render error:', err.message);
+          }
+        }
+
+        // If render failed or returned null, repeat last frame
+        if (!videoData && this.lastVideoFrame) {
           videoData = this.lastVideoFrame;
         }
 
+        // Write to FFmpeg
         if (videoData) {
           if (this.videoStdin && this.videoStdin.writable) {
-            try {
-              this.videoStdin.write(videoData);
-            } catch (e) {}
+            try { this.videoStdin.write(videoData); } catch (e) {}
           }
           if (this.audioStdin && this.audioStdin.writable) {
-            try {
-              this.audioStdin.write(audioData);
-            } catch (e) {}
+            try { this.audioStdin.write(audioData); } catch (e) {}
           }
         }
 
-        this.lastFrameTime = now - (elapsed % this.frameInterval);
+        this.lastFrameTime = now - ((now - this.lastFrameTime) % this.frameInterval);
       }
 
       if (this.isRunning) {
-        setTimeout(output, Math.max(1, this.frameInterval - (Date.now() - now)));
+        const nextTick = Math.max(1, this.frameInterval - (Date.now() - this.lastFrameTime));
+        setTimeout(tick, nextTick);
       }
     };
 
-    output();
+    tick();
   }
 
   stop() {
     this.isRunning = false;
     this.isPlayingAudio = false;
-    this.frameQueue = [];
     if (this.ffmpegProcess) {
       try {
         if (this.videoStdin) this.videoStdin.end();
