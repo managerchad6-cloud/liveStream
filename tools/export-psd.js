@@ -73,12 +73,18 @@ async function main() {
     // Ensure directory exists
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-    // Export canvas to PNG
+    // Export layer at full canvas size to maintain consistent positioning.
+    // Some PSDs (e.g. from Photoshop) trim layers to their painted bounds,
+    // giving a smaller canvas with non-zero left/top. We always place the
+    // layer's pixels onto a full-size canvas so every exported PNG is
+    // psd.width x psd.height with x=0, y=0.
     const canvas = layer.canvas;
     const ctx = canvas.getContext('2d');
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const layerLeft = layer.left || 0;
+    const layerTop = layer.top || 0;
 
-    await sharp(Buffer.from(imageData.data), {
+    const layerBuffer = await sharp(Buffer.from(imageData.data), {
       raw: {
         width: canvas.width,
         height: canvas.height,
@@ -86,7 +92,31 @@ async function main() {
       }
     })
     .png()
-    .toFile(outputPath);
+    .toBuffer();
+
+    // If layer is already full canvas size at (0,0), write directly
+    if (canvas.width === manifest.width && canvas.height === manifest.height && layerLeft === 0 && layerTop === 0) {
+      await sharp(layerBuffer).toFile(outputPath);
+    } else {
+      // Place trimmed layer onto a full-size transparent canvas
+      await sharp({
+        create: {
+          width: manifest.width,
+          height: manifest.height,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        }
+      })
+      .composite([{
+        input: layerBuffer,
+        left: layerLeft,
+        top: layerTop,
+        blend: 'over'
+      }])
+      .png()
+      .toFile(outputPath);
+      console.log(`  -> Expanded ${canvas.width}x${canvas.height} at (${layerLeft},${layerTop}) to ${manifest.width}x${manifest.height}`);
+    }
 
     // Add to manifest with forward slashes for consistency
     const relativePath = path.relative(OUTPUT_DIR, outputPath).split(path.sep).join('/');
@@ -95,10 +125,10 @@ async function main() {
       id: uniqueName,
       name: layer.name,
       path: relativePath,
-      x: layer.left || 0,
-      y: layer.top || 0,
-      width: canvas.width,
-      height: canvas.height,
+      x: 0,
+      y: 0,
+      width: manifest.width,
+      height: manifest.height,
       opacity: (layer.opacity || 255) / 255,
       visible: layer.hidden !== true,
       zIndex: zIndex,
