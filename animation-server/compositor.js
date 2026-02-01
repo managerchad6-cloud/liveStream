@@ -44,6 +44,28 @@ let lightingUpdateId = 0;
 let lightingBaseBuffers = {};
 let lightingLayerMeta = {};
 
+// Expression control (eye and eyebrow positions)
+let expressionOffsets = {
+  chad: {
+    eyes: { x: 0, y: 0 },      // Applies to both eye_left and eye_right
+    eyebrows: { x: 0, y: 0 }   // Applies to both eyebrow layers
+  },
+  virgin: {
+    eyes: { x: 0, y: 0 },
+    eyebrows: { x: 0, y: 0 }
+  }
+};
+
+const EXPRESSION_LAYER_NAMES = new Set([
+  'static_chad_eye_left',
+  'static_chad_eye_right',
+  'static_virgin_eye_left',
+  'static_virgin_eye_right',
+  'static_virgin_eyebrow_left',
+  'static_virgin_eyebrow_right'
+  // Note: eye_cover layers are NOT included - they remain static
+]);
+
 const EMISSION_LAYER_KEYS = {
   foreground: 'LED light Emission (Foreground)',
   middleground: 'LED light Emission (Middleground)',
@@ -775,6 +797,62 @@ async function setLightingHue(hue) {
 
 function getLightingHue() {
   return lightingHue;
+}
+
+/**
+ * Set expression offsets for a character
+ * @param {string} character - 'chad' or 'virgin'
+ * @param {string} feature - 'eyes' or 'eyebrows'
+ * @param {number} x - X offset in pixels (at output scale)
+ * @param {number} y - Y offset in pixels (at output scale)
+ */
+function setExpressionOffset(character, feature, x, y) {
+  if (!expressionOffsets[character]) {
+    console.warn(`[Compositor] Unknown character: ${character}`);
+    return;
+  }
+  if (!expressionOffsets[character][feature]) {
+    console.warn(`[Compositor] Unknown feature: ${feature}`);
+    return;
+  }
+
+  expressionOffsets[character][feature] = {
+    x: Number(x) || 0,
+    y: Number(y) || 0
+  };
+
+  // Clear cache to force re-render with new offsets
+  frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
+}
+
+/**
+ * Get current expression offsets
+ */
+function getExpressionOffsets() {
+  return JSON.parse(JSON.stringify(expressionOffsets)); // Deep copy
+}
+
+/**
+ * Reset expression offsets to neutral (0, 0)
+ */
+function resetExpressionOffsets(character) {
+  if (character) {
+    if (expressionOffsets[character]) {
+      expressionOffsets[character].eyes = { x: 0, y: 0 };
+      expressionOffsets[character].eyebrows = { x: 0, y: 0 };
+    }
+  } else {
+    // Reset all
+    for (const char of Object.keys(expressionOffsets)) {
+      expressionOffsets[char].eyes = { x: 0, y: 0 };
+      expressionOffsets[char].eyebrows = { x: 0, y: 0 };
+    }
+  }
+  frameCache = {};
+  lastOutputKey = null;
+  lastOutputBuffer = null;
 }
 
 module.exports = {
