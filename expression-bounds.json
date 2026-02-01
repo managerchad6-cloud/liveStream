@@ -1,0 +1,230 @@
+{
+  "timestamp": "2026-02-01T21:23:11.882Z",
+  "sceneSize": {
+    "width": 3840,
+    "height": 2160
+  },
+  "bounds": {
+    "static_virgin_eye_left": {
+      "left": 2839,
+      "top": 955,
+      "right": 2866,
+      "bottom": 979,
+      "width": 28,
+      "height": 25,
+      "centerX": 2853,
+      "centerY": 967,
+      "character": "virgin",
+      "name": "static_virgin_eye_left",
+      "layerId": "static_virgin_eye_left"
+    },
+    "static_virgin_eye_right": {
+      "left": 2949,
+      "top": 955,
+      "right": 2975,
+      "bottom": 979,
+      "width": 27,
+      "height": 25,
+      "centerX": 2962,
+      "centerY": 967,
+      "character": "virgin",
+      "name": "static_virgin_eye_right",
+      "layerId": "static_virgin_eye_right"
+    },
+    "static_virgin_eye_cover": {
+      "left": 2787,
+      "top": 916,
+      "right": 3023,
+      "bottom": 1013,
+      "width": 237,
+      "height": 98,
+      "centerX": 2905,
+      "centerY": 965,
+      "character": "virgin",
+      "name": "static_virgin_eye_cover",
+      "layerId": "static_virgin_eye_cover"
+    },
+    "static_virgin_eyebrow_left": {
+      "left": 2806,
+      "top": 924,
+      "right": 2896,
+      "bottom": 953,
+      "width": 91,
+      "height": 30,
+      "centerX": 2851,
+      "centerY": 939,
+      "character": "virgin",
+      "name": "static_virgin_eyebrow_left",
+      "layerId": "static_virgin_eyebrow_left"
+    },
+    "static_virgin_eyebrow_right": {
+      "left": 2918,
+      "top": 925,
+      "right": 3005,
+      "bottom": 952,
+      "width": 88,
+      "height": 28,
+      "centerX": 2962,
+      "centerY": 939,
+      "character": "virgin",
+      "name": "static_virgin_eyebrow_right",
+      "layerId": "static_virgin_eyebrow_right"
+    },
+    "static_chad_eye_right": {
+      "left": 1114,
+      "top": 750,
+      "right": 1161,
+      "bottom": 795,
+      "width": 48,
+      "height": 46,
+      "centerX": 1138,
+      "centerY": 773,
+      "character": "chad",
+      "name": "static_chad_eye_right",
+      "layerId": "static_chad_eye_right"
+    },
+    "static_chad_eye_left": {
+      "left": 1020,
+      "top": 750,
+      "right": 1067,
+      "bottom": 796,
+      "width": 48,
+      "height": 47,
+      "centerX": 1044,
+      "centerY": 773,
+      "character": "chad",
+      "name": "static_chad_eye_left",
+      "layerId": "static_chad_eye_left"
+    },
+    "static_chad_eye_cover": {
+      "left": 984,
+      "top": 735,
+      "right": 1165,
+      "bottom": 814,
+      "width": 182,
+      "height": 80,
+      "centerX": 1075,
+      "centerY": 775,
+      "character": "chad",
+      "name": "static_chad_eye_cover",
+      "layerId": "static_chad_eye_cover"
+    }
+  },
+  "grouped": {
+    "chad": {
+      "eyes": {
+        "static_chad_eye_right": {
+          "left": 1114,
+          "top": 750,
+          "right": 1161,
+          "bottom": 795,
+          "width": 48,
+          "height": 46,
+          "centerX": 1138,
+          "centerY": 773,
+          "character": "chad",
+          "name": "static_chad_eye_right",
+          "layerId": "static_chad_eye_right"
+        },
+        "static_chad_eye_left": {
+          "left": 1020,
+          "top": 750,
+          "right": 1067,
+          "bottom": 796,
+          "width": 48,
+          "height": 47,
+          "centerX": 1044,
+          "centerY": 773,
+          "character": "chad",
+          "name": "static_chad_eye_left",
+          "layerId": "static_chad_eye_left"
+        },
+        "static_chad_eye_cover": {
+          "left": 984,
+          "top": 735,
+          "right": 1165,
+          "bottom": 814,
+          "width": 182,
+          "height": 80,
+          "centerX": 1075,
+          "centerY": 775,
+          "character": "chad",
+          "name": "static_chad_eye_cover",
+          "layerId": "static_chad_eye_cover"
+        }
+      },
+      "eyebrows": {}
+    },
+    "virgin": {
+      "eyes": {
+        "static_virgin_eye_left": {
+          "left": 2839,
+          "top": 955,
+          "right": 2866,
+          "bottom": 979,
+          "width": 28,
+          "height": 25,
+          "centerX": 2853,
+          "centerY": 967,
+          "character": "virgin",
+          "name": "static_virgin_eye_left",
+          "layerId": "static_virgin_eye_left"
+        },
+        "static_virgin_eye_right": {
+          "left": 2949,
+          "top": 955,
+          "right": 2975,
+          "bottom": 979,
+          "width": 27,
+          "height": 25,
+          "centerX": 2962,
+          "centerY": 967,
+          "character": "virgin",
+          "name": "static_virgin_eye_right",
+          "layerId": "static_virgin_eye_right"
+        },
+        "static_virgin_eye_cover": {
+          "left": 2787,
+          "top": 916,
+          "right": 3023,
+          "bottom": 1013,
+          "width": 237,
+          "height": 98,
+          "centerX": 2905,
+          "centerY": 965,
+          "character": "virgin",
+          "name": "static_virgin_eye_cover",
+          "layerId": "static_virgin_eye_cover"
+        }
+      },
+      "eyebrows": {
+        "static_virgin_eyebrow_left": {
+          "left": 2806,
+          "top": 924,
+          "right": 2896,
+          "bottom": 953,
+          "width": 91,
+          "height": 30,
+          "centerX": 2851,
+          "centerY": 939,
+          "character": "virgin",
+          "name": "static_virgin_eyebrow_left",
+          "layerId": "static_virgin_eyebrow_left"
+        },
+        "static_virgin_eyebrow_right": {
+          "left": 2918,
+          "top": 925,
+          "right": 3005,
+          "bottom": 952,
+          "width": 88,
+          "height": 28,
+          "centerX": 2962,
+          "centerY": 939,
+          "character": "virgin",
+          "name": "static_virgin_eyebrow_right",
+          "layerId": "static_virgin_eyebrow_right"
+        }
+      }
+    }
+  }
+}
