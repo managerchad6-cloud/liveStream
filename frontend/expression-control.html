@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Expression Controller</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+    .left {
+      flex: 1.2;
+      background: #020617;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      padding: 16px;
+    }
+    .stream-wrap {
+      width: 100%;
+      height: 100%;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1e293b;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      position: relative;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+      object-fit: cover;
+    }
+    .right {
+      flex: 0.8;
+      max-width: 520px;
+      padding: 24px;
+      background: #0b1224;
+      border-left: 1px solid #1e293b;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow-y: auto;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.4em;
+      color: #38bdf8;
+    }
+    .panel {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .panel h2 {
+      margin: 0 0 12px 0;
+      font-size: 1em;
+      color: #93c5fd;
+      font-weight: 600;
+    }
+    .joystick-container {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .joystick-pad {
+      width: 160px;
+      height: 160px;
+      background: #1e293b;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      position: relative;
+      cursor: crosshair;
+      touch-action: none;
+      flex-shrink: 0;
+    }
+    .joystick-pad::before,
+    .joystick-pad::after {
+      content: '';
+      position: absolute;
+      background: #334155;
+    }
+    .joystick-pad::before {
+      left: 50%;
+      top: 8px;
+      bottom: 8px;
+      width: 1px;
+    }
+    .joystick-pad::after {
+      top: 50%;
+      left: 8px;
+      right: 8px;
+      height: 1px;
+    }
+    .joystick-dot {
+      width: 20px;
+      height: 20px;
+      background: #38bdf8;
+      border-radius: 50%;
+      position: absolute;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+      transition: box-shadow 0.15s;
+    }
+    .joystick-pad:active .joystick-dot,
+    .joystick-pad.dragging .joystick-dot {
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.8);
+    }
+    .joystick-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      color: #94a3b8;
+      font-size: 0.9em;
+      font-variant-numeric: tabular-nums;
+    }
+    .joystick-info .val {
+      color: #cbd5f5;
+      font-weight: 600;
+    }
+    button {
+      background: #38bdf8;
+      color: #0b1224;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95em;
+    }
+    button:hover {
+      background: #7dd3fc;
+    }
+    button.secondary {
+      background: #1e293b;
+      color: #e2e8f0;
+    }
+    button.secondary:hover {
+      background: #334155;
+    }
+    .reset-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .note {
+      color: #64748b;
+      font-size: 0.85em;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="left">
+    <div class="stream-wrap">
+      <video id="stream" autoplay muted playsinline></video>
+      <div id="stream-overlay" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);color:#e2e8f0;font-weight:600;">
+        <button id="stream-play-btn">Click to start video</button>
+      </div>
+    </div>
+  </div>
+  <div class="right">
+    <h1>Expression Controller</h1>
+
+    <div class="panel">
+      <h2>Chad Eyes</h2>
+      <div class="joystick-container">
+        <div class="joystick-pad" id="pad-chad-eyes">
+          <div class="joystick-dot" id="dot-chad-eyes"></div>
+        </div>
+        <div class="joystick-info">
+          <div>X: <span class="val" id="val-chad-eyes-x">0</span> px</div>
+          <div>Y: <span class="val" id="val-chad-eyes-y">0</span> px</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Virgin Eyes</h2>
+      <div class="joystick-container">
+        <div class="joystick-pad" id="pad-virgin-eyes">
+          <div class="joystick-dot" id="dot-virgin-eyes"></div>
+        </div>
+        <div class="joystick-info">
+          <div>X: <span class="val" id="val-virgin-eyes-x">0</span> px</div>
+          <div>Y: <span class="val" id="val-virgin-eyes-y">0</span> px</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Virgin Eyebrows</h2>
+      <div class="joystick-container">
+        <div class="joystick-pad" id="pad-virgin-eyebrows">
+          <div class="joystick-dot" id="dot-virgin-eyebrows"></div>
+        </div>
+        <div class="joystick-info">
+          <div>X: <span class="val" id="val-virgin-eyebrows-x">0</span> px</div>
+          <div>Y: <span class="val" id="val-virgin-eyebrows-y">0</span> px</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Reset</h2>
+      <div class="reset-row">
+        <button onclick="resetAll()">Reset All</button>
+        <button class="secondary" onclick="resetCharacter('chad')">Reset Chad</button>
+        <button class="secondary" onclick="resetCharacter('virgin')">Reset Virgin</button>
+      </div>
+      <div class="note">Range: -20 to +20 pixels at output scale (1280x720).</div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.hostname === 'localhost'
+      ? 'http://localhost:3003'
+      : `http://${window.location.hostname}:3003`;
+
+    const OFFSET_RANGE = 20; // -20 to +20 pixels
+
+    const streamEl = document.getElementById('stream');
+    const streamOverlay = document.getElementById('stream-overlay');
+    const streamPlayBtn = document.getElementById('stream-play-btn');
+    let hlsPlayer = null;
+
+    // ---- HLS Stream ----
+    function connectStream() {
+      const streamUrl = `${API_BASE}/streams/live/stream.m3u8`;
+      if (window.Hls && Hls.isSupported()) {
+        if (hlsPlayer) hlsPlayer.destroy();
+        hlsPlayer = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          liveSyncDuration: 1.5,
+          liveMaxLatencyDuration: 6,
+          maxBufferLength: 4,
+          maxMaxBufferLength: 8,
+          maxLiveSyncPlaybackRate: 1.5
+        });
+        hlsPlayer.loadSource(streamUrl);
+        hlsPlayer.attachMedia(streamEl);
+        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+          streamEl.play().catch(() => { streamOverlay.style.display = 'flex'; });
+        });
+        hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) setTimeout(connectStream, 1500);
+        });
+      } else if (streamEl.canPlayType('application/vnd.apple.mpegurl')) {
+        streamEl.src = streamUrl;
+        streamEl.play().catch(() => { streamOverlay.style.display = 'flex'; });
+      }
+    }
+
+    streamPlayBtn.addEventListener('click', () => {
+      streamEl.play().then(() => { streamOverlay.style.display = 'none'; }).catch(() => {});
+    });
+
+    // ---- Joystick Controls ----
+    const joysticks = [
+      { id: 'chad-eyes', character: 'chad', feature: 'eyes' },
+      { id: 'virgin-eyes', character: 'virgin', feature: 'eyes' },
+      { id: 'virgin-eyebrows', character: 'virgin', feature: 'eyebrows' }
+    ];
+
+    const joystickState = {};
+
+    joysticks.forEach(j => {
+      const pad = document.getElementById(`pad-${j.id}`);
+      const dot = document.getElementById(`dot-${j.id}`);
+      const valX = document.getElementById(`val-${j.id}-x`);
+      const valY = document.getElementById(`val-${j.id}-y`);
+
+      joystickState[j.id] = { x: 0, y: 0, pad, dot, valX, valY, ...j };
+
+      // Position dot at center initially
+      updateDotPosition(j.id, 0, 0);
+
+      let dragging = false;
+      let debounceTimer = null;
+
+      function onMove(clientX, clientY) {
+        const rect = pad.getBoundingClientRect();
+        const relX = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        const relY = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+
+        // Map 0..1 to -OFFSET_RANGE..+OFFSET_RANGE
+        const offX = Math.round((relX - 0.5) * 2 * OFFSET_RANGE);
+        const offY = Math.round((relY - 0.5) * 2 * OFFSET_RANGE);
+
+        joystickState[j.id].x = offX;
+        joystickState[j.id].y = offY;
+        updateDotPosition(j.id, offX, offY);
+
+        // Debounced send
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          sendOffset(j.character, j.feature, offX, offY);
+        }, 100);
+      }
+
+      pad.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        pad.classList.add('dragging');
+        pad.setPointerCapture(e.pointerId);
+        onMove(e.clientX, e.clientY);
+      });
+
+      pad.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        onMove(e.clientX, e.clientY);
+      });
+
+      pad.addEventListener('pointerup', () => {
+        dragging = false;
+        pad.classList.remove('dragging');
+      });
+
+      pad.addEventListener('pointercancel', () => {
+        dragging = false;
+        pad.classList.remove('dragging');
+      });
+    });
+
+    function updateDotPosition(id, offX, offY) {
+      const state = joystickState[id];
+      // Map offset back to percentage position on the pad
+      const pctX = (offX / OFFSET_RANGE + 1) / 2;
+      const pctY = (offY / OFFSET_RANGE + 1) / 2;
+      state.dot.style.left = `${pctX * 100}%`;
+      state.dot.style.top = `${pctY * 100}%`;
+      state.valX.textContent = offX;
+      state.valY.textContent = offY;
+    }
+
+    function sendOffset(character, feature, x, y) {
+      fetch(`${API_BASE}/expression/offset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ character, feature, x, y })
+      }).catch(() => {});
+    }
+
+    function resetAll() {
+      fetch(`${API_BASE}/expression/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }).then(() => {
+        joysticks.forEach(j => {
+          joystickState[j.id].x = 0;
+          joystickState[j.id].y = 0;
+          updateDotPosition(j.id, 0, 0);
+        });
+      }).catch(() => {});
+    }
+
+    function resetCharacter(character) {
+      fetch(`${API_BASE}/expression/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ character })
+      }).then(() => {
+        joysticks.filter(j => j.character === character).forEach(j => {
+          joystickState[j.id].x = 0;
+          joystickState[j.id].y = 0;
+          updateDotPosition(j.id, 0, 0);
+        });
+      }).catch(() => {});
+    }
+
+    // ---- Load current state ----
+    async function loadStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/expression/status`);
+        const data = await res.json();
+        if (data.offsets) {
+          joysticks.forEach(j => {
+            const off = data.offsets[j.character]?.[j.feature];
+            if (off) {
+              joystickState[j.id].x = off.x;
+              joystickState[j.id].y = off.y;
+              updateDotPosition(j.id, off.x, off.y);
+            }
+          });
+        }
+      } catch (err) {}
+    }
+
+    connectStream();
+    loadStatus();
+  </script>
+</body>
+</html>

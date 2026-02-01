@@ -22,6 +22,7 @@ const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
 let outputHeight = 0;
 let staticLayerEntries = [];
+let expressionLayerEntries = []; // Eye/eyebrow layers composited dynamically with offsets
 let staticBaseVersion = 0;
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
@@ -66,6 +67,16 @@ const EXPRESSION_LAYER_NAMES = new Set([
   'static_virgin_eyebrow_right'
   // Note: eye_cover layers are NOT included - they remain static
 ]);
+
+// Map expression layer IDs to their character + feature for offset lookup
+const EXPRESSION_LAYER_MAP = {
+  'static_chad_eye_left': { character: 'chad', feature: 'eyes' },
+  'static_chad_eye_right': { character: 'chad', feature: 'eyes' },
+  'static_virgin_eye_left': { character: 'virgin', feature: 'eyes' },
+  'static_virgin_eye_right': { character: 'virgin', feature: 'eyes' },
+  'static_virgin_eyebrow_left': { character: 'virgin', feature: 'eyebrows' },
+  'static_virgin_eyebrow_right': { character: 'virgin', feature: 'eyebrows' }
+};
 
 const EMISSION_LAYER_KEYS = {
   foreground: 'LED light Emission (Foreground)',
@@ -185,6 +196,7 @@ async function preloadLayers() {
   const staticLayers = [];
   const dynamicLayers = [];
   staticLayerEntries = [];
+  expressionLayerEntries = [];
   foregroundEmissionBuffer = null;
   foregroundEmissionPos = { x: 0, y: 0 };
   foregroundEmissionLayerId = null;
@@ -276,6 +288,15 @@ async function preloadLayers() {
           emissionLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
           lightingBaseBuffers[layer.id] = buffer;
           lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
+        } else if (layer.type === 'static' && layer.visible !== false && EXPRESSION_LAYER_NAMES.has(layer.id)) {
+          // Expression layers (eyes/eyebrows) are composited dynamically with offsets
+          expressionLayerEntries.push({
+            ...layer,
+            buffer,
+            scaledX: Math.round(layer.x * OUTPUT_SCALE),
+            scaledY: Math.round(layer.y * OUTPUT_SCALE)
+          });
+          console.log(`[Compositor] Expression layer stored: ${layer.id}`);
         } else if (layer.type === 'static' && layer.visible !== false) {
           if (EMISSION_LAYER_NAMES.has(layer.name)) {
             emissionBaseBuffers[layer.id] = buffer;
@@ -486,23 +507,44 @@ async function compositeFrame(state) {
   // Build a full output key that includes ALL visual state
   const hasTv = currentTVFrame ? 1 : 0;
   const captionKey = caption ? caption.slice(0, 40) : '';
-  const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}`;
+  const exprOutputKey = `ce${expressionOffsets.chad.eyes.x},${expressionOffsets.chad.eyes.y}`
+    + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
+    + `vb${expressionOffsets.virgin.eyebrows.x},${expressionOffsets.virgin.eyebrows.y}`;
+  const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}-${exprOutputKey}`;
 
   // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
   if (outputKey === lastOutputKey && lastOutputBuffer && !hasTv) {
     return lastOutputBuffer;
   }
 
-  // Character frame cache includes: static base + mouths + blinks + emission + lights
+  // Character frame cache includes: static base + expression layers + mouths + blinks + emission + lights
   // This means idle frames (no TV, no caption) need 0 overlay pipelines
-  const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  const exprKey = `ce${expressionOffsets.chad.eyes.x},${expressionOffsets.chad.eyes.y}`
+    + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
+    + `vb${expressionOffsets.virgin.eyebrows.x},${expressionOffsets.virgin.eyebrows.y}`;
+  const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-${exprKey}`;
   let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
     const m = loadManifest();
 
-    // Dynamic layers: mouths and blinks
+    // Dynamic layers: expression (eyes/eyebrows with offsets), mouths, and blinks
     const compositeOps = [];
+
+    // Expression layers (eyes/eyebrows) with pixel offsets
+    const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
+    for (const exprLayer of sortedExprLayers) {
+      const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
+      if (!mapping) continue;
+      const offset = expressionOffsets[mapping.character]?.[mapping.feature] || { x: 0, y: 0 };
+      compositeOps.push({
+        input: exprLayer.buffer,
+        left: Math.max(0, exprLayer.scaledX + Math.round(offset.x)),
+        top: Math.max(0, exprLayer.scaledY + Math.round(offset.y)),
+        blend: 'over'
+      });
+    }
+
     const sortedLayers = [...m.layers]
       .filter(l => l.type === 'mouth' || l.type === 'blink')
       .sort((a, b) => a.zIndex - b.zIndex);
@@ -874,5 +916,8 @@ module.exports = {
   setLightsMode,
   getLightsMode,
   setLightingHue,
-  getLightingHue
+  getLightingHue,
+  setExpressionOffset,
+  getExpressionOffsets,
+  resetExpressionOffsets
 };

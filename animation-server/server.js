@@ -23,7 +23,10 @@ const {
   setLightsMode,
   getLightsMode,
   setLightingHue,
-  getLightingHue
+  getLightingHue,
+  setExpressionOffset,
+  getExpressionOffsets,
+  resetExpressionOffsets
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -287,6 +290,36 @@ app.post('/lighting/lights-opacity', (req, res) => {
   const value = setLightsOnOpacity(opacity);
   res.json({ opacity: value });
 });
+
+// ============== Expression Control API ==============
+
+app.get('/expression', (req, res) => {
+  res.sendFile(path.join(ROOT_DIR, 'frontend', 'expression-control.html'));
+});
+
+app.get('/expression/status', (req, res) => {
+  res.json({
+    offsets: getExpressionOffsets(),
+    range: { min: -20, max: 20 }
+  });
+});
+
+app.post('/expression/offset', (req, res) => {
+  const { character, feature, x, y } = req.body;
+  if (!character || !feature || typeof x !== 'number' || typeof y !== 'number') {
+    return res.status(400).json({ error: 'Required: character, feature, x, y' });
+  }
+  setExpressionOffset(character, feature, x, y);
+  res.json({ success: true, offsets: getExpressionOffsets() });
+});
+
+app.post('/expression/reset', (req, res) => {
+  const { character } = req.body || {};
+  resetExpressionOffsets(character);
+  res.json({ success: true, offsets: getExpressionOffsets() });
+});
+
+// ============== End Expression Control API ==============
 
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
