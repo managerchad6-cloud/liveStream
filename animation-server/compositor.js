@@ -540,19 +540,45 @@ async function compositeFrame(state) {
     const compositeOps = [];
 
     // Expression layers (eyes/eyebrows with offsets, eye_cover without offsets for z-order)
+    // Buffers are full-frame (outputWidth x outputHeight) at position (0,0).
+    // To handle negative offsets, shift pixel content within the buffer using extract+extend.
     const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
     for (const exprLayer of sortedExprLayers) {
       const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
-      // mapping is null for eye_cover (no offset, just needs correct z-order)
-      // mapping is undefined if layer isn't in the map at all (skip)
       if (mapping === undefined) continue;
       const offset = mapping
         ? (expressionOffsets[mapping.character]?.[mapping.feature] || { x: 0, y: 0 })
         : { x: 0, y: 0 };
+
+      const dx = Math.round(offset.x);
+      const dy = Math.round(offset.y);
+      let layerBuffer = exprLayer.buffer;
+
+      if (dx !== 0 || dy !== 0) {
+        const extractLeft = Math.max(0, -dx);
+        const extractTop = Math.max(0, -dy);
+        const extractWidth = outputWidth - Math.abs(dx);
+        const extractHeight = outputHeight - Math.abs(dy);
+
+        if (extractWidth > 0 && extractHeight > 0) {
+          layerBuffer = await sharp(exprLayer.buffer)
+            .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+            .extend({
+              top: Math.max(0, dy),
+              bottom: Math.max(0, -dy),
+              left: Math.max(0, dx),
+              right: Math.max(0, -dx),
+              background: { r: 0, g: 0, b: 0, alpha: 0 }
+            })
+            .png()
+            .toBuffer();
+        }
+      }
+
       compositeOps.push({
-        input: exprLayer.buffer,
-        left: Math.max(0, exprLayer.scaledX + Math.round(offset.x)),
-        top: Math.max(0, exprLayer.scaledY + Math.round(offset.y)),
+        input: layerBuffer,
+        left: 0,
+        top: 0,
         blend: 'over'
       });
     }
