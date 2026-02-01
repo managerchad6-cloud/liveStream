@@ -298,13 +298,23 @@ async function preloadLayers() {
           lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
         } else if (layer.type === 'static' && layer.visible !== false && EXPRESSION_LAYER_NAMES.has(layer.id)) {
           // Expression layers (eyes/eyebrows) are composited dynamically with offsets
+          // Ensure buffer matches output dimensions exactly (avoid rounding mismatches)
+          let exprBuffer = buffer;
+          if (scaledWidth !== outputWidth || scaledHeight !== outputHeight) {
+            exprBuffer = await sharp(buffer)
+              .resize(outputWidth, outputHeight, { fit: 'fill' })
+              .png()
+              .toBuffer();
+          }
           expressionLayerEntries.push({
             ...layer,
-            buffer,
+            buffer: exprBuffer,
             scaledX: Math.round(layer.x * OUTPUT_SCALE),
-            scaledY: Math.round(layer.y * OUTPUT_SCALE)
+            scaledY: Math.round(layer.y * OUTPUT_SCALE),
+            scaledWidth: outputWidth,
+            scaledHeight: outputHeight
           });
-          console.log(`[Compositor] Expression layer stored: ${layer.id}`);
+          console.log(`[Compositor] Expression layer stored: ${layer.id} (${scaledWidth}x${scaledHeight})`);
         } else if (layer.type === 'static' && layer.visible !== false) {
           if (EMISSION_LAYER_NAMES.has(layer.name)) {
             emissionBaseBuffers[layer.id] = buffer;
@@ -555,10 +565,12 @@ async function compositeFrame(state) {
       let layerBuffer = exprLayer.buffer;
 
       if (dx !== 0 || dy !== 0) {
+        const layerW = exprLayer.scaledWidth;
+        const layerH = exprLayer.scaledHeight;
         const extractLeft = Math.max(0, -dx);
         const extractTop = Math.max(0, -dy);
-        const extractWidth = outputWidth - Math.abs(dx);
-        const extractHeight = outputHeight - Math.abs(dy);
+        const extractWidth = layerW - Math.abs(dx);
+        const extractHeight = layerH - Math.abs(dy);
 
         if (extractWidth > 0 && extractHeight > 0) {
           layerBuffer = await sharp(exprLayer.buffer)
