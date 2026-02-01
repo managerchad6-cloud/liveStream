@@ -1,22 +1,41 @@
-# Cursor Rules for LiveStream Project
+# Cursor Rules for LiveStream Chatbox
 
-## Git Workflow
-After completing any task or making changes:
-1. Always stage all changes: `git add .`
-2. Commit with a descriptive message: `git commit -m "Description of changes"`
-3. Push to remote: `git push origin master`
+## Windows Compatibility Mode
 
-## Auto-commit Pattern
-When the user asks me to complete a task, I should:
-1. Complete the task
-2. Automatically commit and push changes unless the user explicitly asks not to
-3. Use clear, descriptive commit messages
+This project must work on both Linux (VPS) and Windows (local development).
 
-## Commit Message Format
-- Use present tense: "Add feature" not "Added feature"
-- Be specific about what changed
-- Examples:
-  - "Add voice selection dropdown"
-  - "Fix audio playback error handling"
-  - "Update UI styling for mobile"
-  - "Refactor server error handling"
+### Critical Rules
+
+1. **Always use `path.join()` or `path.resolve()` for file paths** - Never concatenate paths with `/` or `\`
+2. **Manifest paths use Unix-style `/`** - This is intentional for cross-platform compatibility
+3. **When reading manifest paths** - Split by `/` and rejoin with `path.join()`
+4. **FFmpeg paths must be platform-aware** - Check `animation-server/platform.js`
+5. **No hardcoded `/tmp/` paths** - Use `os.tmpdir()` or project scratchpad
+
+### Reference Files
+
+- `CURSOR_PROMPT.md` - Detailed Windows compatibility guide
+- `WINDOWS_QUICKSTART.md` - User quick-start guide
+- `WINDOWS_DEPLOYMENT_GUIDE.md` - Comprehensive troubleshooting
+- `CLAUDE.md` - Full project documentation
+
+### Key Files to Understand
+
+- `tools/export-psd.js:92` - Exports manifest with Unix paths (correct)
+- `animation-server/compositor.js:181` - Converts manifest paths to platform paths (correct)
+- `animation-server/platform.js` - Platform-specific binary paths
+
+### Test Commands
+
+```bash
+npm run export-psd      # Export PSD layers
+npm run verify-export   # Verify export (should show all ✓)
+npm run animation       # Start animation server (should load 62 layers)
+npm start               # Start chat server
+```
+
+### Don't Break These
+
+- Manifest.json format (Unix-style paths are intentional)
+- Linux/VPS compatibility (it's working perfectly)
+- Cross-platform path handling patterns in compositor.js and export-psd.js

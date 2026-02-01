@@ -9,6 +9,7 @@ ExecStart=/root/.nvm/versions/node/v18.20.8/bin/node /home/liveStream/animation-
 Restart=on-failure
 RestartSec=10
 Environment=ANIMATION_PORT=3003
+Environment=UV_THREADPOOL_SIZE=4
 
 [Install]
 WantedBy=multi-user.target
