@@ -2,8 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 
-// Use all available CPU cores for libvips thread pool (auto-detect reports 1 on this VPS)
-sharp.concurrency(2);
+// Libvips thread pool: default 2 (VPS-friendly). Override with SHARP_CONCURRENCY env (e.g. 4 on Windows).
+const sharpConcurrency = parseInt(process.env.SHARP_CONCURRENCY, 10);
+sharp.concurrency(Number.isFinite(sharpConcurrency) && sharpConcurrency > 0 ? sharpConcurrency : 2);
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const LAYERS_DIR = path.join(ROOT_DIR, 'exported-layers');

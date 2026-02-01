@@ -281,25 +281,41 @@ grep -r "ffmpeg" --include="*.js" animation-server/
 - The manifest.json intentionally uses Unix-style paths for consistency
 - Focus on making it work, not perfect - the user needs to get running quickly
 
+## VPS / Animation Service (Linux)
+
+**File:** `vps-setup/animation.service`
+
+- **WorkingDirectory:** `/home/liveStream/animation-server` (service runs from animation-server)
+- **ExecStart:** Uses full path to node and `animation-server/server.js`
+- **Environment:**
+  - `ANIMATION_PORT=3003`
+  - `UV_THREADPOOL_SIZE=4` — Node.js libuv thread pool size for async I/O (FFmpeg, Sharp, etc.). Increase on multi-core VPS if needed (e.g. 8); keep low (2–4) if CPU-bound.
+
+**Compositor performance:** `animation-server/compositor.js` sets `sharp.concurrency(2)` for libvips. On VPS with limited cores this avoids overloading; on Windows/local you can leave as-is or tune via Sharp docs.
+
 ## Quick Reference: Where Things Are
 
 ```
 /home/liveStream/
 ├── tools/
 │   ├── export-psd.js          ← PSD export, path handling critical
-│   └── verify-export.js        ← Verification script (should work as-is)
+│   └── verify-export.js        ← Verification script (run: npm run verify-export)
 ├── animation-server/
 │   ├── server.js              ← Main animation server
-│   ├── compositor.js          ← Layer loading (line 181 critical)
+│   ├── compositor.js          ← Layer loading (line 181 critical), sharp.concurrency(2)
 │   ├── platform.js            ← Platform-specific paths
 │   ├── continuous-stream-manager.js  ← FFmpeg integration
 │   ├── audio-decoder.js       ← Audio processing
 │   └── tv-content/
 │       └── video-decoder.js   ← Video processing
+├── vps-setup/
+│   └── animation.service     ← UV_THREADPOOL_SIZE=4, ANIMATION_PORT=3003
 ├── exported-layers/
 │   └── manifest.json          ← Generated, Unix paths
-├── WINDOWS_QUICKSTART.md      ← User guide
-└── WINDOWS_DEPLOYMENT_GUIDE.md ← Detailed troubleshooting
+├── CURSOR_PROMPT.md           ← This file (Windows compatibility)
+├── WINDOWS_QUICKSTART.md      ← User quick-start
+├── WINDOWS_DEPLOYMENT_GUIDE.md ← Detailed troubleshooting
+└── PASTE_THIS_IN_CURSOR.md    ← Ready-to-paste prompts for Cursor
 
 Key line: compositor.js:181
 const layerPath = path.join(LAYERS_DIR, ...layer.path.split('/'));

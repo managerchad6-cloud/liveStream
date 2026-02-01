@@ -23,7 +23,9 @@ This project must work on both Linux (VPS) and Windows (local development).
 
 - `tools/export-psd.js:92` - Exports manifest with Unix paths (correct)
 - `animation-server/compositor.js:181` - Converts manifest paths to platform paths (correct)
+- `animation-server/compositor.js` - `sharp.concurrency(2)` for libvips thread pool
 - `animation-server/platform.js` - Platform-specific binary paths
+- `vps-setup/animation.service` - `UV_THREADPOOL_SIZE=4`, `ANIMATION_PORT=3003`
 
 ### Test Commands
 
