@@ -81,3 +81,19 @@ Check Windows compatibility for this Node.js project:
 
 Don't change manifest.json format (Unix paths are intentional). Maintain Linux compatibility.
 
+---
+
+## VPS / Animation Service Check (optional)
+
+When editing deployment or performance:
+
+1. **Read** `vps-setup/animation.service`:
+   - `WorkingDirectory` should point to animation-server (e.g. `/home/liveStream/animation-server`)
+   - `Environment=ANIMATION_PORT=3003`
+   - `Environment=UV_THREADPOOL_SIZE=4` — Node libuv thread pool; tune for VPS (2–4 low-core, 6–8 multi-core)
+
+2. **Read** `animation-server/compositor.js` (top):
+   - `sharp.concurrency(2)` — libvips threads; keep 2 on low-core VPS, can increase on beefy local/Win.
+
+3. **Don’t break:** Linux VPS is production; any path or env change must stay cross-platform.
+
