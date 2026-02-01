@@ -61,19 +61,27 @@ let expressionOffsets = {
 const EXPRESSION_LAYER_NAMES = new Set([
   'static_chad_eye_left',
   'static_chad_eye_right',
+  'static_chad_eye_cover',
+  'static_chad_eyebrow_left',
+  'static_chad_eyebrow_right',
   'static_virgin_eye_left',
   'static_virgin_eye_right',
+  'static_virgin_eye_cover',
   'static_virgin_eyebrow_left',
   'static_virgin_eyebrow_right'
-  // Note: eye_cover layers are NOT included - they remain static
 ]);
 
 // Map expression layer IDs to their character + feature for offset lookup
+// eye_cover layers map to null feature — they're dynamic for z-order but don't move
 const EXPRESSION_LAYER_MAP = {
   'static_chad_eye_left': { character: 'chad', feature: 'eyes' },
   'static_chad_eye_right': { character: 'chad', feature: 'eyes' },
+  'static_chad_eye_cover': null,
+  'static_chad_eyebrow_left': { character: 'chad', feature: 'eyebrows' },
+  'static_chad_eyebrow_right': { character: 'chad', feature: 'eyebrows' },
   'static_virgin_eye_left': { character: 'virgin', feature: 'eyes' },
   'static_virgin_eye_right': { character: 'virgin', feature: 'eyes' },
+  'static_virgin_eye_cover': null,
   'static_virgin_eyebrow_left': { character: 'virgin', feature: 'eyebrows' },
   'static_virgin_eyebrow_right': { character: 'virgin', feature: 'eyebrows' }
 };
@@ -531,12 +539,16 @@ async function compositeFrame(state) {
     // Dynamic layers: expression (eyes/eyebrows with offsets), mouths, and blinks
     const compositeOps = [];
 
-    // Expression layers (eyes/eyebrows) with pixel offsets
+    // Expression layers (eyes/eyebrows with offsets, eye_cover without offsets for z-order)
     const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
     for (const exprLayer of sortedExprLayers) {
       const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
-      if (!mapping) continue;
-      const offset = expressionOffsets[mapping.character]?.[mapping.feature] || { x: 0, y: 0 };
+      // mapping is null for eye_cover (no offset, just needs correct z-order)
+      // mapping is undefined if layer isn't in the map at all (skip)
+      if (mapping === undefined) continue;
+      const offset = mapping
+        ? (expressionOffsets[mapping.character]?.[mapping.feature] || { x: 0, y: 0 })
+        : { x: 0, y: 0 };
       compositeOps.push({
         input: exprLayer.buffer,
         left: Math.max(0, exprLayer.scaledX + Math.round(offset.x)),
