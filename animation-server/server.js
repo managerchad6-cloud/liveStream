@@ -746,11 +746,22 @@ async function renderFrame(frame, audioProgress = null) {
       // Rounding to multiples of 3 pixels reduces unique cache entries by ~9x
       // while maintaining visually smooth animation (with fewer expression changes).
       const QUANT = 3;
+      const BROW_QUANT = 2;
+      const browMin = 2;
       s.eyeX = Math.round(s.eyeX / QUANT) * QUANT;
       s.eyeY = Math.round(s.eyeY / QUANT) * QUANT;
-      s.browY = Math.round(s.browY / QUANT) * QUANT;
-      s.browAsymL = Math.round(s.browAsymL / QUANT) * QUANT;
-      s.browAsymR = Math.round(s.browAsymR / QUANT) * QUANT;
+
+      const rawBrowY = s.browY;
+      const rawBrowAsymL = s.browAsymL;
+      const rawBrowAsymR = s.browAsymR;
+
+      s.browY = Math.round(s.browY / BROW_QUANT) * BROW_QUANT;
+      s.browAsymL = Math.round(s.browAsymL / BROW_QUANT) * BROW_QUANT;
+      s.browAsymR = Math.round(s.browAsymR / BROW_QUANT) * BROW_QUANT;
+
+      if (rawBrowY !== 0 && s.browY === 0) s.browY = Math.sign(rawBrowY) * browMin;
+      if (rawBrowAsymL !== 0 && s.browAsymL === 0) s.browAsymL = Math.sign(rawBrowAsymL) * browMin;
+      if (rawBrowAsymR !== 0 && s.browAsymR === 0) s.browAsymR = Math.sign(rawBrowAsymR) * browMin;
 
       // Only call compositor setters when values actually changed —
       // each call wipes the frame cache, forcing expensive re-compositing
