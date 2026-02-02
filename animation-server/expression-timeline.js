@@ -124,6 +124,55 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   return plan;
 }
 
+function augmentExpressionPlan(plan, { message, character, listener, durationSec }) {
+  const { totalMs, perWord, words } = estimateWordTimings(message, durationSec);
+  const minActions = Math.max(6, Math.floor(words.length / 3));
+  const actions = Array.isArray(plan.actions) ? plan.actions.slice() : [];
+
+  if (actions.length >= minActions) {
+    plan.totalMs = plan.totalMs || totalMs;
+    return plan;
+  }
+
+  let t = 0;
+  let wordIndex = 0;
+  const addEye = (target, look, amount) => {
+    actions.push({ t, type: 'eye', target, look, amount, durationMs: 260 });
+  };
+  const addBrow = (target, emote, amount) => {
+    actions.push({ t: Math.max(0, t - 80), type: 'brow', target, emote, amount, durationMs: 260 });
+  };
+
+  const looks = ['listener', 'down_left', 'down_right', 'up_left', 'up_right', 'away', 'left', 'right'];
+  let lookIdx = 0;
+
+  while (t < totalMs && actions.length < minActions * 2) {
+    const look = looks[lookIdx % looks.length];
+    addEye(character, look, 0.45);
+    if (actions.length % 3 === 0) {
+      addBrow(character, 'raise', 0.4);
+    } else if (actions.length % 5 === 0) {
+      addBrow(character, 'flick', 0.35);
+    }
+
+    // Listener reacts subtly
+    if (listener) {
+      addEye(listener, 'listener', 0.35);
+      if (actions.length % 4 === 0) {
+        actions.push({ t: t + 120, type: 'mouth', target: listener, shape: 'SMILE', durationMs: 500 });
+      }
+    }
+
+    wordIndex += 4;
+    t += perWord * 4;
+    lookIdx += 1;
+  }
+
+  plan.totalMs = plan.totalMs || totalMs;
+  plan.actions = actions.sort((a, b) => a.t - b.t);
+  return plan;
+}
+
 function makeTweener(applyFn, timers) {
   return function tween(from, to, durationMs = DEFAULT_TWEEN_MS) {
     const steps = Math.max(1, TWEEN_STEPS);
@@ -249,5 +298,6 @@ function resolveEyeLook(look, character, listener, range, amount) {
 
 module.exports = {
   buildExpressionPlan,
-  scheduleExpressionPlan
+  scheduleExpressionPlan,
+  augmentExpressionPlan
 };

@@ -38,7 +38,7 @@ const StreamManager = require('./stream-manager');
 const ContinuousStreamManager = require('./continuous-stream-manager');
 const SyncedPlayback = require('./synced-playback');
 const TVContentService = require('./tv-content');
-const { buildExpressionPlan, scheduleExpressionPlan } = require('./expression-timeline');
+const { buildExpressionPlan, scheduleExpressionPlan, augmentExpressionPlan } = require('./expression-timeline');
 const OpenAI = require('openai');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
@@ -640,6 +640,12 @@ async function startPlayback(item) {
         limits
       });
     }
+    plan = augmentExpressionPlan(plan, {
+      message: item.messageText,
+      character: item.character,
+      listener,
+      durationSec: item.duration
+    });
     console.log(`[Expr] Plan for ${item.character}:`, JSON.stringify(plan));
     expressionTimers = scheduleExpressionPlan(plan, {
       limits,
