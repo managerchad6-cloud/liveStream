@@ -1,5 +1,28 @@
 const DEFAULT_WPM = 165;
 
+function makeSeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    return ((s >>> 0) % 1000000) / 1000000;
+  };
+}
+
+function randRange(rng, min, max) {
+  return min + (max - min) * rng();
+}
+
 function estimateWordTimings(text, durationSec) {
   const words = (text || '').trim().split(/\s+/).filter(Boolean);
   const wordCount = Math.max(1, words.length);
@@ -49,6 +72,7 @@ function classifyTone(text) {
  * - Listener: Occasional reactions.
  */
 function buildExpressionPlan({ message, character, listener, durationSec, limits }) {
+  const rng = makeRng(makeSeed(`${message || ''}|${character}|${listener || ''}|plan`));
   const sentences = splitSentences(message);
   const { totalMs, perWord, wordCount } = estimateWordTimings(message, durationSec);
   const overallTone = classifyTone(message);
@@ -71,7 +95,8 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     return { ...s, words, startMs: start, durationMs: ms, tone: classifyTone(s.text) };
   });
 
-  const glanceDirs = ['down', 'away', 'down_left', 'down_right'];
+  const glanceDirs = ['down', 'away', 'down_left', 'down_right', 'up_left', 'up_right'];
+  const microDirs = ['left', 'right', 'up', 'down', 'up_left', 'up_right', 'down_left', 'down_right'];
 
   // Build expression actions per sentence
   for (let i = 0; i < sentenceTimings.length; i++) {
@@ -85,95 +110,134 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       type: 'eye',
       target: character,
       look: 'listener',
-      amount: 0.5,
-      durationMs: 250
+      amount: randRange(rng, 0.45, 0.55),
+      durationMs: Math.round(randRange(rng, 220, 320))
     });
 
     // For longer sentences, add 1-2 glances away and back
     if (sent.durationMs > 1200) {
       // First glance away around 35% through
-      const glance1Time = sent.startMs + sent.durationMs * 0.35;
-      const glance1Dir = glanceDirs[i % glanceDirs.length];
+      const glance1Time = sent.startMs + sent.durationMs * randRange(rng, 0.3, 0.42);
+      const glance1Dir = glanceDirs[Math.floor(rng() * glanceDirs.length)];
       plan.actions.push({
         t: glance1Time,
         type: 'eye',
         target: character,
         look: glance1Dir,
-        amount: 0.35,
-        durationMs: 300
+        amount: randRange(rng, 0.28, 0.38),
+        durationMs: Math.round(randRange(rng, 260, 360))
       });
 
       // Back to listener
       plan.actions.push({
-        t: glance1Time + 400,
+        t: glance1Time + Math.round(randRange(rng, 320, 460)),
         type: 'eye',
         target: character,
         look: 'listener',
-        amount: 0.5,
-        durationMs: 250
+        amount: randRange(rng, 0.42, 0.52),
+        durationMs: Math.round(randRange(rng, 220, 320))
       });
 
       // For very long sentences, add a second glance
       if (sent.durationMs > 2500) {
-        const glance2Time = sent.startMs + sent.durationMs * 0.7;
-        const glance2Dir = glanceDirs[(i + 1) % glanceDirs.length];
+        const glance2Time = sent.startMs + sent.durationMs * randRange(rng, 0.62, 0.78);
+        const glance2Dir = glanceDirs[Math.floor(rng() * glanceDirs.length)];
         plan.actions.push({
           t: glance2Time,
           type: 'eye',
           target: character,
           look: glance2Dir,
-          amount: 0.3,
-          durationMs: 280
+          amount: randRange(rng, 0.26, 0.36),
+          durationMs: Math.round(randRange(rng, 240, 340))
         });
 
         plan.actions.push({
-          t: glance2Time + 380,
+          t: glance2Time + Math.round(randRange(rng, 300, 420)),
           type: 'eye',
           target: character,
           look: 'listener',
-          amount: 0.45,
-          durationMs: 250
+          amount: randRange(rng, 0.4, 0.5),
+          durationMs: Math.round(randRange(rng, 220, 320))
         });
       }
+    }
+
+    // Micro saccades: small, quick eye moves to avoid staring
+    const microCount = Math.max(0, Math.floor(sent.durationMs / 1200));
+    for (let m = 0; m < microCount; m++) {
+      const t = sent.startMs + randRange(rng, 0.15, 0.85) * sent.durationMs;
+      const look = microDirs[Math.floor(rng() * microDirs.length)];
+      plan.actions.push({
+        t: Math.round(t),
+        type: 'eye',
+        target: character,
+        look,
+        amount: randRange(rng, 0.18, 0.28),
+        durationMs: Math.round(randRange(rng, 140, 220))
+      });
     }
 
     // === SPEAKER BROWS ===
     // One brow expression per sentence based on tone
     if (sentTone === 'nervous') {
       plan.actions.push({
-        t: sent.startMs + 200,
+        t: sent.startMs + Math.round(randRange(rng, 120, 260)),
         type: 'brow',
         target: character,
         emote: 'raise',
-        amount: 0.4,
-        durationMs: Math.min(800, sent.durationMs * 0.6)
+        amount: randRange(rng, 0.35, 0.5),
+        durationMs: Math.round(Math.min(800, sent.durationMs * 0.6))
       });
     } else if (sentTone === 'angry') {
       plan.actions.push({
-        t: sent.startMs + 100,
+        t: sent.startMs + Math.round(randRange(rng, 80, 180)),
         type: 'brow',
         target: character,
         emote: 'frown',
-        amount: 0.6,
-        durationMs: Math.min(1200, sent.durationMs * 0.8)
+        amount: randRange(rng, 0.45, 0.6),
+        durationMs: Math.round(Math.min(1200, sent.durationMs * 0.8))
       });
     } else if (sentTone === 'question') {
       plan.actions.push({
-        t: sent.startMs + sent.durationMs * 0.6,
+        t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.5, 0.7)),
         type: 'brow',
         target: character,
         emote: 'skeptical',
-        amount: 0.5,
-        durationMs: Math.min(800, sent.durationMs * 0.4)
+        amount: randRange(rng, 0.4, 0.55),
+        durationMs: Math.round(Math.min(800, sent.durationMs * 0.4))
       });
     } else if (sentTone === 'happy' || sentTone === 'confident') {
       plan.actions.push({
-        t: sent.startMs + 150,
+        t: sent.startMs + Math.round(randRange(rng, 120, 220)),
         type: 'brow',
         target: character,
         emote: 'raise',
-        amount: 0.35,
-        durationMs: Math.min(600, sent.durationMs * 0.5)
+        amount: randRange(rng, 0.3, 0.45),
+        durationMs: Math.round(Math.min(600, sent.durationMs * 0.5))
+      });
+    } else {
+      // Subtle neutral brow motion to avoid dead face
+      if (rng() < 0.45) {
+        plan.actions.push({
+          t: sent.startMs + Math.round(randRange(rng, 180, 380)),
+          type: 'brow',
+          target: character,
+          emote: rng() < 0.6 ? 'raise' : 'skeptical',
+          amount: randRange(rng, 0.22, 0.35),
+          durationMs: Math.round(randRange(rng, 220, 420))
+        });
+      }
+    }
+
+    // Occasional extra asymmetry pop on longer sentences
+    if (sent.durationMs > 1400 && rng() < 0.35) {
+      plan.actions.push({
+        t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.4, 0.75)),
+        type: 'brow',
+        target: character,
+        emote: 'skeptical',
+        amount: randRange(rng, 0.22, 0.32),
+        durationMs: Math.round(randRange(rng, 220, 380))
       });
     }
 
@@ -182,23 +246,23 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       // Listener glances at speaker every other sentence
       if (i % 2 === 1) {
         plan.actions.push({
-          t: sent.startMs + 300,
+          t: sent.startMs + Math.round(randRange(rng, 220, 380)),
           type: 'eye',
           target: listener,
           look: 'listener',
-          amount: 0.4,
-          durationMs: 350
+          amount: randRange(rng, 0.32, 0.42),
+          durationMs: Math.round(randRange(rng, 280, 380))
         });
 
         // Listener looks away briefly
         if (sent.durationMs > 1500) {
           plan.actions.push({
-            t: sent.startMs + sent.durationMs * 0.6,
+            t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.55, 0.7)),
             type: 'eye',
             target: listener,
             look: 'down',
-            amount: 0.25,
-            durationMs: 300
+            amount: randRange(rng, 0.2, 0.3),
+            durationMs: Math.round(randRange(rng, 220, 320))
           });
         }
       }
@@ -224,8 +288,8 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     type: 'eye',
     target: character,
     look: 'listener',
-    amount: 0.3,
-    durationMs: 200
+    amount: randRange(rng, 0.28, 0.38),
+    durationMs: Math.round(randRange(rng, 180, 240))
   });
 
   return plan;
@@ -236,6 +300,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
  * Balanced approach - enough movement to feel alive, not so much it lags.
  */
 function augmentExpressionPlan(plan, { message, character, listener, durationSec }) {
+  const rng = makeRng(makeSeed(`${message || ''}|${character}|${listener || ''}|augment`));
   const { totalMs, wordCount } = estimateWordTimings(message, durationSec);
   const actions = Array.isArray(plan.actions) ? plan.actions.slice() : [];
 
@@ -250,12 +315,12 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
   // Add eye movements spread across the duration
   const neededActions = targetActions - actions.length;
   const interval = totalMs / (neededActions + 1);
-  const glanceDirs = ['listener', 'down', 'listener', 'away', 'listener', 'down_left'];
+  const glanceDirs = ['listener', 'down', 'listener', 'away', 'listener', 'down_left', 'up_left', 'up_right'];
 
   for (let i = 0; i < neededActions; i++) {
     const t = Math.round((i + 1) * interval);
-    const look = glanceDirs[i % glanceDirs.length];
-    const amount = look === 'listener' ? 0.45 : 0.3;
+    const look = glanceDirs[Math.floor(rng() * glanceDirs.length)];
+    const amount = look === 'listener' ? randRange(rng, 0.4, 0.5) : randRange(rng, 0.25, 0.35);
 
     actions.push({
       t,
@@ -263,8 +328,24 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
       target: character,
       look,
       amount,
-      durationMs: 280
+      durationMs: Math.round(randRange(rng, 240, 320))
     });
+  }
+
+  // Add subtle brow actions if none exist
+  const browCount = actions.filter(a => a.type === 'brow' && (a.target || character) === character).length;
+  if (browCount < 2) {
+    const browAdds = 2 - browCount;
+    for (let i = 0; i < browAdds; i++) {
+      actions.push({
+        t: Math.round(totalMs * randRange(rng, 0.25, 0.8)),
+        type: 'brow',
+        target: character,
+        emote: rng() < 0.6 ? 'raise' : 'skeptical',
+        amount: randRange(rng, 0.2, 0.32),
+        durationMs: Math.round(randRange(rng, 220, 360))
+      });
+    }
   }
 
   // Add a couple listener reactions for longer speeches
