@@ -111,6 +111,19 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   const microDirs = ['left', 'right', 'up', 'down', 'up_left', 'up_right', 'down_left', 'down_right'];
 
   // Build expression actions per sentence
+  const asymEmotes = ['asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
+
+  function addBrowAction(t, emote, amount, durationMs) {
+    plan.actions.push({
+      t: Math.round(t),
+      type: 'brow',
+      target: character,
+      emote,
+      amount,
+      durationMs: Math.round(durationMs)
+    });
+  }
+
   for (let i = 0; i < sentenceTimings.length; i++) {
     const sent = sentenceTimings[i];
     const sentTone = sent.tone !== 'neutral' ? sent.tone : overallTone;
@@ -215,84 +228,53 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
     // === SPEAKER BROWS ===
     // One brow expression per sentence based on tone
-    const asymEmotes = ['asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
+    // === SPEAKER BROWS ===
+    // Build 2-4 brow actions per sentence for richer expression.
+    const browCount = Math.max(2, Math.min(4, Math.round(sent.durationMs / 700)));
+    const baseEmotes = [
+      'raise',
+      'frown',
+      rng() < 0.5 ? 'skeptical_left' : 'skeptical_right',
+      asymEmotes[Math.floor(rng() * asymEmotes.length)]
+    ];
 
-    if (sentTone === 'nervous') {
-      plan.actions.push({
-        t: sent.startMs + Math.round(randRange(rng, 120, 260)),
-        type: 'brow',
-        target: character,
-        emote: 'raise',
-        amount: randRange(rng, 0.45, 0.7),
-        durationMs: Math.round(Math.min(1200, sent.durationMs * 0.7))
-      });
-    } else if (sentTone === 'angry') {
-      plan.actions.push({
-        t: sent.startMs + Math.round(randRange(rng, 80, 180)),
-        type: 'brow',
-        target: character,
-        emote: 'frown',
-        amount: randRange(rng, 0.6, 0.85),
-        durationMs: Math.round(Math.min(1400, sent.durationMs * 0.8))
-      });
-    } else if (sentTone === 'question') {
-      const skepticalEmote = rng() < 0.5 ? 'skeptical_left' : 'skeptical_right';
-      plan.actions.push({
-        t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.5, 0.7)),
-        type: 'brow',
-        target: character,
-        emote: skepticalEmote,
-        amount: randRange(rng, 0.55, 0.8),
-        durationMs: Math.round(Math.min(1100, sent.durationMs * 0.55))
-      });
-    } else if (sentTone === 'happy' || sentTone === 'confident') {
-      plan.actions.push({
-        t: sent.startMs + Math.round(randRange(rng, 120, 220)),
-        type: 'brow',
-        target: character,
-        emote: 'raise',
-        amount: randRange(rng, 0.45, 0.65),
-        durationMs: Math.round(Math.min(900, sent.durationMs * 0.6))
-      });
-    } else {
-      // Subtle neutral brow motion to avoid dead face
-      if (rng() < 0.7) {
-        const neutralEmote = rng() < 0.5 ? 'skeptical_left' : 'skeptical_right';
-        plan.actions.push({
-          t: sent.startMs + Math.round(randRange(rng, 180, 380)),
-          type: 'brow',
-          target: character,
-          emote: rng() < 0.6 ? 'raise' : neutralEmote,
-          amount: randRange(rng, 0.4, 0.6),
-          durationMs: Math.round(randRange(rng, 380, 640))
-        });
+    for (let b = 0; b < browCount; b++) {
+      const t = sent.startMs + sent.durationMs * randRange(rng, 0.15, 0.85);
+      let emote = baseEmotes[b % baseEmotes.length];
+      let amount = randRange(rng, 0.45, 0.75);
+      let durationMs = randRange(rng, 420, 820);
+
+      // Tone biases
+      if (sentTone === 'angry') {
+        emote = rng() < 0.7 ? 'frown' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
+        amount = randRange(rng, 0.6, 0.9);
+        durationMs = randRange(rng, 500, 900);
+      } else if (sentTone === 'nervous') {
+        emote = rng() < 0.7 ? 'raise' : (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right');
+        amount = randRange(rng, 0.5, 0.8);
+        durationMs = randRange(rng, 500, 900);
+      } else if (sentTone === 'question') {
+        emote = rng() < 0.6 ? (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right') : asymEmotes[Math.floor(rng() * asymEmotes.length)];
+        amount = randRange(rng, 0.55, 0.85);
+        durationMs = randRange(rng, 480, 860);
+      } else if (sentTone === 'happy' || sentTone === 'confident') {
+        emote = rng() < 0.7 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
+        amount = randRange(rng, 0.5, 0.75);
+        durationMs = randRange(rng, 450, 820);
       }
+
+      addBrowAction(t, emote, amount, durationMs);
     }
 
-    // Occasional extra asymmetry pop on longer sentences
-    if (sent.durationMs > 1400 && rng() < 0.75) {
+    // Extra asymmetry pop for variety
+    if (rng() < 0.6) {
       const asymEmote = asymEmotes[Math.floor(rng() * asymEmotes.length)];
-      plan.actions.push({
-        t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.4, 0.75)),
-        type: 'brow',
-        target: character,
-        emote: asymEmote,
-        amount: randRange(rng, 0.35, 0.55),
-        durationMs: Math.round(randRange(rng, 360, 620))
-      });
-    }
-
-    // Extra asymmetry for short/neutral sentences to add life
-    if (sent.durationMs < 1600 && rng() < 0.7) {
-      const asymEmote = asymEmotes[Math.floor(rng() * asymEmotes.length)];
-      plan.actions.push({
-        t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.35, 0.6)),
-        type: 'brow',
-        target: character,
-        emote: asymEmote,
-        amount: randRange(rng, 0.3, 0.45),
-        durationMs: Math.round(randRange(rng, 320, 520))
-      });
+      addBrowAction(
+        sent.startMs + sent.durationMs * randRange(rng, 0.3, 0.8),
+        asymEmote,
+        randRange(rng, 0.4, 0.65),
+        randRange(rng, 420, 760)
+      );
     }
 
     // === LISTENER REACTIONS ===
@@ -399,8 +381,8 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
 
   // Add subtle brow actions if none exist
   const browCount = actions.filter(a => a.type === 'brow' && (a.target || character) === character).length;
-  if (browCount < 6) {
-    const browAdds = 6 - browCount;
+  if (browCount < 10) {
+    const browAdds = 10 - browCount;
     for (let i = 0; i < browAdds; i++) {
       const asymEmotes = ['skeptical_left', 'skeptical_right', 'asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
       const emote = rng() < 0.6 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
