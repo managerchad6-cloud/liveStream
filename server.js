@@ -369,6 +369,11 @@ async function routeMessageToVoice(message) {
     return filterDecision;
   }
 
+  const explicit = detectExplicitAddress(message);
+  if (explicit) {
+    return { voice: explicit };
+  }
+
   const systemPrompt = buildRouterSystemPrompt(conversationHistory);
 
   const completion = await openai.chat.completions.create({
@@ -433,8 +438,33 @@ function parseRouterResponse(content, message) {
   return { voice: fallbackVoice };
 }
 
+function detectExplicitAddress(text) {
+  if (!text) return null;
+  const lowered = text.toLowerCase();
+  const hasChad = /\bchad\b/.test(lowered);
+  const hasVirgin = /\bvirgin\b/.test(lowered);
+  if (hasChad && !hasVirgin) return 'chad';
+  if (hasVirgin && !hasChad) return 'virgin';
+
+  // If both are mentioned, prefer the one being addressed (e.g., "... , virgin")
+  if (hasChad && hasVirgin) {
+    if (/(hey|hi|yo|sup|what's up|whats up|how are you|how're you|how r u|how you doing)\s+.*\bvirgin\b/.test(lowered)) {
+      return 'virgin';
+    }
+    if (/(hey|hi|yo|sup|what's up|whats up|how are you|how're you|how r u|how you doing)\s+.*\bchad\b/.test(lowered)) {
+      return 'chad';
+    }
+    if (/[,!?]\s*virgin\b/.test(lowered)) return 'virgin';
+    if (/[,!?]\s*chad\b/.test(lowered)) return 'chad';
+  }
+
+  return null;
+}
+
 function guessVoiceFromHeuristics(text) {
   const lowered = text.toLowerCase();
+  if (/\bvirgin\b/.test(lowered)) return 'virgin';
+  if (/\bchad\b/.test(lowered)) return 'chad';
   if (lowered.includes('loser') || lowered.includes('awkward') || lowered.includes('insecure')) {
     return 'virgin';
   }
