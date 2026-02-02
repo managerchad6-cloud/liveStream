@@ -38,12 +38,16 @@ const StreamManager = require('./stream-manager');
 const ContinuousStreamManager = require('./continuous-stream-manager');
 const SyncedPlayback = require('./synced-playback');
 const TVContentService = require('./tv-content');
+const { buildExpressionPlan, scheduleExpressionPlan } = require('./expression-timeline');
+const OpenAI = require('openai');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
 
 // Stream mode: 'synced' (audio muxed into video) or 'separate' (audio played separately)
 const STREAM_MODE = process.env.STREAM_MODE || 'synced';
+const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'gpt-4o-mini';
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const app = express();
 const port = process.env.ANIMATION_PORT || 3003;
@@ -382,6 +386,7 @@ let tvService = null;  // TV content service (initialized after preloadLayers)
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
+let expressionTimers = [];
 
 // Track current speaking state for synced mode
 let currentSpeaker = null;
@@ -422,7 +427,114 @@ function handleAudioComplete() {
   isAudioActive = false;
   lipSyncAccumulatorMs = 0;
   lastLipSyncResult = { phoneme: 'A', character: null, done: true };
+  clearExpressionTimers();
   processQueue();
+}
+
+function clearExpressionTimers() {
+  for (const t of expressionTimers) {
+    clearTimeout(t);
+  }
+  expressionTimers = [];
+}
+
+async function buildExpressionPlanLLM({ message, character, listener, durationSec, limits }) {
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn('[Expr] OPENAI_API_KEY not set, using heuristic expression plan');
+    return null;
+  }
+
+  const prompt = `You are generating a timed expression plan for an animated character.
+Output ONLY valid JSON with this schema:
+{
+  "character": "chad|virgin",
+  "listener": "chad|virgin",
+  "totalMs": number,
+  "actions": [
+    {
+      "t": number,                // milliseconds from start
+      "type": "eye"|"brow",
+      // for type="eye":
+      "look": "listener"|"away"|"down"|"up"|"neutral",
+      "amount": 0.0-1.0,
+      "durationMs": number,
+      // for type="brow":
+      "emote": "raise"|"frown"|"skeptical"|"flick",
+      "amount": 0.0-1.0,
+      "count": number            // only for flick
+    }
+  ]
+}
+
+Rules:
+- Do NOT add extra keys.
+- Use the message's emotional nuance and cadence.
+- Align actions to natural phrasing and pauses.
+- totalMs should match the audio duration (in ms).
+- Keep actions within 0..totalMs.
+- Prefer subtlety over jitter.`;
+
+  const content = `Character: ${character}\nListener: ${listener}\nDurationSec: ${durationSec}\nMessage: ${message}\n` +
+    `Notes: Virgin is on right, Chad on left. When speaking to the other, look toward them.`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: EXPRESSION_MODEL,
+      messages: [
+        { role: 'system', content: prompt },
+        { role: 'user', content }
+      ],
+      temperature: 0.4,
+      max_tokens: 500
+    });
+
+    const raw = completion.choices[0].message.content.trim();
+    const clean = raw.replace(/```json|```/gi, '').trim();
+    const parsed = JSON.parse(clean);
+    const safe = normalizeExpressionPlan(parsed, { message, character, listener, durationSec, limits });
+    return safe;
+  } catch (err) {
+    console.warn('[Expr] LLM plan failed, using heuristic:', err.message);
+    return null;
+  }
+}
+
+function normalizeExpressionPlan(plan, context) {
+  if (!plan || typeof plan !== 'object') return null;
+  const totalMs = Number.isFinite(Number(plan.totalMs))
+    ? Number(plan.totalMs)
+    : Math.max(200, (context.durationSec || 1) * 1000);
+
+  const actions = Array.isArray(plan.actions) ? plan.actions : [];
+  const allowedLooks = new Set(['listener', 'away', 'down', 'up', 'neutral']);
+  const allowedEmotes = new Set(['raise', 'frown', 'skeptical', 'flick']);
+
+  const cleaned = actions.map(a => {
+    const t = Math.max(0, Math.min(totalMs, Number(a.t) || 0));
+    if (a.type === 'eye') {
+      const look = allowedLooks.has(a.look) ? a.look : 'neutral';
+      const amount = Math.max(0, Math.min(1, Number(a.amount) || 0.4));
+      const durationMs = Math.max(80, Number(a.durationMs) || 200);
+      return { t, type: 'eye', look, amount, durationMs };
+    }
+    if (a.type === 'brow') {
+      const emote = allowedEmotes.has(a.emote) ? a.emote : 'raise';
+      const amount = Math.max(0, Math.min(1, Number(a.amount) || 0.4));
+      const durationMs = Math.max(80, Number(a.durationMs) || 220);
+      const count = Math.max(1, Math.round(Number(a.count) || 2));
+      const entry = { t, type: 'brow', emote, amount, durationMs };
+      if (emote === 'flick') entry.count = count;
+      return entry;
+    }
+    return null;
+  }).filter(Boolean);
+
+  return {
+    character: plan.character || context.character,
+    listener: plan.listener || context.listener,
+    totalMs,
+    actions: cleaned
+  };
 }
 
 function tickLipSyncByTime() {
@@ -447,6 +559,7 @@ function tickLipSyncByTime() {
 async function startPlayback(item) {
   isAudioActive = true;
   currentSpeaker = item.character;
+  clearExpressionTimers();
 
   if (LIPSYNC_MODE === 'realtime') {
     syncedPlayback.loadSamples(item.samples, item.duration, item.character);
@@ -465,6 +578,40 @@ async function startPlayback(item) {
 
   if (item.messageText) {
     setCaption(item.messageText, item.duration);
+  }
+
+  // Build and schedule expression timeline
+  if (item.messageText) {
+    const listener = item.character === 'virgin' ? 'chad' : 'virgin';
+    const limits = getExpressionLimits();
+    let plan = await buildExpressionPlanLLM({
+      message: item.messageText,
+      character: item.character,
+      listener,
+      durationSec: item.duration,
+      limits
+    });
+    if (!plan) {
+      plan = buildExpressionPlan({
+        message: item.messageText,
+        character: item.character,
+        listener,
+        durationSec: item.duration,
+        limits
+      });
+    }
+    console.log(`[Expr] Plan for ${item.character}:`, JSON.stringify(plan));
+    expressionTimers = scheduleExpressionPlan(plan, {
+      limits,
+      log: (msg) => console.log(msg),
+      setEyes: (character, x, y) => setExpressionOffset(character, 'eyes', x, y),
+      setBrows: (character, y) => setExpressionOffset(character, 'eyebrows', 0, y),
+      setBrowAsym: (character, leftY, rightY) => setEyebrowAsymmetry(character, leftY, rightY),
+      getEyeX: (character) => getExpressionOffsets()[character]?.eyes?.x || 0,
+      getEyeY: (character) => getExpressionOffsets()[character]?.eyes?.y || 0,
+      getBrowBase: (character) => getExpressionOffsets()[character]?.eyebrows?.y || 0,
+      resetFace: (character) => resetExpressionOffsets(character)
+    });
   }
 
   scheduleAudioCleanup(item.audioMp3Path, item.duration);
