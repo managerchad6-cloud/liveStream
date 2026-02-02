@@ -70,6 +70,8 @@ let expressionOffsets = {
     eyebrows: { x: 0, y: 0, rotation: 0 }
   }
 };
+let expressionRotationTargets = { chad: 0, virgin: 0 };
+let lastExpressionUpdate = Date.now();
 
 const EXPRESSION_LAYER_NAMES = new Set([
   'static_chad_eye_left',
@@ -106,6 +108,7 @@ const NOSE_LAYER_IDS = new Set(['static_virgin_nose', 'static_chad_nose']);
 const DEFAULT_EXPRESSION_RANGE = 20; // fallback symmetric range (pixels)
 const DEFAULT_EYEBROW_ROTATION_UP = 10;   // degrees at max up
 const DEFAULT_EYEBROW_ROTATION_DOWN = 10; // degrees at max down
+const EXPRESSION_EASE_MS = 220;
 const EYEBROW_LAYER_SIDES = {
   'static_chad_eyebrow_left': 'left',
   'static_chad_eyebrow_right': 'right',
@@ -605,6 +608,7 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
  * TV content is composited before character layers (appears behind them)
  */
 async function compositeFrame(state) {
+  stepExpressionOffsets(Date.now());
   const {
     chadPhoneme = 'A',
     virginPhoneme = 'A',
@@ -1083,8 +1087,9 @@ function setExpressionOffset(character, feature, x, y) {
   }
 
   if (feature === 'eyebrows') {
-    const rotation = computeEyebrowRotation(character, clampedY);
-    expressionOffsets[character][feature] = { x: clampedX, y: clampedY, rotation };
+    expressionOffsets[character][feature].x = clampedX;
+    expressionOffsets[character][feature].y = clampedY;
+    expressionRotationTargets[character] = computeEyebrowRotation(character, clampedY);
   } else {
     expressionOffsets[character][feature] = { x: clampedX, y: clampedY };
   }
@@ -1119,6 +1124,24 @@ function computeEyebrowRotation(character, y) {
   return rotation;
 }
 
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function stepExpressionOffsets(now) {
+  const dt = Math.max(0, now - lastExpressionUpdate);
+  lastExpressionUpdate = now;
+  if (!Number.isFinite(dt)) return;
+  const t = EXPRESSION_EASE_MS > 0 ? Math.min(1, dt / EXPRESSION_EASE_MS) : 1;
+  const k = easeOutCubic(t);
+
+  for (const char of Object.keys(expressionOffsets)) {
+    const current = expressionOffsets[char].eyebrows;
+    const target = expressionRotationTargets[char] || 0;
+    current.rotation += (target - current.rotation) * k;
+  }
+}
+
 function setEyebrowRotationLimits(character, rotUp, rotDown) {
   if (!expressionLimits) {
     expressionLimits = { chad: {}, virgin: {} };
@@ -1144,7 +1167,7 @@ function setEyebrowRotationLimits(character, rotUp, rotDown) {
 
   if (expressionOffsets[character]?.eyebrows) {
     const currentY = expressionOffsets[character].eyebrows.y || 0;
-    expressionOffsets[character].eyebrows.rotation = computeEyebrowRotation(character, currentY);
+    expressionRotationTargets[character] = computeEyebrowRotation(character, currentY);
     frameCache = {};
     lastOutputKey = null;
     lastOutputBuffer = null;
@@ -1166,12 +1189,14 @@ function resetExpressionOffsets(character) {
     if (expressionOffsets[character]) {
       expressionOffsets[character].eyes = { x: 0, y: 0 };
       expressionOffsets[character].eyebrows = { x: 0, y: 0, rotation: 0 };
+      expressionRotationTargets[character] = 0;
     }
   } else {
     // Reset all
     for (const char of Object.keys(expressionOffsets)) {
       expressionOffsets[char].eyes = { x: 0, y: 0 };
       expressionOffsets[char].eyebrows = { x: 0, y: 0, rotation: 0 };
+      expressionRotationTargets[char] = 0;
     }
   }
   frameCache = {};
