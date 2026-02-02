@@ -473,8 +473,9 @@ function getBrowRange(limits, character) {
   if (!lim) return { up: -6, down: 6 };
   const up = lim.minY || -6;
   const down = lim.maxY || 6;
-  // Clamp downward movement to 2px max
-  return { up, down: Math.min(down, 2) };
+  // Clamp downward movement to 2px max (and none for virgin)
+  const clampedDown = Math.min(down, 2);
+  return { up, down: character === 'virgin' ? 0 : clampedDown };
 }
 
 function resolveEyeLook(look, character, listener, range, amount) {
