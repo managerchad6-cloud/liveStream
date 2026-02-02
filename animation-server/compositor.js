@@ -18,6 +18,8 @@ let staticBaseBuffer = null; // Pre-composited static layers
 let frameCache = {};          // Cache for character state (JPEG buffers)
 let lastOutputKey = null;     // Key of the last full output frame
 let lastOutputBuffer = null;  // Last complete JPEG output buffer
+let outputCache = {};         // Cache for full output frames (charBuffer + caption/TV overlay)
+const OUTPUT_CACHE_MAX = 60;  // Max cached output frames
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
 const EXPR_LAYER_CACHE_MAX = 200; // Max cached expression layer buffers
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
@@ -908,10 +910,22 @@ async function compositeFrame(state) {
 
   let result;
   if (overlayOps.length > 0) {
-    result = await sharp(charBuffer)
-      .composite(overlayOps)
-      .jpeg({ quality: JPEG_QUALITY })
-      .toBuffer();
+    // Check output cache before running overlay composite
+    result = outputCache[outputKey];
+    if (!result) {
+      result = await sharp(charBuffer)
+        .composite(overlayOps)
+        .jpeg({ quality: JPEG_QUALITY })
+        .toBuffer();
+      // Cache unless TV is active (TV frames change constantly)
+      if (!hasTv) {
+        const outKeys = Object.keys(outputCache);
+        if (outKeys.length >= OUTPUT_CACHE_MAX) {
+          for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
+        }
+        outputCache[outputKey] = result;
+      }
+    }
   } else {
     // No TV, no caption — cached JPEG includes everything (0 pipelines)
     result = charBuffer;
@@ -928,6 +942,7 @@ function clearCache() {
   staticBaseBuffer = null;
   frameCache = {};
   exprLayerCache = {};
+  outputCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
 }
@@ -1195,18 +1210,15 @@ function easeOutCubic(t) {
 }
 
 function stepExpressionOffsets(now) {
-  const dt = Math.max(0, now - lastExpressionUpdate);
   lastExpressionUpdate = now;
-  if (!Number.isFinite(dt)) return;
-  const t = EXPRESSION_EASE_MS > 0 ? Math.min(1, dt / EXPRESSION_EASE_MS) : 1;
-  const k = easeOutCubic(t);
-
+  // Snap rotation directly to target — the expression evaluator already provides
+  // smooth integer-step browY transitions, so easing here is redundant and produces
+  // unique float cache keys every frame, defeating the charCacheKey cache entirely.
   for (const char of Object.keys(expressionOffsets)) {
     const current = expressionOffsets[char].eyebrows;
     const targets = expressionRotationTargets[char] || { left: 0, right: 0 };
-    // Round to 1 decimal place to reduce unique cache keys
-    current.left.rotation = Math.round((current.left.rotation + (targets.left - current.left.rotation) * k) * 10) / 10;
-    current.right.rotation = Math.round((current.right.rotation + (targets.right - current.right.rotation) * k) * 10) / 10;
+    current.left.rotation = Math.round(targets.left * 10) / 10;
+    current.right.rotation = Math.round(targets.right * 10) / 10;
   }
 }
 
