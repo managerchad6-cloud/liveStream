@@ -1,6 +1,7 @@
 const { resolveEyeLook, getEyeRange, getBrowRange } = require('./expression-timeline');
 
-const DEFAULT_TWEEN_MS = 300;  // Slower, more natural transitions
+const DEFAULT_TWEEN_MS = 360;  // Slower, more natural transitions
+const MIN_BROW_HOLD_MS = 1000;
 
 class ExpressionEvaluator {
   constructor() {
@@ -58,15 +59,15 @@ class ExpressionEvaluator {
 
         } else if (action.emote === 'raise') {
           const up = browRange.up * (action.amount || 0.5);
-          const dur = action.durationMs || 220;
-          tracks.browY.push({ t, targetVal: up, tweenMs: dur });
-          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 200 });
+          const dur = Math.max(MIN_BROW_HOLD_MS, action.durationMs || 220);
+          tracks.browY.push({ t, targetVal: up, tweenMs: 350 });
+          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 350 });
 
         } else if (action.emote === 'frown') {
           const down = browRange.down * (action.amount || 0.6);
-          const dur = action.durationMs || 400;
-          tracks.browY.push({ t, targetVal: down, tweenMs: 200 });
-          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 300 });  // Return to neutral
+          const dur = Math.max(MIN_BROW_HOLD_MS, action.durationMs || 400);
+          tracks.browY.push({ t, targetVal: down, tweenMs: 350 });
+          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 350 });  // Return to neutral
 
         } else if (
           action.emote === 'skeptical' ||
@@ -79,7 +80,7 @@ class ExpressionEvaluator {
         ) {
           const up = browRange.up * (action.amount || 0.6);
           const down = browRange.down * (action.amount || 0.6);
-          const dur = action.durationMs || 500;
+          const dur = Math.max(MIN_BROW_HOLD_MS, action.durationMs || 500);
           let leftVal = 0;
           let rightVal = 0;
 
@@ -100,10 +101,10 @@ class ExpressionEvaluator {
             rightVal = down;
           }
 
-          tracks.browAsymL.push({ t, targetVal: leftVal, tweenMs: 80 });
-          tracks.browAsymR.push({ t, targetVal: rightVal, tweenMs: 80 });
-          tracks.browAsymL.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
-          tracks.browAsymR.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
+          tracks.browAsymL.push({ t, targetVal: leftVal, tweenMs: 220 });
+          tracks.browAsymR.push({ t, targetVal: rightVal, tweenMs: 220 });
+          tracks.browAsymL.push({ t: t + dur, targetVal: 0, tweenMs: 220 });
+          tracks.browAsymR.push({ t: t + dur, targetVal: 0, tweenMs: 220 });
         }
 
       } else if (action.type === 'mouth') {

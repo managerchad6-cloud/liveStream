@@ -120,7 +120,19 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       target: character,
       emote,
       amount,
-      durationMs: Math.round(durationMs)
+      durationMs: Math.max(1000, Math.round(durationMs))
+    });
+  }
+
+  // Keep listener mostly oriented toward the speaker
+  if (listener) {
+    plan.actions.push({
+      t: 0,
+      type: 'eye',
+      target: listener,
+      look: 'listener',
+      amount: 0.5,
+      durationMs: 320
     });
   }
 
@@ -292,13 +304,22 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
         // Listener looks away briefly
         if (sent.durationMs > 1500) {
+          const awayTime = sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.55, 0.7));
           plan.actions.push({
-            t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.55, 0.7)),
+            t: awayTime,
             type: 'eye',
             target: listener,
             look: 'down',
             amount: randRange(rng, 0.2, 0.3),
             durationMs: Math.round(randRange(rng, 220, 320))
+          });
+          plan.actions.push({
+            t: awayTime + Math.round(randRange(rng, 260, 420)),
+            type: 'eye',
+            target: listener,
+            look: 'listener',
+            amount: randRange(rng, 0.35, 0.45),
+            durationMs: Math.round(randRange(rng, 240, 360))
           });
         }
       }
