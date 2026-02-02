@@ -533,7 +533,7 @@ function normalizeExpressionPlan(plan, context) {
 
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const allowedLooks = new Set(['listener', 'away', 'down', 'up', 'neutral', 'left', 'right', 'up_left', 'up_right', 'down_left', 'down_right']);
-  const allowedEmotes = new Set(['raise', 'frown', 'skeptical', 'flick']);
+  const allowedEmotes = new Set(['raise', 'frown', 'skeptical', 'skeptical_left', 'skeptical_right', 'flick']);
   const allowedMouth = new Set(['SMILE', 'SURPRISE']);
   const allowedTargets = new Set(['chad', 'virgin']);
 
@@ -746,17 +746,20 @@ async function renderFrame(frame, audioProgress = null) {
         prev.eyeY = s.eyeY;
       }
 
-      if (s.browAsymL !== 0 || s.browAsymR !== 0) {
-        if (s.browAsymL !== prev.browAsymL || s.browAsymR !== prev.browAsymR) {
-          setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
-          prev.browAsymL = s.browAsymL;
-          prev.browAsymR = s.browAsymR;
-        }
-      } else if (s.browY !== prev.browY) {
+      const browYChanged = s.browY !== prev.browY;
+      const asymChanged = s.browAsymL !== prev.browAsymL || s.browAsymR !== prev.browAsymR;
+
+      // Apply base brow movement first so asymmetry is layered on top of latest Y.
+      if (browYChanged) {
         setExpressionOffset(c, 'eyebrows', 0, s.browY);
         prev.browY = s.browY;
-        prev.browAsymL = 0;
-        prev.browAsymR = 0;
+      }
+
+      // Always apply asymmetry changes, including returning to neutral (0,0).
+      if (asymChanged) {
+        setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
+        prev.browAsymL = s.browAsymL;
+        prev.browAsymR = s.browAsymR;
       }
 
       // Apply mouth override for non-speaking character
