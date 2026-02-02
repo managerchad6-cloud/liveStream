@@ -1,6 +1,4 @@
 const DEFAULT_WPM = 165;
-const DEFAULT_TWEEN_MS = 180;
-const TWEEN_STEPS = 6;
 
 function estimateWordTimings(text, durationSec) {
   const words = (text || '').trim().split(/\s+/).filter(Boolean);
@@ -184,94 +182,6 @@ function normalizePlanTiming(plan, durationSec) {
   return plan;
 }
 
-function makeTweener(applyFn, timers) {
-  return function tween(from, to, durationMs = DEFAULT_TWEEN_MS) {
-    const steps = Math.max(1, TWEEN_STEPS);
-    const stepMs = Math.max(16, Math.floor(durationMs / steps));
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const val = from + (to - from) * t;
-      const id = setTimeout(() => applyFn(val), i * stepMs);
-      timers.push(id);
-    }
-  };
-}
-
-function scheduleExpressionPlan(plan, api) {
-  const timers = [];
-  const log = api.log || (() => {});
-  const totalMs = plan.totalMs || Math.max(200, (plan.durationSec || 1) * 1000);
-
-  const getEyeRangeFor = (c) => getEyeRange(api.limits, c);
-  const getBrowRangeFor = (c) => getBrowRange(api.limits, c);
-
-  for (const action of plan.actions || []) {
-    const id = setTimeout(() => {
-      log(`[Expr] ${plan.character} action: ${JSON.stringify(action)}`);
-      const target = action.target || plan.character;
-      if (action.type === 'eye') {
-        const eyeRange = getEyeRangeFor(target);
-        const targetListener = target === plan.character ? plan.listener : plan.character;
-        const { x, y } = resolveEyeLook(action.look, target, targetListener, eyeRange, action.amount || 0.5);
-        if (typeof x === 'number') {
-          const tweenEyeX = makeTweener((val) => api.setEyes(target, val, api.getEyeY(target)), timers);
-          tweenEyeX(api.getEyeX(target), x, action.durationMs || DEFAULT_TWEEN_MS);
-        }
-        if (typeof y === 'number') {
-          const tweenEyeY = makeTweener((val) => api.setEyes(target, api.getEyeX(target), val), timers);
-          tweenEyeY(api.getEyeY(target), y, action.durationMs || DEFAULT_TWEEN_MS);
-        }
-      } else if (action.type === 'brow') {
-        const browRange = getBrowRangeFor(target);
-        const tweenBrow = makeTweener((val) => api.setBrows(target, val), timers);
-        if (action.emote === 'flick') {
-          const up = browRange.up * (action.amount || 0.4);
-          const down = 0;
-          const count = Math.max(1, action.count || 2);
-          let t = 0;
-          for (let i = 0; i < count; i++) {
-            const upId = setTimeout(() => tweenBrow(api.getBrowBase(target), up, 120), t);
-            timers.push(upId);
-            t += 140;
-            const downId = setTimeout(() => tweenBrow(api.getBrowBase(target), down, 120), t);
-            timers.push(downId);
-            t += 140;
-          }
-        } else if (action.emote === 'raise') {
-          const up = browRange.up * (action.amount || 0.5);
-          tweenBrow(api.getBrowBase(target), up, action.durationMs || 220);
-          const id2 = setTimeout(() => tweenBrow(api.getBrowBase(target), 0, 200), action.durationMs || 220);
-          timers.push(id2);
-        } else if (action.emote === 'frown') {
-          const down = browRange.down * (action.amount || 0.6);
-          tweenBrow(api.getBrowBase(target), down, action.durationMs || 240);
-        } else if (action.emote === 'skeptical') {
-          const up = browRange.up * (action.amount || 0.6);
-          const id3 = setTimeout(() => api.setBrowAsym(target, up, 0), 0);
-          timers.push(id3);
-          const id4 = setTimeout(() => api.setBrowAsym(target, 0, 0), action.durationMs || 500);
-          timers.push(id4);
-        }
-      } else if (action.type === 'mouth') {
-        const durationMs = Math.max(200, Number(action.durationMs) || 500);
-        api.setMouth(target, action.shape, durationMs);
-      }
-    }, action.t);
-    timers.push(id);
-  }
-
-  // Reset to neutral at end
-  timers.push(setTimeout(() => {
-    api.resetFace(plan.character);
-    log(`[Expr] ${plan.character} reset to neutral`);
-    if (plan.listener && plan.listener !== plan.character) {
-      api.resetFace(plan.listener);
-      log(`[Expr] ${plan.listener} reset to neutral`);
-    }
-  }, totalMs + 200));
-
-  return timers;
-}
 
 function getEyeRange(limits, character) {
   const lim = limits?.[character]?.eyes;
@@ -309,7 +219,9 @@ function resolveEyeLook(look, character, listener, range, amount) {
 
 module.exports = {
   buildExpressionPlan,
-  scheduleExpressionPlan,
   augmentExpressionPlan,
-  normalizePlanTiming
+  normalizePlanTiming,
+  resolveEyeLook,
+  getEyeRange,
+  getBrowRange
 };

@@ -38,7 +38,8 @@ const StreamManager = require('./stream-manager');
 const ContinuousStreamManager = require('./continuous-stream-manager');
 const SyncedPlayback = require('./synced-playback');
 const TVContentService = require('./tv-content');
-const { buildExpressionPlan, scheduleExpressionPlan, augmentExpressionPlan, normalizePlanTiming } = require('./expression-timeline');
+const { buildExpressionPlan, augmentExpressionPlan, normalizePlanTiming } = require('./expression-timeline');
+const ExpressionEvaluator = require('./expression-evaluator');
 const OpenAI = require('openai');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
@@ -387,13 +388,10 @@ let tvService = null;  // TV content service (initialized after preloadLayers)
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
-let expressionTimers = [];
-let mouthOverrides = {
-  chad: { phoneme: null, expiresAt: 0 },
-  virgin: { phoneme: null, expiresAt: 0 }
-};
+const expressionEvaluator = new ExpressionEvaluator();
 
 // Track current speaking state for synced mode
+let playbackStartFrame = 0;
 let currentSpeaker = null;
 let currentCaption = null;
 let captionUntil = 0;
@@ -432,38 +430,11 @@ function handleAudioComplete() {
   isAudioActive = false;
   lipSyncAccumulatorMs = 0;
   lastLipSyncResult = { phoneme: 'A', character: null, done: true };
-  clearExpressionTimers();
+  expressionEvaluator.clear();
+  resetExpressionOffsets();
   processQueue();
 }
 
-function clearExpressionTimers() {
-  for (const t of expressionTimers) {
-    clearTimeout(t);
-  }
-  expressionTimers = [];
-}
-
-function setMouthOverride(character, phoneme, durationMs) {
-  const safe = (phoneme || '').toUpperCase();
-  if (!['SMILE', 'SURPRISE', 'A'].includes(safe)) {
-    return;
-  }
-  mouthOverrides[character] = {
-    phoneme: safe,
-    expiresAt: Date.now() + Math.max(200, durationMs || 500)
-  };
-  console.log(`[Expr] ${character} mouth override: ${safe} for ${durationMs || 500}ms`);
-}
-
-function getMouthOverride(character) {
-  const entry = mouthOverrides[character];
-  if (!entry || !entry.phoneme) return null;
-  if (Date.now() > entry.expiresAt) {
-    mouthOverrides[character] = { phoneme: null, expiresAt: 0 };
-    return null;
-  }
-  return entry.phoneme;
-}
 
 async function buildExpressionPlanLLM({ message, character, listener, durationSec, limits }) {
   if (!openai) {
@@ -599,7 +570,8 @@ function tickLipSyncByTime() {
 async function startPlayback(item) {
   isAudioActive = true;
   currentSpeaker = item.character;
-  clearExpressionTimers();
+  playbackStartFrame = frameCount;
+  expressionEvaluator.clear();
 
   if (LIPSYNC_MODE === 'realtime') {
     syncedPlayback.loadSamples(item.samples, item.duration, item.character);
@@ -620,26 +592,19 @@ async function startPlayback(item) {
     setCaption(item.messageText, item.duration);
   }
 
-  // Build and schedule expression timeline
+  // Build expression plan and load into frame-driven evaluator
   if (item.messageText) {
     const listener = item.character === 'virgin' ? 'chad' : 'virgin';
     const limits = getExpressionLimits();
-    let plan = await buildExpressionPlanLLM({
+
+    // Start with heuristic plan immediately
+    let plan = buildExpressionPlan({
       message: item.messageText,
       character: item.character,
       listener,
       durationSec: item.duration,
       limits
     });
-    if (!plan) {
-      plan = buildExpressionPlan({
-        message: item.messageText,
-        character: item.character,
-        listener,
-        durationSec: item.duration,
-        limits
-      });
-    }
     plan = augmentExpressionPlan(plan, {
       message: item.messageText,
       character: item.character,
@@ -647,18 +612,30 @@ async function startPlayback(item) {
       durationSec: item.duration
     });
     plan = normalizePlanTiming(plan, item.duration);
-    console.log(`[Expr] Plan for ${item.character}:`, JSON.stringify(plan));
-    expressionTimers = scheduleExpressionPlan(plan, {
-      limits,
-      log: (msg) => console.log(msg),
-      setEyes: (character, x, y) => setExpressionOffset(character, 'eyes', x, y),
-      setBrows: (character, y) => setExpressionOffset(character, 'eyebrows', 0, y),
-      setBrowAsym: (character, leftY, rightY) => setEyebrowAsymmetry(character, leftY, rightY),
-      setMouth: (character, shape, durationMs) => setMouthOverride(character, shape, durationMs),
-      getEyeX: (character) => getExpressionOffsets()[character]?.eyes?.x || 0,
-      getEyeY: (character) => getExpressionOffsets()[character]?.eyes?.y || 0,
-      getBrowBase: (character) => getExpressionOffsets()[character]?.eyebrows?.y || 0,
-      resetFace: (character) => resetExpressionOffsets(character)
+    console.log(`[Expr] Heuristic plan for ${item.character}:`, JSON.stringify(plan));
+    expressionEvaluator.loadPlan(plan, limits);
+
+    // Fire-and-forget LLM plan: swap in when ready
+    buildExpressionPlanLLM({
+      message: item.messageText,
+      character: item.character,
+      listener,
+      durationSec: item.duration,
+      limits
+    }).then(llmPlan => {
+      if (llmPlan && isAudioActive && currentSpeaker === item.character) {
+        llmPlan = augmentExpressionPlan(llmPlan, {
+          message: item.messageText,
+          character: item.character,
+          listener,
+          durationSec: item.duration
+        });
+        llmPlan = normalizePlanTiming(llmPlan, item.duration);
+        console.log(`[Expr] LLM plan swapped in for ${item.character}:`, JSON.stringify(llmPlan));
+        expressionEvaluator.loadPlan(llmPlan, limits);
+      }
+    }).catch(err => {
+      console.warn('[Expr] LLM plan async error:', err.message);
     });
   }
 
@@ -715,14 +692,34 @@ async function renderFrame(frame, audioProgress = null) {
   // Virgin gets the phoneme if she's speaking, otherwise neutral
   let virginPhoneme = speakingCharacter === 'virgin' ? currentPhoneme : 'A';
 
-  // Apply non-speaking mouth overrides (expressions)
-  if (speakingCharacter !== 'chad') {
-    const override = getMouthOverride('chad');
-    if (override) chadPhoneme = override;
-  }
-  if (speakingCharacter !== 'virgin') {
-    const override = getMouthOverride('virgin');
-    if (override) virginPhoneme = override;
+  // Frame-driven expression evaluation
+  if (expressionEvaluator.loaded && isAudioActive) {
+    // In synced mode, use audio frame position; otherwise fall back to elapsed video frames
+    const currentTimeMs = (audioProgress && audioProgress.playing)
+      ? (audioProgress.frame / STREAM_FPS) * 1000
+      : ((frame - playbackStartFrame) / STREAM_FPS) * 1000;
+    const exprState = expressionEvaluator.evaluateAtMs(currentTimeMs);
+
+    for (const c of ['chad', 'virgin']) {
+      if (!exprState[c]) continue;
+      const s = exprState[c];
+
+      // Apply eye offsets
+      setExpressionOffset(c, 'eyes', s.eyeX, s.eyeY);
+
+      // Apply brow offsets — use asymmetry if non-zero, otherwise symmetric
+      if (s.browAsymL !== 0 || s.browAsymR !== 0) {
+        setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
+      } else {
+        setExpressionOffset(c, 'eyebrows', 0, s.browY);
+      }
+
+      // Apply mouth override for non-speaking character
+      if (speakingCharacter !== c && s.mouth) {
+        if (c === 'chad') chadPhoneme = s.mouth;
+        else virginPhoneme = s.mouth;
+      }
+    }
   }
 
   // Update blink for both characters

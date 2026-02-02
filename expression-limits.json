@@ -11,7 +11,7 @@
       "maxX": 1,
       "minY": -5,
       "maxY": 4,
-      "rotUp": 10,
+      "rotUp": 20,
       "rotDown": 10
     }
   },
@@ -27,7 +27,7 @@
       "maxX": 1,
       "minY": -6,
       "maxY": 4,
-      "rotUp": 10,
+      "rotUp": 20,
       "rotDown": 10
     }
   }
