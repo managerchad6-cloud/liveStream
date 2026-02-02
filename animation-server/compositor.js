@@ -18,6 +18,8 @@ let staticBaseBuffer = null; // Pre-composited static layers
 let frameCache = {};          // Cache for character state (JPEG buffers)
 let lastOutputKey = null;     // Key of the last full output frame
 let lastOutputBuffer = null;  // Last complete JPEG output buffer
+let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
+const EXPR_LAYER_CACHE_MAX = 200; // Max cached expression layer buffers
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -690,52 +692,59 @@ async function compositeFrame(state) {
             rotation = Number(sideData.rotation ?? rotation) || 0;
           }
         }
-        const bounds = exprLayer.contentBounds;
-        const centerX = bounds.left + bounds.width / 2;
-        const centerY = bounds.top + bounds.height / 2;
+        // Round rotation to 1 decimal for cache stability
+        rotation = Math.round(rotation * 10) / 10;
 
         if (dy === 0 && rotation === 0) {
-          // No movement, no rotation — use original buffer
           compositeOps.push({ input: exprLayer.buffer, left: 0, top: 0, blend: 'over' });
         } else {
-          // Rotation angle: frontend sends a signed rotation value.
-          // Left eyebrow uses it as-is, right eyebrow negates it (mirrored).
-          const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
+          const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
+          let cached = exprLayerCache[browCacheKey];
+          if (!cached) {
+            const bounds = exprLayer.contentBounds;
+            const centerX = bounds.left + bounds.width / 2;
+            const centerY = bounds.top + bounds.height / 2;
+            const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
 
-          const rotated = await sharp(exprLayer.croppedBuffer)
-            .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-            .png()
-            .toBuffer();
+            const rotated = await sharp(exprLayer.croppedBuffer)
+              .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+              .png()
+              .toBuffer();
 
-          // Calculate new dimensions after rotation
-          const rad = Math.abs(angle) * Math.PI / 180;
-          const cosA = Math.cos(rad);
-          const sinA = Math.sin(rad);
-          const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
-          const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
+            const rad = Math.abs(angle) * Math.PI / 180;
+            const cosA = Math.cos(rad);
+            const sinA = Math.sin(rad);
+            const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
+            const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
 
-          // Place so rotated center aligns with original center + vertical offset
-          let placeLeft = Math.round(centerX - newW / 2);
-          let placeTop = Math.round(centerY - newH / 2 + dy);
+            let placeLeft = Math.round(centerX - newW / 2);
+            let placeTop = Math.round(centerY - newH / 2 + dy);
 
-          // Handle negative positions by trimming the rotated buffer
-          let finalBuffer = rotated;
-          if (placeLeft < 0 || placeTop < 0) {
-            const trimLeft = Math.max(0, -placeLeft);
-            const trimTop = Math.max(0, -placeTop);
-            const trimW = Math.min(newW - trimLeft, outputWidth);
-            const trimH = Math.min(newH - trimTop, outputHeight);
-            if (trimW > 0 && trimH > 0) {
-              finalBuffer = await sharp(rotated)
-                .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
-                .png()
-                .toBuffer();
+            let finalBuffer = rotated;
+            if (placeLeft < 0 || placeTop < 0) {
+              const trimLeft = Math.max(0, -placeLeft);
+              const trimTop = Math.max(0, -placeTop);
+              const trimW = Math.min(newW - trimLeft, outputWidth);
+              const trimH = Math.min(newH - trimTop, outputHeight);
+              if (trimW > 0 && trimH > 0) {
+                finalBuffer = await sharp(rotated)
+                  .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
+                  .png()
+                  .toBuffer();
+              }
+              placeLeft = Math.max(0, placeLeft);
+              placeTop = Math.max(0, placeTop);
             }
-            placeLeft = Math.max(0, placeLeft);
-            placeTop = Math.max(0, placeTop);
-          }
 
-          compositeOps.push({ input: finalBuffer, left: placeLeft, top: placeTop, blend: 'over' });
+            cached = { input: finalBuffer, left: placeLeft, top: placeTop };
+            // Evict oldest entries if cache is too large
+            const keys = Object.keys(exprLayerCache);
+            if (keys.length >= EXPR_LAYER_CACHE_MAX) {
+              for (let i = 0; i < 20; i++) delete exprLayerCache[keys[i]];
+            }
+            exprLayerCache[browCacheKey] = cached;
+          }
+          compositeOps.push({ input: cached.input, left: cached.left, top: cached.top, blend: 'over' });
         }
         continue;
       }
@@ -746,26 +755,36 @@ async function compositeFrame(state) {
       let layerBuffer = exprLayer.buffer;
 
       if (dx !== 0 || dy !== 0) {
-        const layerW = exprLayer.scaledWidth;
-        const layerH = exprLayer.scaledHeight;
-        const extractLeft = Math.max(0, -dx);
-        const extractTop = Math.max(0, -dy);
-        const extractWidth = layerW - Math.abs(dx);
-        const extractHeight = layerH - Math.abs(dy);
+        const eyeCacheKey = `eye_${exprLayer.id}_${dx}_${dy}`;
+        let cached = exprLayerCache[eyeCacheKey];
+        if (!cached) {
+          const layerW = exprLayer.scaledWidth;
+          const layerH = exprLayer.scaledHeight;
+          const extractLeft = Math.max(0, -dx);
+          const extractTop = Math.max(0, -dy);
+          const extractWidth = layerW - Math.abs(dx);
+          const extractHeight = layerH - Math.abs(dy);
 
-        if (extractWidth > 0 && extractHeight > 0) {
-          layerBuffer = await sharp(exprLayer.buffer)
-            .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
-            .extend({
-              top: Math.max(0, dy),
-              bottom: Math.max(0, -dy),
-              left: Math.max(0, dx),
-              right: Math.max(0, -dx),
-              background: { r: 0, g: 0, b: 0, alpha: 0 }
-            })
-            .png()
-            .toBuffer();
+          if (extractWidth > 0 && extractHeight > 0) {
+            cached = await sharp(exprLayer.buffer)
+              .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+              .extend({
+                top: Math.max(0, dy),
+                bottom: Math.max(0, -dy),
+                left: Math.max(0, dx),
+                right: Math.max(0, -dx),
+                background: { r: 0, g: 0, b: 0, alpha: 0 }
+              })
+              .png()
+              .toBuffer();
+          }
+          const keys = Object.keys(exprLayerCache);
+          if (keys.length >= EXPR_LAYER_CACHE_MAX) {
+            for (let i = 0; i < 20; i++) delete exprLayerCache[keys[i]];
+          }
+          if (cached) exprLayerCache[eyeCacheKey] = cached;
         }
+        if (cached) layerBuffer = cached;
       }
 
       compositeOps.push({
@@ -848,10 +867,12 @@ async function compositeFrame(state) {
       .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
 
-    // Cache the result
-    if (Object.keys(frameCache).length < 100) {
-      frameCache[charCacheKey] = charBuffer;
+    // Cache the result (evict oldest entries if full)
+    const frameCacheKeys = Object.keys(frameCache);
+    if (frameCacheKeys.length >= 100) {
+      for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
     }
+    frameCache[charCacheKey] = charBuffer;
   }
 
   // Overlays: only TV content and captions (emission + lights are baked into charBuffer)
@@ -906,6 +927,7 @@ function clearCache() {
   scaledLayerBuffers = {};
   staticBaseBuffer = null;
   frameCache = {};
+  exprLayerCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
 }
@@ -1128,8 +1150,8 @@ function setExpressionOffset(character, feature, x, y) {
     expressionOffsets[character][feature] = { x: clampedX, y: clampedY };
   }
 
-  // Clear cache to force re-render with new offsets
-  frameCache = {};
+  // Invalidate last-output fast path (charCacheKey includes expression values
+  // so full-frame cache entries naturally miss on new offsets)
   lastOutputKey = null;
   lastOutputBuffer = null;
 }
@@ -1182,8 +1204,9 @@ function stepExpressionOffsets(now) {
   for (const char of Object.keys(expressionOffsets)) {
     const current = expressionOffsets[char].eyebrows;
     const targets = expressionRotationTargets[char] || { left: 0, right: 0 };
-    current.left.rotation += (targets.left - current.left.rotation) * k;
-    current.right.rotation += (targets.right - current.right.rotation) * k;
+    // Round to 1 decimal place to reduce unique cache keys
+    current.left.rotation = Math.round((current.left.rotation + (targets.left - current.left.rotation) * k) * 10) / 10;
+    current.right.rotation = Math.round((current.right.rotation + (targets.right - current.right.rotation) * k) * 10) / 10;
   }
 }
 
@@ -1300,7 +1323,6 @@ function setEyebrowAsymmetry(character, leftY, rightY) {
   expressionRotationTargets[character].left = computeEyebrowRotation(character, brow.left.y);
   expressionRotationTargets[character].right = computeEyebrowRotation(character, brow.right.y);
 
-  frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
 }
