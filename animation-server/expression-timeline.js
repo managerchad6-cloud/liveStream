@@ -126,7 +126,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
 function augmentExpressionPlan(plan, { message, character, listener, durationSec }) {
   const { totalMs, perWord, words } = estimateWordTimings(message, durationSec);
-  const minActions = Math.max(6, Math.floor(words.length / 3));
+  const minActions = Math.max(10, Math.floor(words.length / 2));
   const actions = Array.isArray(plan.actions) ? plan.actions.slice() : [];
 
   if (actions.length >= minActions) {
@@ -134,38 +134,32 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
     return plan;
   }
 
-  let t = 0;
-  let wordIndex = 0;
-  const addEye = (target, look, amount) => {
-    actions.push({ t, type: 'eye', target, look, amount, durationMs: 260 });
-  };
-  const addBrow = (target, emote, amount) => {
-    actions.push({ t: Math.max(0, t - 80), type: 'brow', target, emote, amount, durationMs: 260 });
-  };
+  const looks = ['listener', 'down_left', 'down_right', 'up_left', 'up_right', 'away', 'left', 'right', 'down', 'up'];
+  const browEmotes = ['raise', 'flick', 'skeptical', 'frown'];
 
-  const looks = ['listener', 'down_left', 'down_right', 'up_left', 'up_right', 'away', 'left', 'right'];
-  let lookIdx = 0;
+  const actionCount = Math.max(minActions * 2, Math.floor(totalMs / 900));
+  const interval = totalMs / (actionCount + 1);
 
-  while (t < totalMs && actions.length < minActions * 2) {
-    const look = looks[lookIdx % looks.length];
-    addEye(character, look, 0.45);
-    if (actions.length % 3 === 0) {
-      addBrow(character, 'raise', 0.4);
-    } else if (actions.length % 5 === 0) {
-      addBrow(character, 'flick', 0.35);
+  for (let i = 0; i < actionCount; i++) {
+    const jitter = (Math.random() - 0.5) * interval * 0.4;
+    const t = Math.max(0, Math.min(totalMs, Math.round((i + 1) * interval + jitter)));
+    const look = looks[i % looks.length];
+    const eyeAmount = 0.35 + (i % 3) * 0.1;
+    actions.push({ t, type: 'eye', target: character, look, amount: eyeAmount, durationMs: 220 });
+
+    if (i % 2 === 0) {
+      const emote = browEmotes[i % browEmotes.length];
+      const amount = emote === 'frown' ? 0.5 : 0.4;
+      actions.push({ t: Math.max(0, t - 60), type: 'brow', target: character, emote, amount, durationMs: 240, count: emote === 'flick' ? 2 : undefined });
     }
 
-    // Listener reacts subtly
     if (listener) {
-      addEye(listener, 'listener', 0.35);
-      if (actions.length % 4 === 0) {
-        actions.push({ t: t + 120, type: 'mouth', target: listener, shape: 'SMILE', durationMs: 500 });
+      const listenerLook = i % 3 === 0 ? 'listener' : (i % 3 === 1 ? 'away' : 'down');
+      actions.push({ t: t + 80, type: 'eye', target: listener, look: listenerLook, amount: 0.3, durationMs: 200 });
+      if (i % 5 === 0) {
+        actions.push({ t: t + 140, type: 'mouth', target: listener, shape: 'SMILE', durationMs: 500 });
       }
     }
-
-    wordIndex += 4;
-    t += perWord * 4;
-    lookIdx += 1;
   }
 
   plan.totalMs = plan.totalMs || totalMs;
