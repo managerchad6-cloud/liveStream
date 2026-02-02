@@ -66,12 +66,22 @@ function hasSmileCues(text) {
 
 function pickListenerMouthReaction(sentTone, text, rng) {
   if (sentTone === 'happy' || sentTone === 'confident' || hasSmileCues(text)) {
-    return rng() < 0.9 ? 'SMILE' : null;
+    return rng() < 0.95 ? 'SMILE' : null;
   }
   if (sentTone === 'angry' || sentTone === 'question' || hasSurpriseCues(text)) {
-    return rng() < 0.7 ? 'SURPRISE' : null;
+    return rng() < 0.85 ? 'SURPRISE' : null;
   }
-  return rng() < 0.35 ? (rng() < 0.7 ? 'SMILE' : 'SURPRISE') : null;
+  return rng() < 0.2 ? (rng() < 0.7 ? 'SMILE' : 'SURPRISE') : null;
+}
+
+function reactionDurationMs(rng) {
+  return Math.round(randRange(rng, 1800, 2600));
+}
+
+function listenerBrowForReaction(shape, rng) {
+  if (shape === 'SMILE') return { emote: 'raise', amount: randRange(rng, 0.25, 0.4) };
+  if (shape === 'SURPRISE') return { emote: rng() < 0.6 ? 'raise' : 'skeptical_left', amount: randRange(rng, 0.3, 0.45) };
+  return null;
 }
 
 function classifyTone(text) {
@@ -313,33 +323,29 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
           durationMs: Math.round(randRange(rng, 280, 380))
         });
 
-        // Listener brow reaction (subtler than speaker)
-        if (rng() < 0.65) {
-          const asymEmotes = ['asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
-          const listenerEmote = (sentTone === 'happy' || sentTone === 'confident')
-            ? 'raise'
-            : (sentTone === 'angry' ? 'frown'
-              : (rng() < 0.6 ? (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right') : asymEmotes[Math.floor(rng() * asymEmotes.length)]));
-          plan.actions.push({
-            t: gazeTime + Math.round(randRange(rng, 120, 260)),
-            type: 'brow',
-            target: listener,
-            emote: listenerEmote,
-            amount: randRange(rng, 0.25, 0.4),
-            durationMs: Math.round(randRange(rng, 1000, 1400))
-          });
-        }
-
         // Mouth reaction while looking at speaker
         const reaction = pickListenerMouthReaction(sentTone, sent.text, rng);
         if (reaction) {
+          const dur = reactionDurationMs(rng);
           plan.actions.push({
             t: gazeTime + Math.round(randRange(rng, 80, 220)),
             type: 'mouth',
             target: listener,
             shape: reaction,
-            durationMs: Math.round(randRange(rng, 650, 1100))
+            durationMs: dur
           });
+
+          const brow = listenerBrowForReaction(reaction, rng);
+          if (brow) {
+            plan.actions.push({
+              t: gazeTime + Math.round(randRange(rng, 140, 300)),
+              type: 'brow',
+              target: listener,
+              emote: brow.emote,
+              amount: brow.amount,
+              durationMs: Math.round(Math.min(1600, dur))
+            });
+          }
         }
 
         // Listener looks away briefly
@@ -365,17 +371,30 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       }
 
       // Fallback listener mouth reaction if no gaze-triggered reaction
-      if (rng() < 0.6) {
+      if (rng() < 0.5) {
         const reaction = pickListenerMouthReaction(sentTone, sent.text, rng);
         if (reaction) {
           const listenerReactTime = sent.startMs + sent.durationMs * randRange(rng, 0.35, 0.65);
+          const dur = reactionDurationMs(rng);
           plan.actions.push({
             t: Math.round(listenerReactTime),
             type: 'mouth',
             target: listener,
             shape: reaction,
-            durationMs: Math.round(randRange(rng, 650, 1100))
+            durationMs: dur
           });
+
+          const brow = listenerBrowForReaction(reaction, rng);
+          if (brow) {
+            plan.actions.push({
+              t: Math.round(listenerReactTime + randRange(rng, 120, 260)),
+              type: 'brow',
+              target: listener,
+              emote: brow.emote,
+              amount: brow.amount,
+              durationMs: Math.round(Math.min(1600, dur))
+            });
+          }
         }
       }
     }
