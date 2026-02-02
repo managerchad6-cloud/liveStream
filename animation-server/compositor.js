@@ -2,9 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 
-// Libvips thread pool: default 2 (VPS-friendly). Override with SHARP_CONCURRENCY env (e.g. 4 on Windows).
+// Libvips thread pool: default 4 for Windows, 2 for VPS. Override with SHARP_CONCURRENCY env.
+const defaultConcurrency = process.platform === 'win32' ? 4 : 2;
 const sharpConcurrency = parseInt(process.env.SHARP_CONCURRENCY, 10);
-sharp.concurrency(Number.isFinite(sharpConcurrency) && sharpConcurrency > 0 ? sharpConcurrency : 2);
+sharp.concurrency(Number.isFinite(sharpConcurrency) && sharpConcurrency > 0 ? sharpConcurrency : defaultConcurrency);
+console.log(`[Compositor] Sharp concurrency: ${sharp.concurrency()}`);
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const LAYERS_DIR = path.join(ROOT_DIR, 'exported-layers');
@@ -15,15 +17,16 @@ const EXPRESSION_LIMITS_PATH = path.join(ROOT_DIR, 'expression-limits.json');
 let manifest = null;
 let scaledLayerBuffers = {};
 let staticBaseBuffer = null; // Pre-composited static layers
-let frameCache = {};          // Cache for character state (JPEG buffers)
+let frameCache = {};          // Cache for character state (JPEG buffers) - Level 2
+const FRAME_CACHE_MAX = 200;  // Level 2 cache: expression base + phoneme + blink
 let lastOutputKey = null;     // Key of the last full output frame
 let lastOutputBuffer = null;  // Last complete JPEG output buffer
 let outputCache = {};         // Cache for full output frames (charBuffer + caption/TV overlay)
 const OUTPUT_CACHE_MAX = 60;  // Max cached output frames
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
-const EXPR_LAYER_CACHE_MAX = 200; // Max cached expression layer buffers
+const EXPR_LAYER_CACHE_MAX = 300; // Max cached expression layer buffers
 let exprBaseCache = {};       // Level 1 cache: staticBase + expression layers + nose → PNG
-const EXPR_BASE_CACHE_MAX = 20;
+const EXPR_BASE_CACHE_MAX = 50;   // Increased: quantized values reduce unique states
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -676,10 +679,13 @@ async function compositeFrame(state) {
 
   if (!exprBaseBuffer) {
     // Build expression layer composite ops
-    const exprOps = [];
-
+    // PARALLELIZED: Collect all transform tasks first, run them concurrently
+    const l1Start = Date.now();
     const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
-    for (const exprLayer of sortedExprLayers) {
+    const layerTasks = [];  // { index, exprLayer, type, cacheKey, taskFn } or { index, op }
+
+    for (let i = 0; i < sortedExprLayers.length; i++) {
+      const exprLayer = sortedExprLayers[i];
       const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
       if (mapping === undefined) continue;
       const offset = mapping
@@ -700,54 +706,58 @@ async function compositeFrame(state) {
         rotation = Math.round(rotation * 10) / 10;
 
         if (dy === 0 && rotation === 0) {
-          exprOps.push({ input: exprLayer.buffer, left: 0, top: 0, blend: 'over' });
+          layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
         } else {
           const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
-          let cached = exprLayerCache[browCacheKey];
-          if (!cached) {
+          const cached = exprLayerCache[browCacheKey];
+          if (cached) {
+            layerTasks.push({ index: i, op: { input: cached.input, left: cached.left, top: cached.top, blend: 'over' } });
+          } else {
+            // Queue async task for parallel execution
             const bounds = exprLayer.contentBounds;
             const centerX = bounds.left + bounds.width / 2;
             const centerY = bounds.top + bounds.height / 2;
             const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
 
-            const rotated = await sharp(exprLayer.croppedBuffer)
-              .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-              .png()
-              .toBuffer();
-
-            const rad = Math.abs(angle) * Math.PI / 180;
-            const cosA = Math.cos(rad);
-            const sinA = Math.sin(rad);
-            const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
-            const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
-
-            let placeLeft = Math.round(centerX - newW / 2);
-            let placeTop = Math.round(centerY - newH / 2 + dy);
-
-            let finalBuffer = rotated;
-            if (placeLeft < 0 || placeTop < 0) {
-              const trimLeft = Math.max(0, -placeLeft);
-              const trimTop = Math.max(0, -placeTop);
-              const trimW = Math.min(newW - trimLeft, outputWidth);
-              const trimH = Math.min(newH - trimTop, outputHeight);
-              if (trimW > 0 && trimH > 0) {
-                finalBuffer = await sharp(rotated)
-                  .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
+            layerTasks.push({
+              index: i,
+              type: 'brow',
+              cacheKey: browCacheKey,
+              taskFn: async () => {
+                const rotated = await sharp(exprLayer.croppedBuffer)
+                  .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
                   .png()
                   .toBuffer();
-              }
-              placeLeft = Math.max(0, placeLeft);
-              placeTop = Math.max(0, placeTop);
-            }
 
-            cached = { input: finalBuffer, left: placeLeft, top: placeTop };
-            const keys = Object.keys(exprLayerCache);
-            if (keys.length >= EXPR_LAYER_CACHE_MAX) {
-              for (let i = 0; i < 20; i++) delete exprLayerCache[keys[i]];
-            }
-            exprLayerCache[browCacheKey] = cached;
+                const rad = Math.abs(angle) * Math.PI / 180;
+                const cosA = Math.cos(rad);
+                const sinA = Math.sin(rad);
+                const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
+                const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
+
+                let placeLeft = Math.round(centerX - newW / 2);
+                let placeTop = Math.round(centerY - newH / 2 + dy);
+
+                let finalBuffer = rotated;
+                if (placeLeft < 0 || placeTop < 0) {
+                  const trimLeft = Math.max(0, -placeLeft);
+                  const trimTop = Math.max(0, -placeTop);
+                  const trimW = Math.min(newW - trimLeft, outputWidth);
+                  const trimH = Math.min(newH - trimTop, outputHeight);
+                  if (trimW > 0 && trimH > 0) {
+                    finalBuffer = await sharp(rotated)
+                      .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
+                      .png()
+                      .toBuffer();
+                  }
+                  placeLeft = Math.max(0, placeLeft);
+                  placeTop = Math.max(0, placeTop);
+                }
+
+                return { input: finalBuffer, left: placeLeft, top: placeTop };
+              }
+            });
           }
-          exprOps.push({ input: cached.input, left: cached.left, top: cached.top, blend: 'over' });
         }
         continue;
       }
@@ -755,12 +765,15 @@ async function compositeFrame(state) {
       // Eye layers and eye_cover: translate via extract+extend
       const dx = Math.round(offset.x);
       const dy = Math.round(offset.y);
-      let layerBuffer = exprLayer.buffer;
 
-      if (dx !== 0 || dy !== 0) {
+      if (dx === 0 && dy === 0) {
+        layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
+      } else {
         const eyeCacheKey = `eye_${exprLayer.id}_${dx}_${dy}`;
-        let cached = exprLayerCache[eyeCacheKey];
-        if (!cached) {
+        const cached = exprLayerCache[eyeCacheKey];
+        if (cached) {
+          layerTasks.push({ index: i, op: { input: cached, left: 0, top: 0, blend: 'over' } });
+        } else {
           const layerW = exprLayer.scaledWidth;
           const layerH = exprLayer.scaledHeight;
           const extractLeft = Math.max(0, -dx);
@@ -769,29 +782,58 @@ async function compositeFrame(state) {
           const extractHeight = layerH - Math.abs(dy);
 
           if (extractWidth > 0 && extractHeight > 0) {
-            cached = await sharp(exprLayer.buffer)
-              .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
-              .extend({
-                top: Math.max(0, dy),
-                bottom: Math.max(0, -dy),
-                left: Math.max(0, dx),
-                right: Math.max(0, -dx),
-                background: { r: 0, g: 0, b: 0, alpha: 0 }
-              })
-              .png()
-              .toBuffer();
+            layerTasks.push({
+              index: i,
+              type: 'eye',
+              cacheKey: eyeCacheKey,
+              taskFn: async () => {
+                return sharp(exprLayer.buffer)
+                  .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+                  .extend({
+                    top: Math.max(0, dy),
+                    bottom: Math.max(0, -dy),
+                    left: Math.max(0, dx),
+                    right: Math.max(0, -dx),
+                    background: { r: 0, g: 0, b: 0, alpha: 0 }
+                  })
+                  .png()
+                  .toBuffer();
+              }
+            });
+          } else {
+            layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
           }
-          const keys = Object.keys(exprLayerCache);
-          if (keys.length >= EXPR_LAYER_CACHE_MAX) {
-            for (let i = 0; i < 20; i++) delete exprLayerCache[keys[i]];
-          }
-          if (cached) exprLayerCache[eyeCacheKey] = cached;
         }
-        if (cached) layerBuffer = cached;
       }
-
-      exprOps.push({ input: layerBuffer, left: 0, top: 0, blend: 'over' });
     }
+
+    // Run all pending transforms in parallel
+    const pendingTasks = layerTasks.filter(t => t.taskFn);
+    if (pendingTasks.length > 0) {
+      const results = await Promise.all(pendingTasks.map(t => t.taskFn()));
+      for (let j = 0; j < pendingTasks.length; j++) {
+        const task = pendingTasks[j];
+        const result = results[j];
+        // Cache the result
+        const keys = Object.keys(exprLayerCache);
+        if (keys.length >= EXPR_LAYER_CACHE_MAX) {
+          for (let k = 0; k < 20; k++) delete exprLayerCache[keys[k]];
+        }
+        if (task.type === 'brow') {
+          exprLayerCache[task.cacheKey] = result;
+          task.op = { input: result.input, left: result.left, top: result.top, blend: 'over' };
+        } else {
+          exprLayerCache[task.cacheKey] = result;
+          task.op = { input: result, left: 0, top: 0, blend: 'over' };
+        }
+      }
+    }
+
+    // Build exprOps array in z-order
+    const exprOps = layerTasks
+      .sort((a, b) => a.index - b.index)
+      .map(t => t.op)
+      .filter(Boolean);
 
     // Nose layers (above eye_cover, part of expression base)
     const sortedNoseLayers = [...noseLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
@@ -813,9 +855,13 @@ async function compositeFrame(state) {
     // Cache expression base (evict if full)
     const exprBaseKeys = Object.keys(exprBaseCache);
     if (exprBaseKeys.length >= EXPR_BASE_CACHE_MAX) {
-      for (let i = 0; i < 5; i++) delete exprBaseCache[exprBaseKeys[i]];
+      for (let k = 0; k < 5; k++) delete exprBaseCache[exprBaseKeys[k]];
     }
     exprBaseCache[exprBaseCacheKey] = exprBaseBuffer;
+    const l1Time = Date.now() - l1Start;
+    if (l1Time > 30) {
+      console.log(`[Compositor] L1 cache miss: ${l1Time}ms (${pendingTasks.length} transforms)`);
+    }
   }
 
   // Level 2: character frame (expression base + mouth + blink + emission + lights)
@@ -889,7 +935,7 @@ async function compositeFrame(state) {
 
     // Cache character frame (evict if full)
     const frameCacheKeys = Object.keys(frameCache);
-    if (frameCacheKeys.length >= 100) {
+    if (frameCacheKeys.length >= FRAME_CACHE_MAX) {
       for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
     }
     frameCache[charCacheKey] = charBuffer;

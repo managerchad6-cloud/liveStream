@@ -5,15 +5,28 @@ function estimateWordTimings(text, durationSec) {
   const wordCount = Math.max(1, words.length);
   const totalMs = Math.max(200, (durationSec || (wordCount / DEFAULT_WPM) * 60) * 1000);
   const perWord = totalMs / wordCount;
-  return { words, totalMs, perWord };
+  return { words, wordCount, totalMs, perWord };
 }
 
-function splitClauses(text) {
-  if (!text) return [''];
-  return text
-    .split(/(?<=[.!?])\s+|[,;:]\s+/)
+/**
+ * Split text into sentences (major breaks) and phrases (minor breaks).
+ * Sentences end with . ! ?
+ * Phrases are separated by , ; : —
+ */
+function splitSentences(text) {
+  if (!text) return [{ text: '', type: 'sentence' }];
+
+  // Split on sentence-ending punctuation first
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
     .map(s => s.trim())
     .filter(Boolean);
+
+  if (sentences.length === 0) {
+    return [{ text: text.trim(), type: 'sentence' }];
+  }
+
+  return sentences.map(s => ({ text: s, type: 'sentence' }));
 }
 
 function classifyTone(text) {
@@ -22,142 +35,256 @@ function classifyTone(text) {
   if (/(nervous|awkward|anxious|worried|scared|unsure|uh|um|erm)/.test(t)) return 'nervous';
   if (/(confident|sure|obviously|clearly|easy|win|winning|crush)/.test(t)) return 'confident';
   if (/(sad|down|tired|exhausted|depressed|meh)/.test(t)) return 'sad';
-  if (/(happy|glad|excited|great|awesome|nice)/.test(t)) return 'happy';
+  if (/(happy|glad|excited|great|awesome|nice|love|amazing)/.test(t)) return 'happy';
   if (/\?$/.test(t)) return 'question';
   return 'neutral';
 }
 
-function pickLook(i) {
-  const looks = ['listener', 'down_left', 'down_right', 'up_left', 'up_right', 'away', 'listener'];
-  return looks[i % looks.length];
-}
-
+/**
+ * Build a natural expression plan aligned to sentences.
+ *
+ * Philosophy:
+ * - Eyes: Active but purposeful. Look at listener, glance away while thinking, back to listener.
+ * - Brows: One accent per sentence based on tone.
+ * - Listener: Occasional reactions.
+ */
 function buildExpressionPlan({ message, character, listener, durationSec, limits }) {
-  const clauses = splitClauses(message);
-  const tone = classifyTone(message);
-  const { totalMs, perWord } = estimateWordTimings(message, durationSec);
+  const sentences = splitSentences(message);
+  const { totalMs, perWord, wordCount } = estimateWordTimings(message, durationSec);
+  const overallTone = classifyTone(message);
 
   const plan = {
     character,
     listener,
-    tone,
+    tone: overallTone,
     totalMs,
-    perWordMs: perWord,
     actions: []
   };
 
+  // Calculate time per sentence based on word count
   let cursorMs = 0;
-  for (let i = 0; i < clauses.length; i++) {
-    const clause = clauses[i];
-    const words = clause.split(/\s+/).filter(Boolean);
-    const clauseMs = Math.max(200, words.length * perWord);
-    const baseLook = pickLook(i);
+  const sentenceTimings = sentences.map(s => {
+    const words = s.text.split(/\s+/).filter(Boolean);
+    const ms = Math.max(400, words.length * perWord);
+    const start = cursorMs;
+    cursorMs += ms;
+    return { ...s, words, startMs: start, durationMs: ms, tone: classifyTone(s.text) };
+  });
 
-    // Default gaze toward listener
+  const glanceDirs = ['down', 'away', 'down_left', 'down_right'];
+
+  // Build expression actions per sentence
+  for (let i = 0; i < sentenceTimings.length; i++) {
+    const sent = sentenceTimings[i];
+    const sentTone = sent.tone !== 'neutral' ? sent.tone : overallTone;
+
+    // === SPEAKER EYES ===
+    // Start of sentence: look at listener
     plan.actions.push({
-      t: cursorMs,
+      t: sent.startMs,
       type: 'eye',
-      look: baseLook,
+      target: character,
+      look: 'listener',
       amount: 0.5,
-      durationMs: Math.min(600, clauseMs * 0.6)
+      durationMs: 250
     });
 
-    if (i % 2 === 1) {
+    // For longer sentences, add 1-2 glances away and back
+    if (sent.durationMs > 1200) {
+      // First glance away around 35% through
+      const glance1Time = sent.startMs + sent.durationMs * 0.35;
+      const glance1Dir = glanceDirs[i % glanceDirs.length];
       plan.actions.push({
-        t: cursorMs + Math.max(120, clauseMs * 0.3),
+        t: glance1Time,
         type: 'eye',
-        look: pickLook(i + 1),
-        amount: 0.4,
+        target: character,
+        look: glance1Dir,
+        amount: 0.35,
         durationMs: 300
       });
-    }
 
-    // Tone-driven brow/eye accents
-    if (tone === 'nervous') {
+      // Back to listener
       plan.actions.push({
-        t: cursorMs + 120,
+        t: glance1Time + 400,
         type: 'eye',
-        look: 'away',
-        amount: 0.45,
-        durationMs: 380
-      });
-      plan.actions.push({
-        t: cursorMs + 200,
-        type: 'brow',
-        emote: 'flick',
-        count: 2,
-        amount: 0.4
-      });
-    } else if (tone === 'angry') {
-      plan.actions.push({
-        t: cursorMs + 100,
-        type: 'brow',
-        emote: 'frown',
-        amount: 0.7,
-        durationMs: Math.min(800, clauseMs)
-      });
-    } else if (tone === 'question') {
-      plan.actions.push({
-        t: cursorMs + Math.max(100, clauseMs - 300),
-        type: 'brow',
-        emote: 'skeptical',
-        amount: 0.6,
-        durationMs: 500
-      });
-    } else if (tone === 'happy') {
-      plan.actions.push({
-        t: cursorMs + 80,
-        type: 'brow',
-        emote: 'raise',
+        target: character,
+        look: 'listener',
         amount: 0.5,
-        durationMs: 350
+        durationMs: 250
+      });
+
+      // For very long sentences, add a second glance
+      if (sent.durationMs > 2500) {
+        const glance2Time = sent.startMs + sent.durationMs * 0.7;
+        const glance2Dir = glanceDirs[(i + 1) % glanceDirs.length];
+        plan.actions.push({
+          t: glance2Time,
+          type: 'eye',
+          target: character,
+          look: glance2Dir,
+          amount: 0.3,
+          durationMs: 280
+        });
+
+        plan.actions.push({
+          t: glance2Time + 380,
+          type: 'eye',
+          target: character,
+          look: 'listener',
+          amount: 0.45,
+          durationMs: 250
+        });
+      }
+    }
+
+    // === SPEAKER BROWS ===
+    // One brow expression per sentence based on tone
+    if (sentTone === 'nervous') {
+      plan.actions.push({
+        t: sent.startMs + 200,
+        type: 'brow',
+        target: character,
+        emote: 'raise',
+        amount: 0.4,
+        durationMs: Math.min(800, sent.durationMs * 0.6)
+      });
+    } else if (sentTone === 'angry') {
+      plan.actions.push({
+        t: sent.startMs + 100,
+        type: 'brow',
+        target: character,
+        emote: 'frown',
+        amount: 0.6,
+        durationMs: Math.min(1200, sent.durationMs * 0.8)
+      });
+    } else if (sentTone === 'question') {
+      plan.actions.push({
+        t: sent.startMs + sent.durationMs * 0.6,
+        type: 'brow',
+        target: character,
+        emote: 'skeptical',
+        amount: 0.5,
+        durationMs: Math.min(800, sent.durationMs * 0.4)
+      });
+    } else if (sentTone === 'happy' || sentTone === 'confident') {
+      plan.actions.push({
+        t: sent.startMs + 150,
+        type: 'brow',
+        target: character,
+        emote: 'raise',
+        amount: 0.35,
+        durationMs: Math.min(600, sent.durationMs * 0.5)
       });
     }
 
-    cursorMs += clauseMs;
+    // === LISTENER REACTIONS ===
+    if (listener) {
+      // Listener glances at speaker every other sentence
+      if (i % 2 === 1) {
+        plan.actions.push({
+          t: sent.startMs + 300,
+          type: 'eye',
+          target: listener,
+          look: 'listener',
+          amount: 0.4,
+          durationMs: 350
+        });
+
+        // Listener looks away briefly
+        if (sent.durationMs > 1500) {
+          plan.actions.push({
+            t: sent.startMs + sent.durationMs * 0.6,
+            type: 'eye',
+            target: listener,
+            look: 'down',
+            amount: 0.25,
+            durationMs: 300
+          });
+        }
+      }
+
+      // Listener smiles occasionally during positive content
+      if (sentenceTimings.length >= 2 && i === Math.floor(sentenceTimings.length / 2)) {
+        if (sentTone === 'happy' || sentTone === 'confident') {
+          plan.actions.push({
+            t: sent.startMs + sent.durationMs * 0.5,
+            type: 'mouth',
+            target: listener,
+            shape: 'SMILE',
+            durationMs: 700
+          });
+        }
+      }
+    }
   }
 
-  // Clamp timeline end
-  plan.actions = plan.actions.filter(a => a.t <= totalMs + 200);
+  // Return to neutral at end
+  plan.actions.push({
+    t: totalMs - 200,
+    type: 'eye',
+    target: character,
+    look: 'listener',
+    amount: 0.3,
+    durationMs: 200
+  });
+
   return plan;
 }
 
+/**
+ * Augment plan if it has few actions.
+ * Balanced approach - enough movement to feel alive, not so much it lags.
+ */
 function augmentExpressionPlan(plan, { message, character, listener, durationSec }) {
-  const { totalMs, perWord, words } = estimateWordTimings(message, durationSec);
-  const minActions = Math.max(10, Math.floor(words.length / 2));
+  const { totalMs, wordCount } = estimateWordTimings(message, durationSec);
   const actions = Array.isArray(plan.actions) ? plan.actions.slice() : [];
 
-  if (actions.length >= minActions) {
+  // Target roughly 1 eye action per 1.5 seconds, capped at reasonable limits
+  const targetActions = Math.min(15, Math.max(4, Math.floor(totalMs / 1500)));
+
+  if (actions.length >= targetActions) {
     plan.totalMs = plan.totalMs || totalMs;
     return plan;
   }
 
-  const looks = ['listener', 'down_left', 'down_right', 'up_left', 'up_right', 'away', 'left', 'right', 'down', 'up'];
-  const browEmotes = ['raise', 'flick', 'skeptical', 'frown'];
+  // Add eye movements spread across the duration
+  const neededActions = targetActions - actions.length;
+  const interval = totalMs / (neededActions + 1);
+  const glanceDirs = ['listener', 'down', 'listener', 'away', 'listener', 'down_left'];
 
-  const actionCount = Math.max(minActions * 2, Math.floor(totalMs / 900));
-  const interval = totalMs / (actionCount + 1);
+  for (let i = 0; i < neededActions; i++) {
+    const t = Math.round((i + 1) * interval);
+    const look = glanceDirs[i % glanceDirs.length];
+    const amount = look === 'listener' ? 0.45 : 0.3;
 
-  for (let i = 0; i < actionCount; i++) {
-    const jitter = (Math.random() - 0.5) * interval * 0.4;
-    const t = Math.max(0, Math.min(totalMs, Math.round((i + 1) * interval + jitter)));
-    const look = looks[i % looks.length];
-    const eyeAmount = 0.35 + (i % 3) * 0.1;
-    actions.push({ t, type: 'eye', target: character, look, amount: eyeAmount, durationMs: 220 });
+    actions.push({
+      t,
+      type: 'eye',
+      target: character,
+      look,
+      amount,
+      durationMs: 280
+    });
+  }
 
-    if (i % 2 === 0) {
-      const emote = browEmotes[i % browEmotes.length];
-      const amount = emote === 'frown' ? 0.5 : 0.4;
-      actions.push({ t: Math.max(0, t - 60), type: 'brow', target: character, emote, amount, durationMs: 240, count: emote === 'flick' ? 2 : undefined });
-    }
-
-    if (listener) {
-      const listenerLook = i % 3 === 0 ? 'listener' : (i % 3 === 1 ? 'away' : 'down');
-      actions.push({ t: t + 80, type: 'eye', target: listener, look: listenerLook, amount: 0.3, durationMs: 200 });
-      if (i % 5 === 0) {
-        actions.push({ t: t + 140, type: 'mouth', target: listener, shape: 'SMILE', durationMs: 500 });
-      }
-    }
+  // Add a couple listener reactions for longer speeches
+  if (listener && totalMs > 3000 && neededActions > 3) {
+    actions.push({
+      t: Math.round(totalMs * 0.3),
+      type: 'eye',
+      target: listener,
+      look: 'listener',
+      amount: 0.35,
+      durationMs: 300
+    });
+    actions.push({
+      t: Math.round(totalMs * 0.7),
+      type: 'eye',
+      target: listener,
+      look: 'down',
+      amount: 0.25,
+      durationMs: 280
+    });
   }
 
   plan.totalMs = plan.totalMs || totalMs;
@@ -173,6 +300,7 @@ function normalizePlanTiming(plan, durationSec) {
     plan.totalMs = totalMs;
     return plan;
   }
+  // Only scale if actions are bunched in less than 75% of duration
   const spread = maxT / totalMs;
   if (spread < 0.75) {
     const scale = totalMs / maxT;

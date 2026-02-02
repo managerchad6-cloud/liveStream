@@ -1,6 +1,6 @@
 const { resolveEyeLook, getEyeRange, getBrowRange } = require('./expression-timeline');
 
-const DEFAULT_TWEEN_MS = 180;
+const DEFAULT_TWEEN_MS = 300;  // Slower, more natural transitions
 
 class ExpressionEvaluator {
   constructor() {
@@ -64,7 +64,9 @@ class ExpressionEvaluator {
 
         } else if (action.emote === 'frown') {
           const down = browRange.down * (action.amount || 0.6);
-          tracks.browY.push({ t, targetVal: down, tweenMs: action.durationMs || 240 });
+          const dur = action.durationMs || 400;
+          tracks.browY.push({ t, targetVal: down, tweenMs: 200 });
+          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 300 });  // Return to neutral
 
         } else if (action.emote === 'skeptical') {
           const up = browRange.up * (action.amount || 0.6);

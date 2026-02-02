@@ -479,28 +479,26 @@ Output ONLY valid JSON with this schema:
       "type": "eye"|"brow"|"mouth",
       "target": "chad|virgin",     // optional, defaults to speaker
       // for type="eye":
-      "look": "listener"|"away"|"down"|"up"|"neutral"|"left"|"right"|"up_left"|"up_right"|"down_left"|"down_right",
-      "amount": 0.0-1.0,
+      "look": "listener"|"away"|"down"|"up"|"neutral",
+      "amount": 0.3-0.5,
       "durationMs": number,
       // for type="brow":
-      "emote": "raise"|"frown"|"skeptical"|"flick",
-      "amount": 0.0-1.0,
-      "count": number            // only for flick
+      "emote": "raise"|"frown"|"skeptical",
+      "amount": 0.3-0.5,
       // for type="mouth":
-      "shape": "SMILE"|"SURPRISE"
+      "shape": "SMILE"
     }
   ]
 }
 
 Rules:
-- Do NOT add extra keys.
-- Use the message's emotional nuance and cadence.
-- Align actions to natural phrasing and pauses.
-- totalMs should match the audio duration (in ms).
-- Keep actions within 0..totalMs.
-- Prefer subtlety over jitter.
-- Include expression changes every 3-7 words.
-- Use both characters: the listener should react (eyes/brows, occasional mouth SMILE/SURPRISE).`;
+- Eyes are active but purposeful. Speaker looks at listener, glances away while thinking, returns.
+- Aim for 2-4 eye movements per sentence (look → glance away → look back pattern).
+- Brow expressions for emotional beats (questions, emphasis, reactions) - one per sentence max.
+- Listener has occasional eye movements and reactions (every 2-3 sentences).
+- totalMs should match the audio duration (in ms). Keep actions within 0..totalMs.
+- Aim for 15-25 total actions for typical speeches.
+- Do NOT add extra keys. Do NOT use flick emote.`;
 
   const content = `Character: ${character}\nListener: ${listener}\nDurationSec: ${durationSec}\nMessage: ${message}\n` +
     `Notes: Virgin is on right, Chad on left. When speaking to the other, look toward them.`;
@@ -512,8 +510,8 @@ Rules:
         { role: 'system', content: prompt },
         { role: 'user', content }
       ],
-      temperature: 0.4,
-      max_tokens: 500
+      temperature: 0.35,
+      max_tokens: 450
     });
 
     const raw = completion.choices[0].message.content.trim();
@@ -729,6 +727,16 @@ async function renderFrame(frame, audioProgress = null) {
       if (!exprState[c]) continue;
       const s = exprState[c];
       const prev = lastExprState[c];
+
+      // Quantize expression values to reduce cache key space explosion.
+      // Rounding to multiples of 3 pixels reduces unique cache entries by ~9x
+      // while maintaining visually smooth animation (with fewer expression changes).
+      const QUANT = 3;
+      s.eyeX = Math.round(s.eyeX / QUANT) * QUANT;
+      s.eyeY = Math.round(s.eyeY / QUANT) * QUANT;
+      s.browY = Math.round(s.browY / QUANT) * QUANT;
+      s.browAsymL = Math.round(s.browAsymL / QUANT) * QUANT;
+      s.browAsymR = Math.round(s.browAsymR / QUANT) * QUANT;
 
       // Only call compositor setters when values actually changed —
       // each call wipes the frame cache, forcing expensive re-compositing
