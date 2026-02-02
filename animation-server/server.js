@@ -981,7 +981,7 @@ async function start() {
       handleAudioComplete();
     };
   } else {
-    streamManager = new StreamManager(STREAMS_DIR, 30);
+    streamManager = new StreamManager(STREAMS_DIR, STREAM_FPS);
   }
   streamManager.start(renderFrame);
 

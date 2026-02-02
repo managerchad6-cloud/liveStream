@@ -18,6 +18,7 @@ class StreamManager {
     this.frameQueue = [];
     this.maxQueueSize = 3; // Smaller buffer for lower latency
     this.isRendering = false;
+    this.lastFrameBuffer = null;
   }
 
   start(onFrameRequest) {
@@ -59,8 +60,10 @@ class StreamManager {
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
       '-crf', '23',
+      '-r', String(this.fps),
       '-g', String(this.fps),
       '-sc_threshold', '0',
+      '-vsync', 'cfr',
       '-f', 'hls',
       '-hls_time', '1',
       '-hls_list_size', '3',
@@ -103,6 +106,7 @@ class StreamManager {
           const frameBuffer = await this.onFrameRequest(this.frameCount);
           if (frameBuffer) {
             this.frameQueue.push(frameBuffer);
+            this.lastFrameBuffer = frameBuffer;
             this.frameCount++;
           }
         } catch (err) {
@@ -131,9 +135,13 @@ class StreamManager {
       const elapsed = now - this.lastFrameTime;
 
       if (elapsed >= this.frameInterval) {
-        if (this.frameQueue.length > 0 && this.ffmpegProcess && this.ffmpegProcess.stdin.writable) {
-          const frame = this.frameQueue.shift();
-          this.ffmpegProcess.stdin.write(frame);
+        if (this.ffmpegProcess && this.ffmpegProcess.stdin.writable) {
+          if (this.frameQueue.length > 0) {
+            const frame = this.frameQueue.shift();
+            this.ffmpegProcess.stdin.write(frame);
+          } else if (this.lastFrameBuffer) {
+            this.ffmpegProcess.stdin.write(this.lastFrameBuffer);
+          }
         }
         this.lastFrameTime = now - (elapsed % this.frameInterval); // Maintain rhythm
       }
