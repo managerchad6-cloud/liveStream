@@ -359,7 +359,8 @@ app.post('/expression/rotation-limits', (req, res) => {
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
 const STREAM_FPS = 30;
-const syncedPlayback = new SyncedPlayback(16000, STREAM_FPS);
+const LIPSYNC_FPS = 30; // Keep lipsync time base stable regardless of stream FPS
+const syncedPlayback = new SyncedPlayback(16000, LIPSYNC_FPS);
 const blinkControllers = {
   chad: new BlinkController(STREAM_FPS),
   virgin: new BlinkController(STREAM_FPS)
@@ -367,6 +368,9 @@ const blinkControllers = {
 let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
 let frameCount = 0;
 let tvService = null;  // TV content service (initialized after preloadLayers)
+let lipSyncAccumulatorMs = 0;
+let lastLipSyncTime = Date.now();
+let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
 
 // Track current speaking state for synced mode
 let currentSpeaker = null;
@@ -405,7 +409,28 @@ function handleAudioComplete() {
     captionTimeout = null;
   }
   isAudioActive = false;
+  lipSyncAccumulatorMs = 0;
+  lastLipSyncResult = { phoneme: 'A', character: null, done: true };
   processQueue();
+}
+
+function tickLipSyncByTime() {
+  const now = Date.now();
+  const dt = Math.max(0, now - lastLipSyncTime);
+  lastLipSyncTime = now;
+  lipSyncAccumulatorMs += dt;
+
+  const frameMs = 1000 / LIPSYNC_FPS;
+  let result = null;
+  while (lipSyncAccumulatorMs >= frameMs) {
+    result = syncedPlayback.tick();
+    lipSyncAccumulatorMs -= frameMs;
+  }
+
+  if (result) {
+    lastLipSyncResult = result;
+  }
+  return lastLipSyncResult;
 }
 
 async function startPlayback(item) {
@@ -417,6 +442,9 @@ async function startPlayback(item) {
     if (STREAM_MODE === 'synced') {
       streamManager.loadAudio(item.samples, item.sampleRate, item.character, item.duration);
     } else {
+      lipSyncAccumulatorMs = 0;
+      lastLipSyncTime = Date.now();
+      lastLipSyncResult = { phoneme: 'A', character: null, done: true };
       syncedPlayback.start();
     }
   } else {
@@ -459,10 +487,11 @@ async function renderFrame(frame, audioProgress = null) {
     // SYNCED MODE: Audio is fed through continuous stream
     // Use audioProgress.frame to get the exact phoneme for this video frame
     speakingCharacter = audioProgress.character;
-    currentPhoneme = syncedPlayback.getPhonemeAtFrame(audioProgress.frame);
+    const lipFrame = Math.floor(audioProgress.frame * LIPSYNC_FPS / STREAM_FPS);
+    currentPhoneme = syncedPlayback.getPhonemeAtFrame(lipFrame);
   } else if (LIPSYNC_MODE === 'realtime') {
     // SEPARATE MODE with real-time: tick advances through audio buffer
-    const result = syncedPlayback.tick();
+    const result = tickLipSyncByTime();
     speakingCharacter = result.done ? null : result.character;
     currentPhoneme = result.phoneme;
   } else {
