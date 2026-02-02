@@ -102,8 +102,10 @@ const EXPRESSION_LAYER_MAP = {
 // Nose layers are composited above eye_cover (drawn after expression layers)
 const NOSE_LAYER_IDS = new Set(['static_virgin_nose', 'static_chad_nose']);
 
-// Eyebrow rotation: vertical-only movement with rotation proportional to Y offset
-const EYEBROW_ROTATION_FACTOR = 0.5; // degrees per pixel of Y offset (10° at max 20px)
+// Eyebrow rotation: vertical-only movement with rotation derived from calibrated limits
+const DEFAULT_EXPRESSION_RANGE = 20; // fallback symmetric range (pixels)
+const DEFAULT_EYEBROW_ROTATION_UP = 10;   // degrees at max up
+const DEFAULT_EYEBROW_ROTATION_DOWN = 10; // degrees at max down
 const EYEBROW_LAYER_SIDES = {
   'static_chad_eyebrow_left': 'left',
   'static_chad_eyebrow_right': 'right',
@@ -1080,15 +1082,37 @@ function setExpressionOffset(character, feature, x, y) {
     clampedY = Math.max(lim.minY, Math.min(lim.maxY, clampedY));
   }
 
-  expressionOffsets[character][feature] = {
-    x: clampedX,
-    y: clampedY
-  };
+  if (feature === 'eyebrows') {
+    const rotation = computeEyebrowRotation(character, clampedY);
+    expressionOffsets[character][feature] = { x: clampedX, y: clampedY, rotation };
+  } else {
+    expressionOffsets[character][feature] = { x: clampedX, y: clampedY };
+  }
 
   // Clear cache to force re-render with new offsets
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
+}
+
+function computeEyebrowRotation(character, y) {
+  const lim = expressionLimits?.[character]?.eyebrows || {};
+  const rotUp = Number.isFinite(Number(lim.rotUp)) ? Number(lim.rotUp) : DEFAULT_EYEBROW_ROTATION_UP;
+  const rotDown = Number.isFinite(Number(lim.rotDown)) ? Number(lim.rotDown) : DEFAULT_EYEBROW_ROTATION_DOWN;
+  const minY = Number.isFinite(Number(lim.minY)) ? Number(lim.minY) : -DEFAULT_EXPRESSION_RANGE;
+  const maxY = Number.isFinite(Number(lim.maxY)) ? Number(lim.maxY) : DEFAULT_EXPRESSION_RANGE;
+
+  if (y < 0) {
+    const denom = Math.abs(minY) || DEFAULT_EXPRESSION_RANGE;
+    const t = Math.min(1, Math.abs(y) / denom);
+    return t * rotUp;
+  }
+  if (y > 0) {
+    const denom = Math.abs(maxY) || DEFAULT_EXPRESSION_RANGE;
+    const t = Math.min(1, Math.abs(y) / denom);
+    return -t * rotDown;
+  }
+  return 0;
 }
 
 /**
@@ -1105,13 +1129,13 @@ function resetExpressionOffsets(character) {
   if (character) {
     if (expressionOffsets[character]) {
       expressionOffsets[character].eyes = { x: 0, y: 0 };
-      expressionOffsets[character].eyebrows = { x: 0, y: 0 };
+      expressionOffsets[character].eyebrows = { x: 0, y: 0, rotation: 0 };
     }
   } else {
     // Reset all
     for (const char of Object.keys(expressionOffsets)) {
       expressionOffsets[char].eyes = { x: 0, y: 0 };
-      expressionOffsets[char].eyebrows = { x: 0, y: 0 };
+      expressionOffsets[char].eyebrows = { x: 0, y: 0, rotation: 0 };
     }
   }
   frameCache = {};

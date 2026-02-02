@@ -203,6 +203,19 @@
     .cal-row .cal-val.unset {
       color: #475569;
     }
+    .cal-row .cal-input {
+      width: 58px;
+      padding: 3px 6px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 0.9em;
+    }
+    .cal-row .cal-unit {
+      color: #64748b;
+      font-size: 0.85em;
+    }
     button.cal-set {
       background: #334155;
       color: #e2e8f0;
@@ -281,9 +294,11 @@
         <div class="cal-controls hidden" id="cal-chad-eyebrows">
           <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-chad-eyebrows-minY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyebrows','minY')">Set</button></div>
           <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-chad-eyebrows-maxY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyebrows','maxY')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Rot Up:</span><input class="cal-input" id="cal-chad-eyebrows-rotUp" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
+          <div class="cal-row"><span class="cal-label">Rot Down:</span><input class="cal-input" id="cal-chad-eyebrows-rotDown" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         </div>
       </div>
-      <div class="note">Vertical movement with outward/inward rotation (10°).</div>
+      <div class="note">Vertical movement with outward/inward rotation (calibrated).</div>
     </div>
 
     <div class="panel" id="panel-virgin-eyes">
@@ -318,6 +333,8 @@
         <div class="cal-controls hidden" id="cal-virgin-eyebrows">
           <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-virgin-eyebrows-minY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyebrows','minY')">Set</button></div>
           <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-virgin-eyebrows-maxY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyebrows','maxY')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Rot Up:</span><input class="cal-input" id="cal-virgin-eyebrows-rotUp" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
+          <div class="cal-row"><span class="cal-label">Rot Down:</span><input class="cal-input" id="cal-virgin-eyebrows-rotDown" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         </div>
       </div>
     </div>
@@ -346,6 +363,8 @@
       : `http://${window.location.hostname}:3003`;
 
     const DEFAULT_RANGE = 20; // fallback symmetric range
+    const DEFAULT_EYEBROW_ROTATION_UP = 10;
+    const DEFAULT_EYEBROW_ROTATION_DOWN = 10;
 
     const streamEl = document.getElementById('stream');
     const streamOverlay = document.getElementById('stream-overlay');
@@ -424,6 +443,15 @@
         const absMax = maxVal || 1;
         return 0.5 + (off / absMax) * 0.5;
       }
+    }
+
+    function getRotationInput(character, direction) {
+      const el = document.getElementById(`cal-${character}-eyebrows-${direction}`);
+      const raw = Number(el?.value);
+      if (!Number.isFinite(raw) || raw < 0) {
+        return direction === 'rotUp' ? DEFAULT_EYEBROW_ROTATION_UP : DEFAULT_EYEBROW_ROTATION_DOWN;
+      }
+      return raw;
     }
 
     // ---- Joystick Controls ----
@@ -568,6 +596,10 @@
             minY: cd.minY !== null ? cd.minY : -DEFAULT_RANGE,
             maxY: cd.maxY !== null ? cd.maxY : DEFAULT_RANGE
           };
+          if (feat === 'eyebrows') {
+            limits[char][feat].rotUp = getRotationInput(char, 'rotUp');
+            limits[char][feat].rotDown = getRotationInput(char, 'rotDown');
+          }
           // Enforce valid ranges (min must be <= 0, max must be >= 0, at least 1px)
           const l = limits[char][feat];
           if (l.minX > 0) l.minX = 0;

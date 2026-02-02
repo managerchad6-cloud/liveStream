@@ -10,7 +10,9 @@
       "minX": -1,
       "maxX": 1,
       "minY": -5,
-      "maxY": 4
+      "maxY": 4,
+      "rotUp": 10,
+      "rotDown": 10
     }
   },
   "virgin": {
@@ -24,7 +26,9 @@
       "minX": -1,
       "maxX": 1,
       "minY": -6,
-      "maxY": 4
+      "maxY": 4,
+      "rotUp": 10,
+      "rotDown": 10
     }
   }
 }
