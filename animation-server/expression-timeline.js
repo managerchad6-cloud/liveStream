@@ -109,6 +109,8 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   const { totalMs, perWord, wordCount } = estimateWordTimings(message, durationSec);
   const overallTone = classifyTone(message);
   let listenerReactionCount = 0;
+  let lastBrowTime = -Infinity;
+  const MIN_BROW_GAP_MS = 1100;
 
   const plan = {
     character,
@@ -135,14 +137,16 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   const asymEmotes = ['asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
 
   function addBrowAction(t, emote, amount, durationMs) {
+    if (t - lastBrowTime < MIN_BROW_GAP_MS) return;
     plan.actions.push({
       t: Math.round(t),
       type: 'brow',
       target: character,
       emote,
       amount,
-      durationMs: Math.max(1000, Math.round(durationMs))
+      durationMs: Math.max(1400, Math.round(durationMs))
     });
+    lastBrowTime = t;
   }
 
   // Keep listener mostly oriented toward the speaker
@@ -263,7 +267,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     // One brow expression per sentence based on tone
     // === SPEAKER BROWS ===
     // Build 2-4 brow actions per sentence for richer expression.
-    const browCount = Math.max(2, Math.min(4, Math.round(sent.durationMs / 700)));
+    const browCount = Math.max(1, Math.min(2, Math.round(sent.durationMs / 1200)));
     const baseEmotes = [
       'raise',
       'frown',
@@ -275,38 +279,38 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       const t = sent.startMs + sent.durationMs * randRange(rng, 0.15, 0.85);
       let emote = baseEmotes[b % baseEmotes.length];
       let amount = randRange(rng, 0.45, 0.75);
-      let durationMs = randRange(rng, 420, 820);
+      let durationMs = randRange(rng, 900, 1600);
 
       // Tone biases
       if (sentTone === 'angry') {
         emote = rng() < 0.7 ? 'frown' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
         amount = randRange(rng, 0.6, 0.9);
-        durationMs = randRange(rng, 500, 900);
+        durationMs = randRange(rng, 1100, 1800);
       } else if (sentTone === 'nervous') {
         emote = rng() < 0.7 ? 'raise' : (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right');
         amount = randRange(rng, 0.5, 0.8);
-        durationMs = randRange(rng, 500, 900);
+        durationMs = randRange(rng, 1100, 1800);
       } else if (sentTone === 'question') {
         emote = rng() < 0.6 ? (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right') : asymEmotes[Math.floor(rng() * asymEmotes.length)];
         amount = randRange(rng, 0.55, 0.85);
-        durationMs = randRange(rng, 480, 860);
+        durationMs = randRange(rng, 1100, 1800);
       } else if (sentTone === 'happy' || sentTone === 'confident') {
         emote = rng() < 0.7 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
         amount = randRange(rng, 0.5, 0.75);
-        durationMs = randRange(rng, 450, 820);
+        durationMs = randRange(rng, 1000, 1700);
       }
 
       addBrowAction(t, emote, amount, durationMs);
     }
 
     // Extra asymmetry pop for variety
-    if (rng() < 0.6) {
+    if (rng() < 0.35) {
       const asymEmote = asymEmotes[Math.floor(rng() * asymEmotes.length)];
       addBrowAction(
         sent.startMs + sent.durationMs * randRange(rng, 0.3, 0.8),
         asymEmote,
         randRange(rng, 0.4, 0.65),
-        randRange(rng, 420, 760)
+        randRange(rng, 1100, 1800)
       );
     }
 
@@ -480,8 +484,8 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
 
   // Add subtle brow actions if none exist
   const browCount = actions.filter(a => a.type === 'brow' && (a.target || character) === character).length;
-  if (browCount < 10) {
-    const browAdds = 10 - browCount;
+  if (browCount < 4) {
+    const browAdds = 4 - browCount;
     for (let i = 0; i < browAdds; i++) {
       const asymEmotes = ['skeptical_left', 'skeptical_right', 'asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
       const emote = rng() < 0.6 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
@@ -491,7 +495,7 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
         target: character,
         emote,
         amount: randRange(rng, 0.35, 0.55),
-        durationMs: Math.round(randRange(rng, 360, 620))
+        durationMs: Math.round(randRange(rng, 1200, 2000))
       });
     }
   }
