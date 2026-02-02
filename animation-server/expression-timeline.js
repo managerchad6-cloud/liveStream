@@ -167,6 +167,23 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
   return plan;
 }
 
+function normalizePlanTiming(plan, durationSec) {
+  if (!plan || !Array.isArray(plan.actions)) return plan;
+  const totalMs = Math.max(400, (durationSec || 1) * 1000);
+  const maxT = plan.actions.reduce((m, a) => Math.max(m, Number(a.t) || 0), 0);
+  if (maxT <= 0) {
+    plan.totalMs = totalMs;
+    return plan;
+  }
+  const spread = maxT / totalMs;
+  if (spread < 0.75) {
+    const scale = totalMs / maxT;
+    plan.actions = plan.actions.map(a => ({ ...a, t: Math.round((Number(a.t) || 0) * scale) }));
+  }
+  plan.totalMs = totalMs;
+  return plan;
+}
+
 function makeTweener(applyFn, timers) {
   return function tween(from, to, durationMs = DEFAULT_TWEEN_MS) {
     const steps = Math.max(1, TWEEN_STEPS);
@@ -293,5 +310,6 @@ function resolveEyeLook(look, character, listener, range, amount) {
 module.exports = {
   buildExpressionPlan,
   scheduleExpressionPlan,
-  augmentExpressionPlan
+  augmentExpressionPlan,
+  normalizePlanTiming
 };
