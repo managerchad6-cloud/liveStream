@@ -32,7 +32,18 @@ const autoConversation = {
   id: 0,
   history: []
 };
-const animationServerUrl = process.env.ANIMATION_SERVER_URL || 'http://localhost:3003';
+let animationServerUrl = process.env.ANIMATION_SERVER_URL || 'http://localhost:3003';
+if (process.platform === 'win32') {
+  try {
+    const u = new URL(animationServerUrl);
+    if (u.hostname === 'localhost' || u.hostname === '::1') {
+      u.hostname = '127.0.0.1';
+      animationServerUrl = u.toString().replace(/\/$/, '');
+    }
+  } catch (err) {
+    // If parsing fails, keep the original URL
+  }
+}
 const dataDir = path.join(__dirname, 'data');
 const commandsFile = path.join(dataDir, 'commands.json');
 const commandsStore = {
