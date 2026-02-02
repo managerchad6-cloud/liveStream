@@ -358,7 +358,7 @@ app.post('/expression/rotation-limits', (req, res) => {
 
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
-const STREAM_FPS = 15;
+const STREAM_FPS = 60;
 const syncedPlayback = new SyncedPlayback(16000, STREAM_FPS);
 const blinkControllers = {
   chad: new BlinkController(STREAM_FPS),
