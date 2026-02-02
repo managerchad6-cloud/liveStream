@@ -1102,17 +1102,53 @@ function computeEyebrowRotation(character, y) {
   const minY = Number.isFinite(Number(lim.minY)) ? Number(lim.minY) : -DEFAULT_EXPRESSION_RANGE;
   const maxY = Number.isFinite(Number(lim.maxY)) ? Number(lim.maxY) : DEFAULT_EXPRESSION_RANGE;
 
+  let rotation = 0;
   if (y < 0) {
     const denom = Math.abs(minY) || DEFAULT_EXPRESSION_RANGE;
     const t = Math.min(1, Math.abs(y) / denom);
-    return t * rotUp;
+    rotation = t * rotUp;
   }
   if (y > 0) {
     const denom = Math.abs(maxY) || DEFAULT_EXPRESSION_RANGE;
     const t = Math.min(1, Math.abs(y) / denom);
-    return -t * rotDown;
+    rotation = -t * rotDown;
   }
-  return 0;
+  if (character === 'virgin') {
+    rotation = -rotation;
+  }
+  return rotation;
+}
+
+function setEyebrowRotationLimits(character, rotUp, rotDown) {
+  if (!expressionLimits) {
+    expressionLimits = { chad: {}, virgin: {} };
+  }
+  if (!expressionLimits[character]) {
+    expressionLimits[character] = {};
+  }
+  if (!expressionLimits[character].eyebrows) {
+    expressionLimits[character].eyebrows = {
+      minX: -DEFAULT_EXPRESSION_RANGE,
+      maxX: DEFAULT_EXPRESSION_RANGE,
+      minY: -DEFAULT_EXPRESSION_RANGE,
+      maxY: DEFAULT_EXPRESSION_RANGE
+    };
+  }
+  const lim = expressionLimits[character].eyebrows;
+  lim.rotUp = Number(rotUp);
+  lim.rotDown = Number(rotDown);
+
+  if (fs.existsSync(EXPRESSION_LIMITS_PATH)) {
+    fs.writeFileSync(EXPRESSION_LIMITS_PATH, JSON.stringify(expressionLimits, null, 2), 'utf8');
+  }
+
+  if (expressionOffsets[character]?.eyebrows) {
+    const currentY = expressionOffsets[character].eyebrows.y || 0;
+    expressionOffsets[character].eyebrows.rotation = computeEyebrowRotation(character, currentY);
+    frameCache = {};
+    lastOutputKey = null;
+    lastOutputBuffer = null;
+  }
 }
 
 /**
@@ -1185,5 +1221,6 @@ module.exports = {
   getExpressionOffsets,
   resetExpressionOffsets,
   getExpressionLimits,
-  saveExpressionLimits
+  saveExpressionLimits,
+  setEyebrowRotationLimits
 };

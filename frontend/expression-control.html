@@ -216,6 +216,31 @@
       color: #64748b;
       font-size: 0.85em;
     }
+    .rotation-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .rotation-controls .rot-label {
+      color: #94a3b8;
+      font-size: 0.85em;
+      min-width: 90px;
+    }
+    .rotation-controls .rot-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85em;
+    }
+    button.rot-apply {
+      background: #0ea5e9;
+      color: #0b1224;
+      padding: 4px 10px;
+      font-size: 0.8em;
+      border-radius: 6px;
+    }
     button.cal-set {
       background: #334155;
       color: #e2e8f0;
@@ -294,11 +319,15 @@
         <div class="cal-controls hidden" id="cal-chad-eyebrows">
           <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-chad-eyebrows-minY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyebrows','minY')">Set</button></div>
           <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-chad-eyebrows-maxY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyebrows','maxY')">Set</button></div>
-          <div class="cal-row"><span class="cal-label">Rot Up:</span><input class="cal-input" id="cal-chad-eyebrows-rotUp" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
-          <div class="cal-row"><span class="cal-label">Rot Down:</span><input class="cal-input" id="cal-chad-eyebrows-rotDown" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         </div>
       </div>
       <div class="note">Vertical movement with outward/inward rotation (calibrated).</div>
+      <div class="rotation-controls">
+        <div class="rot-label">Rotation limits</div>
+        <div class="rot-row">Up <input class="cal-input" id="rot-chad-up" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
+        <div class="rot-row">Down <input class="cal-input" id="rot-chad-down" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
+        <button class="rot-apply" onclick="applyRotation('chad')">Apply</button>
+      </div>
     </div>
 
     <div class="panel" id="panel-virgin-eyes">
@@ -333,9 +362,13 @@
         <div class="cal-controls hidden" id="cal-virgin-eyebrows">
           <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-virgin-eyebrows-minY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyebrows','minY')">Set</button></div>
           <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-virgin-eyebrows-maxY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyebrows','maxY')">Set</button></div>
-          <div class="cal-row"><span class="cal-label">Rot Up:</span><input class="cal-input" id="cal-virgin-eyebrows-rotUp" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
-          <div class="cal-row"><span class="cal-label">Rot Down:</span><input class="cal-input" id="cal-virgin-eyebrows-rotDown" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         </div>
+      </div>
+      <div class="rotation-controls">
+        <div class="rot-label">Rotation limits</div>
+        <div class="rot-row">Up <input class="cal-input" id="rot-virgin-up" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
+        <div class="rot-row">Down <input class="cal-input" id="rot-virgin-down" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
+        <button class="rot-apply" onclick="applyRotation('virgin')">Apply</button>
       </div>
     </div>
 
@@ -446,7 +479,7 @@
     }
 
     function getRotationInput(character, direction) {
-      const el = document.getElementById(`cal-${character}-eyebrows-${direction}`);
+      const el = document.getElementById(`rot-${character}-${direction === 'rotUp' ? 'up' : 'down'}`);
       const raw = Number(el?.value);
       if (!Number.isFinite(raw) || raw < 0) {
         return direction === 'rotUp' ? DEFAULT_EYEBROW_ROTATION_UP : DEFAULT_EYEBROW_ROTATION_DOWN;
@@ -631,6 +664,26 @@
       }
     }
 
+    async function applyRotation(character) {
+      const rotUp = getRotationInput(character, 'rotUp');
+      const rotDown = getRotationInput(character, 'rotDown');
+      try {
+        const res = await fetch(`${API_BASE}/expression/rotation-limits`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ character, rotUp, rotDown })
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeLimits = data.limits || activeLimits;
+        } else {
+          alert('Failed to apply rotation: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed to apply rotation: ' + err.message);
+      }
+    }
+
     function resetAll() {
       fetch(`${API_BASE}/expression/reset`, {
         method: 'POST',
@@ -690,6 +743,18 @@
       });
     }
 
+    function setRotationInputsFromLimits(limits) {
+      for (const char of ['chad', 'virgin']) {
+        const lim = limits?.[char]?.eyebrows || {};
+        const up = Number.isFinite(Number(lim.rotUp)) ? Number(lim.rotUp) : DEFAULT_EYEBROW_ROTATION_UP;
+        const down = Number.isFinite(Number(lim.rotDown)) ? Number(lim.rotDown) : DEFAULT_EYEBROW_ROTATION_DOWN;
+        const upEl = document.getElementById(`rot-${char}-up`);
+        const downEl = document.getElementById(`rot-${char}-down`);
+        if (upEl) upEl.value = up;
+        if (downEl) downEl.value = down;
+      }
+    }
+
     // ---- Init ----
     async function init() {
       connectStream();
@@ -699,11 +764,14 @@
         const data = await res.json();
         if (data.locked && data.limits) {
           activeLimits = data.limits;
+          setRotationInputsFromLimits(activeLimits);
           enterNormalMode();
         } else {
+          setRotationInputsFromLimits(activeLimits);
           enterCalibrationMode();
         }
       } catch (err) {
+        setRotationInputsFromLimits(activeLimits);
         enterCalibrationMode();
       }
 

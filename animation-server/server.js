@@ -28,7 +28,8 @@ const {
   getExpressionOffsets,
   resetExpressionOffsets,
   getExpressionLimits,
-  saveExpressionLimits
+  saveExpressionLimits,
+  setEyebrowRotationLimits
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -342,6 +343,15 @@ app.post('/expression/limits/save', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.post('/expression/rotation-limits', (req, res) => {
+  const { character, rotUp, rotDown } = req.body || {};
+  if (!character || typeof rotUp !== 'number' || typeof rotDown !== 'number') {
+    return res.status(400).json({ error: 'Required: character, rotUp, rotDown' });
+  }
+  setEyebrowRotationLimits(character, rotUp, rotDown);
+  res.json({ success: true, limits: getExpressionLimits() });
 });
 
 // ============== End Expression Control API ==============
