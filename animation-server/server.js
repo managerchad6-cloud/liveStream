@@ -389,6 +389,11 @@ let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
 const expressionEvaluator = new ExpressionEvaluator();
+// Last applied expression state per character — skip compositor calls when unchanged
+let lastExprState = {
+  chad: { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null },
+  virgin: { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null }
+};
 
 // Track current speaking state for synced mode
 let playbackStartFrame = 0;
@@ -432,6 +437,8 @@ function handleAudioComplete() {
   lastLipSyncResult = { phoneme: 'A', character: null, done: true };
   expressionEvaluator.clear();
   resetExpressionOffsets();
+  lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
+  lastExprState.virgin = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
   processQueue();
 }
 
@@ -703,15 +710,27 @@ async function renderFrame(frame, audioProgress = null) {
     for (const c of ['chad', 'virgin']) {
       if (!exprState[c]) continue;
       const s = exprState[c];
+      const prev = lastExprState[c];
 
-      // Apply eye offsets
-      setExpressionOffset(c, 'eyes', s.eyeX, s.eyeY);
+      // Only call compositor setters when values actually changed —
+      // each call wipes the frame cache, forcing expensive re-compositing
+      if (s.eyeX !== prev.eyeX || s.eyeY !== prev.eyeY) {
+        setExpressionOffset(c, 'eyes', s.eyeX, s.eyeY);
+        prev.eyeX = s.eyeX;
+        prev.eyeY = s.eyeY;
+      }
 
-      // Apply brow offsets — use asymmetry if non-zero, otherwise symmetric
       if (s.browAsymL !== 0 || s.browAsymR !== 0) {
-        setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
-      } else {
+        if (s.browAsymL !== prev.browAsymL || s.browAsymR !== prev.browAsymR) {
+          setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
+          prev.browAsymL = s.browAsymL;
+          prev.browAsymR = s.browAsymR;
+        }
+      } else if (s.browY !== prev.browY) {
         setExpressionOffset(c, 'eyebrows', 0, s.browY);
+        prev.browY = s.browY;
+        prev.browAsymL = 0;
+        prev.browAsymR = 0;
       }
 
       // Apply mouth override for non-speaking character

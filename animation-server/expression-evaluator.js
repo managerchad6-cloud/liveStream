@@ -110,12 +110,15 @@ class ExpressionEvaluator {
     const result = {};
     for (const c of Object.keys(this.tracks)) {
       const tracks = this.tracks[c];
+      // Round to integers — fractional pixel offsets bust the compositor's
+      // frame cache (cache key includes offset values) and force expensive
+      // Sharp extract+extend+rotate pipelines on every single frame.
       result[c] = {
-        eyeX: evalTrack(tracks.eyeX, timeMs),
-        eyeY: evalTrack(tracks.eyeY, timeMs),
-        browY: evalTrack(tracks.browY, timeMs),
-        browAsymL: evalTrack(tracks.browAsymL, timeMs),
-        browAsymR: evalTrack(tracks.browAsymR, timeMs),
+        eyeX: Math.round(evalTrack(tracks.eyeX, timeMs)),
+        eyeY: Math.round(evalTrack(tracks.eyeY, timeMs)),
+        browY: Math.round(evalTrack(tracks.browY, timeMs)),
+        browAsymL: Math.round(evalTrack(tracks.browAsymL, timeMs)),
+        browAsymR: Math.round(evalTrack(tracks.browAsymR, timeMs)),
         mouth: evalMouthTrack(tracks.mouth, timeMs)
       };
     }
