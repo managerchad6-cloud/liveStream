@@ -76,6 +76,8 @@ app.post('/api/auto', async (req, res) => {
     }
 
     const turnCount = Math.max(2, Math.min(30, parseInt(turns, 10) || 12));
+    console.log('[Auto] Request seed="' + seed.slice(0, 40) + '...", turns=' + turnCount);
+
     autoConversation.id += 1;
     autoConversation.history = [];
     const script = await generateAutoScript(seed, turnCount, model, temperature);
@@ -84,6 +86,7 @@ app.post('/api/auto', async (req, res) => {
     res.json({ ok: true, turns: script.length, script });
 
     const currentAutoId = autoConversation.id;
+    console.log('[Auto] Playback starting ' + script.length + ' turns, animationServerUrl=' + animationServerUrl);
     setImmediate(() => {
       playAutoScript(script, currentAutoId).catch(err => {
         console.error('[Auto] Playback failed:', err.message);
@@ -93,6 +96,34 @@ app.post('/api/auto', async (req, res) => {
     console.error('[Auto] Error:', error.message);
     res.status(500).json({ error: 'Failed to generate auto conversation' });
   }
+});
+
+// Diagnostic: env presence and /render reachability (no secrets)
+app.get('/api/auto/diagnostic', async (req, res) => {
+  const env = {
+    ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
+    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+    ANIMATION_SERVER_URL: !!process.env.ANIMATION_SERVER_URL,
+    AUTO_MODEL: !!process.env.AUTO_MODEL,
+    AUTO_TTS_MODEL: !!process.env.AUTO_TTS_MODEL
+  };
+  const renderUrl = animationServerUrl + '/render';
+  let renderReachable = false;
+  let renderError = null;
+  try {
+    const healthUrl = animationServerUrl.replace(/\/$/, '') + '/health';
+    const healthRes = await axios.get(healthUrl, { timeout: 5000 });
+    renderReachable = healthRes.status === 200;
+  } catch (err) {
+    renderError = err.code || err.message || String(err);
+  }
+  res.json({
+    animationServerUrl,
+    env,
+    renderUrl,
+    renderReachable,
+    renderError
+  });
 });
 
 // API: Chat endpoint - returns audio
@@ -270,6 +301,13 @@ initCommandStore()
     app.listen(port, () => {
       console.log(`API server running on http://localhost:${port}`);
       console.log(`Platform: ${process.platform}`);
+      // Auto-conversation env (presence only, for diagnostics)
+      console.log('[Auto] Env: ELEVENLABS_API_KEY=' + (process.env.ELEVENLABS_API_KEY ? 'set' : 'MISSING') +
+        ', OPENAI_API_KEY=' + (process.env.OPENAI_API_KEY ? 'set' : 'MISSING') +
+        ', ANIMATION_SERVER_URL=' + (process.env.ANIMATION_SERVER_URL ? 'set' : 'default') +
+        ', AUTO_MODEL=' + (process.env.AUTO_MODEL ? 'set' : 'default') +
+        ', AUTO_TTS_MODEL=' + (process.env.AUTO_TTS_MODEL ? 'set' : 'default'));
+      console.log('[Auto] animationServerUrl=' + animationServerUrl);
     });
   });
 
@@ -713,6 +751,8 @@ function parseJsonArray(content) {
 }
 
 async function playAutoScript(script, autoId) {
+  const total = script.length;
+  let index = 0;
   for (const entry of script) {
     if (autoId !== autoConversation.id) {
       return;
@@ -724,37 +764,48 @@ async function playAutoScript(script, autoId) {
     const voiceConfig = voices[speakerId];
     if (!voiceConfig) continue;
 
-    const elevenLabsResponse = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
-      {
-        text,
-        model_id: autoTtsModel,
-        voice_settings: voiceConfig.voiceSettings
-      },
-      {
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': process.env.ELEVENLABS_API_KEY
+    index += 1;
+    try {
+      const elevenLabsResponse = await axios.post(
+        `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
+        {
+          text,
+          model_id: autoTtsModel,
+          voice_settings: voiceConfig.voiceSettings
         },
-        responseType: 'arraybuffer'
+        {
+          headers: {
+            'Accept': 'audio/mpeg',
+            'Content-Type': 'application/json',
+            'xi-api-key': process.env.ELEVENLABS_API_KEY
+          },
+          responseType: 'arraybuffer'
+        }
+      );
+
+      const form = new FormData();
+      form.append('audio', Buffer.from(elevenLabsResponse.data), {
+        filename: 'audio.mp3',
+        contentType: 'audio/mpeg'
+      });
+      form.append('character', speakerId);
+      form.append('message', text);
+      form.append('mode', 'router');
+
+      const renderUrl = `${animationServerUrl}/render`;
+      console.log('[Auto] Posting to ' + renderUrl + ' (turn ' + index + '/' + total + ', ' + speakerId + ')');
+      await axios.post(renderUrl, form, {
+        headers: form.getHeaders()
+      });
+
+      appendDialogueLine(speakerId, text, autoConversation.history);
+    } catch (err) {
+      console.error('[Auto] Playback failed (turn ' + index + '/' + total + '):', err.message);
+      if (err.response) {
+        console.error('[Auto] Response status:', err.response.status, err.response.data);
       }
-    );
-
-    const form = new FormData();
-    form.append('audio', Buffer.from(elevenLabsResponse.data), {
-      filename: 'audio.mp3',
-      contentType: 'audio/mpeg'
-    });
-    form.append('character', speakerId);
-    form.append('message', text);
-    form.append('mode', 'router');
-
-    await axios.post(`${animationServerUrl}/render`, form, {
-      headers: form.getHeaders()
-    });
-
-    appendDialogueLine(speakerId, text, autoConversation.history);
+      throw err;
+    }
   }
 }
 
