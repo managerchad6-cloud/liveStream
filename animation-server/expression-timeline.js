@@ -64,6 +64,16 @@ function hasSmileCues(text) {
   return /(\blol\b|\bhaha\b|\bfunny\b|\bnice\b|\bgreat\b|\bawesome\b|\blove\b|\bgood\b|\bwin\b)/i.test(text || '');
 }
 
+function pickListenerMouthReaction(sentTone, text, rng) {
+  if (sentTone === 'happy' || sentTone === 'confident' || hasSmileCues(text)) {
+    return rng() < 0.75 ? 'SMILE' : null;
+  }
+  if (sentTone === 'angry' || sentTone === 'question' || hasSurpriseCues(text)) {
+    return rng() < 0.6 ? 'SURPRISE' : null;
+  }
+  return rng() < 0.2 ? (rng() < 0.6 ? 'SMILE' : 'SURPRISE') : null;
+}
+
 function classifyTone(text) {
   const t = (text || '').toLowerCase();
   if (/(angry|mad|furious|pissed|rage|annoyed|irritated)/.test(t)) return 'angry';
@@ -293,14 +303,27 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     if (listener) {
       // Listener glances at speaker frequently
       if (i % 2 === 1 || rng() < 0.6) {
+        const gazeTime = sent.startMs + Math.round(randRange(rng, 220, 380));
         plan.actions.push({
-          t: sent.startMs + Math.round(randRange(rng, 220, 380)),
+          t: gazeTime,
           type: 'eye',
           target: listener,
           look: 'listener',
           amount: randRange(rng, 0.32, 0.42),
           durationMs: Math.round(randRange(rng, 280, 380))
         });
+
+        // Mouth reaction while looking at speaker
+        const reaction = pickListenerMouthReaction(sentTone, sent.text, rng);
+        if (reaction) {
+          plan.actions.push({
+            t: gazeTime + Math.round(randRange(rng, 80, 220)),
+            type: 'mouth',
+            target: listener,
+            shape: reaction,
+            durationMs: Math.round(randRange(rng, 650, 1100))
+          });
+        }
 
         // Listener looks away briefly
         if (sent.durationMs > 1500) {
@@ -324,26 +347,17 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         }
       }
 
-      // Listener mouth reactions to speaker content
-      const listenerReactTime = sent.startMs + sent.durationMs * randRange(rng, 0.35, 0.65);
-      if (sentTone === 'happy' || sentTone === 'confident' || hasSmileCues(sent.text)) {
-        if (rng() < 0.7) {
+      // Fallback listener mouth reaction if no gaze-triggered reaction
+      if (rng() < 0.4) {
+        const reaction = pickListenerMouthReaction(sentTone, sent.text, rng);
+        if (reaction) {
+          const listenerReactTime = sent.startMs + sent.durationMs * randRange(rng, 0.35, 0.65);
           plan.actions.push({
             t: Math.round(listenerReactTime),
             type: 'mouth',
             target: listener,
-            shape: 'SMILE',
-            durationMs: Math.round(randRange(rng, 500, 850))
-          });
-        }
-      } else if (sentTone === 'angry' || sentTone === 'question' || hasSurpriseCues(sent.text)) {
-        if (rng() < 0.55) {
-          plan.actions.push({
-            t: Math.round(listenerReactTime),
-            type: 'mouth',
-            target: listener,
-            shape: 'SURPRISE',
-            durationMs: Math.round(randRange(rng, 420, 700))
+            shape: reaction,
+            durationMs: Math.round(randRange(rng, 650, 1100))
           });
         }
       }
