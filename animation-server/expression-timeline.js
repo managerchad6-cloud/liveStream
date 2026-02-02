@@ -111,6 +111,8 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   let listenerReactionCount = 0;
   let lastBrowTime = -Infinity;
   const MIN_BROW_GAP_MS = 2000;
+  let lastEyeTime = -Infinity;
+  const MIN_EYE_GAP_MS = 320;
 
   const plan = {
     character,
@@ -168,60 +170,81 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
     // === SPEAKER EYES ===
     // Start of sentence: look at listener
-    plan.actions.push({
-      t: sent.startMs,
-      type: 'eye',
-      target: character,
-      look: 'listener',
-      amount: randRange(rng, 0.42, 0.55),
-      durationMs: Math.round(randRange(rng, 220, 320))
-    });
+    if (sent.startMs - lastEyeTime >= MIN_EYE_GAP_MS) {
+      plan.actions.push({
+        t: sent.startMs,
+        type: 'eye',
+        target: character,
+        look: 'listener',
+        amount: randRange(rng, 0.42, 0.55),
+        durationMs: Math.round(randRange(rng, 220, 320))
+      });
+      lastEyeTime = sent.startMs;
+    }
 
     // For longer sentences, add 1-2 glances away and back
     if (sent.durationMs > 1200) {
       // First glance away around 35% through
       const glance1Time = sent.startMs + sent.durationMs * randRange(rng, 0.3, 0.42);
       const glance1Dir = glanceDirs[Math.floor(rng() * glanceDirs.length)];
-      plan.actions.push({
-        t: glance1Time,
-        type: 'eye',
-        target: character,
-        look: glance1Dir,
-        amount: randRange(rng, 0.28, 0.38),
-        durationMs: Math.round(randRange(rng, 260, 360))
-      });
+      if (glance1Time - lastEyeTime >= MIN_EYE_GAP_MS) {
+        plan.actions.push({
+          t: glance1Time,
+          type: 'eye',
+          target: character,
+          look: glance1Dir,
+          amount: randRange(rng, 0.28, 0.38),
+          durationMs: Math.round(randRange(rng, 260, 360))
+        });
+        lastEyeTime = glance1Time;
+      }
 
       // Back to listener
-      plan.actions.push({
-        t: glance1Time + Math.round(randRange(rng, 320, 460)),
-        type: 'eye',
-        target: character,
-        look: 'listener',
-        amount: randRange(rng, 0.42, 0.52),
-        durationMs: Math.round(randRange(rng, 220, 320))
-      });
+      {
+        const backTime = glance1Time + Math.round(randRange(rng, 320, 460));
+        if (backTime - lastEyeTime >= MIN_EYE_GAP_MS) {
+          plan.actions.push({
+            t: backTime,
+            type: 'eye',
+            target: character,
+            look: 'listener',
+            amount: randRange(rng, 0.42, 0.52),
+            durationMs: Math.round(randRange(rng, 220, 320))
+          });
+          lastEyeTime = backTime;
+        }
+      }
 
       // For very long sentences, add a second glance
       if (sent.durationMs > 2500) {
         const glance2Time = sent.startMs + sent.durationMs * randRange(rng, 0.62, 0.78);
         const glance2Dir = glanceDirs[Math.floor(rng() * glanceDirs.length)];
-        plan.actions.push({
-          t: glance2Time,
-          type: 'eye',
-          target: character,
-          look: glance2Dir,
-          amount: randRange(rng, 0.26, 0.36),
-          durationMs: Math.round(randRange(rng, 240, 340))
-        });
+        if (glance2Time - lastEyeTime >= MIN_EYE_GAP_MS) {
+          plan.actions.push({
+            t: glance2Time,
+            type: 'eye',
+            target: character,
+            look: glance2Dir,
+            amount: randRange(rng, 0.26, 0.36),
+            durationMs: Math.round(randRange(rng, 240, 340))
+          });
+          lastEyeTime = glance2Time;
+        }
 
-        plan.actions.push({
-          t: glance2Time + Math.round(randRange(rng, 300, 420)),
-          type: 'eye',
-          target: character,
-          look: 'listener',
-          amount: randRange(rng, 0.4, 0.5),
-          durationMs: Math.round(randRange(rng, 220, 320))
-        });
+        {
+          const back2Time = glance2Time + Math.round(randRange(rng, 300, 420));
+          if (back2Time - lastEyeTime >= MIN_EYE_GAP_MS) {
+            plan.actions.push({
+              t: back2Time,
+              type: 'eye',
+              target: character,
+              look: 'listener',
+              amount: randRange(rng, 0.4, 0.5),
+              durationMs: Math.round(randRange(rng, 220, 320))
+            });
+            lastEyeTime = back2Time;
+          }
+        }
       }
     }
 
@@ -229,30 +252,38 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     if (hasPause || sent.durationMs > 1600) {
       const thinkTime = sent.startMs + sent.durationMs * randRange(rng, 0.45, 0.7);
       const thinkDir = rng() < 0.6 ? 'up' : 'down';
-      plan.actions.push({
-        t: Math.round(thinkTime),
-        type: 'eye',
-        target: character,
-        look: thinkDir,
-        amount: randRange(rng, 0.22, 0.32),
-        durationMs: Math.round(randRange(rng, 180, 260))
-      });
+      if (thinkTime - lastEyeTime >= MIN_EYE_GAP_MS) {
+        plan.actions.push({
+          t: Math.round(thinkTime),
+          type: 'eye',
+          target: character,
+          look: thinkDir,
+          amount: randRange(rng, 0.22, 0.32),
+          durationMs: Math.round(randRange(rng, 180, 260))
+        });
+        lastEyeTime = thinkTime;
+      }
 
-      plan.actions.push({
-        t: Math.round(thinkTime + randRange(rng, 260, 420)),
-        type: 'eye',
-        target: character,
-        look: 'listener',
-        amount: randRange(rng, 0.4, 0.5),
-        durationMs: Math.round(randRange(rng, 200, 280))
-      });
+      const backThinkTime = thinkTime + randRange(rng, 260, 420);
+      if (backThinkTime - lastEyeTime >= MIN_EYE_GAP_MS) {
+        plan.actions.push({
+          t: Math.round(backThinkTime),
+          type: 'eye',
+          target: character,
+          look: 'listener',
+          amount: randRange(rng, 0.4, 0.5),
+          durationMs: Math.round(randRange(rng, 200, 280))
+        });
+        lastEyeTime = backThinkTime;
+      }
     }
 
     // Micro saccades: small, quick eye moves to avoid staring
-    const microCount = Math.max(0, Math.floor(sent.durationMs / 1200));
+    const microCount = Math.max(0, Math.floor(sent.durationMs / 400));
     for (let m = 0; m < microCount; m++) {
       const t = sent.startMs + randRange(rng, 0.15, 0.85) * sent.durationMs;
       const look = microDirs[Math.floor(rng() * microDirs.length)];
+      if (t - lastEyeTime < MIN_EYE_GAP_MS) continue;
       plan.actions.push({
         t: Math.round(t),
         type: 'eye',
@@ -261,13 +292,14 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         amount: randRange(rng, 0.18, 0.28),
         durationMs: Math.round(randRange(rng, 140, 220))
       });
+      lastEyeTime = t;
     }
 
     // === SPEAKER BROWS ===
     // One brow expression per sentence based on tone
     // === SPEAKER BROWS ===
     // Build 2-4 brow actions per sentence for richer expression.
-    const browCount = Math.max(2, Math.min(4, Math.round(sent.durationMs / 900)));
+    const browCount = Math.max(2, Math.min(5, Math.round(sent.durationMs / 900)));
     const baseEmotes = [
       'raise',
       'frown',
@@ -484,8 +516,8 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
 
   // Add subtle brow actions if none exist
   const browCount = actions.filter(a => a.type === 'brow' && (a.target || character) === character).length;
-  if (browCount < 8) {
-    const browAdds = 8 - browCount;
+  if (browCount < 10) {
+    const browAdds = 10 - browCount;
     for (let i = 0; i < browAdds; i++) {
       const asymEmotes = ['skeptical_left', 'skeptical_right', 'asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
       const emote = rng() < 0.6 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
