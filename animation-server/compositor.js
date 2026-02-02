@@ -22,6 +22,8 @@ let outputCache = {};         // Cache for full output frames (charBuffer + capt
 const OUTPUT_CACHE_MAX = 60;  // Max cached output frames
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
 const EXPR_LAYER_CACHE_MAX = 200; // Max cached expression layer buffers
+let exprBaseCache = {};       // Level 1 cache: staticBase + expression layers + nose → PNG
+const EXPR_BASE_CACHE_MAX = 20;
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -662,19 +664,20 @@ async function compositeFrame(state) {
     + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
     + `vbl${expressionOffsets.virgin.eyebrows.left.y}r${expressionOffsets.virgin.eyebrows.left.rotation}`
     + `vbr${expressionOffsets.virgin.eyebrows.right.y}r${expressionOffsets.virgin.eyebrows.right.rotation}`;
-  const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-${exprKey}`;
-  let charBuffer = frameCache[charCacheKey];
+  // === Two-level compositing ===
+  // Level 1: Expression base (staticBase + expression layers + nose) — cached by exprKey.
+  //   Only recomputes when expression offsets change (~3-5x/sec).
+  // Level 2: Character frame (expression base + mouth + blink + emission + lights) — cached
+  //   by phoneme+blink per expression base. Composites only ~5 layers instead of 15-18.
+  //   On phoneme changes, the expensive expression base is served from Level 1 cache.
 
-  if (!charBuffer) {
-    const m = loadManifest();
+  const exprBaseCacheKey = `${staticBaseVersion}-${exprKey}`;
+  let exprBaseBuffer = exprBaseCache[exprBaseCacheKey];
 
-    // Dynamic layers: expression (eyes/eyebrows with offsets), mouths, and blinks
-    const compositeOps = [];
+  if (!exprBaseBuffer) {
+    // Build expression layer composite ops
+    const exprOps = [];
 
-    // Expression layers (eyes/eyebrows with offsets, eye_cover without offsets for z-order)
-    // Buffers are full-frame (outputWidth x outputHeight) at position (0,0).
-    // Eye layers: shift pixel content using extract+extend.
-    // Eyebrow layers: vertical shift + rotation around content center.
     const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
     for (const exprLayer of sortedExprLayers) {
       const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
@@ -694,11 +697,10 @@ async function compositeFrame(state) {
             rotation = Number(sideData.rotation ?? rotation) || 0;
           }
         }
-        // Round rotation to 1 decimal for cache stability
         rotation = Math.round(rotation * 10) / 10;
 
         if (dy === 0 && rotation === 0) {
-          compositeOps.push({ input: exprLayer.buffer, left: 0, top: 0, blend: 'over' });
+          exprOps.push({ input: exprLayer.buffer, left: 0, top: 0, blend: 'over' });
         } else {
           const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
           let cached = exprLayerCache[browCacheKey];
@@ -739,14 +741,13 @@ async function compositeFrame(state) {
             }
 
             cached = { input: finalBuffer, left: placeLeft, top: placeTop };
-            // Evict oldest entries if cache is too large
             const keys = Object.keys(exprLayerCache);
             if (keys.length >= EXPR_LAYER_CACHE_MAX) {
               for (let i = 0; i < 20; i++) delete exprLayerCache[keys[i]];
             }
             exprLayerCache[browCacheKey] = cached;
           }
-          compositeOps.push({ input: cached.input, left: cached.left, top: cached.top, blend: 'over' });
+          exprOps.push({ input: cached.input, left: cached.left, top: cached.top, blend: 'over' });
         }
         continue;
       }
@@ -789,24 +790,41 @@ async function compositeFrame(state) {
         if (cached) layerBuffer = cached;
       }
 
-      compositeOps.push({
-        input: layerBuffer,
-        left: 0,
-        top: 0,
-        blend: 'over'
-      });
+      exprOps.push({ input: layerBuffer, left: 0, top: 0, blend: 'over' });
     }
 
-    // Nose layers: drawn above eye_cover (after expression layers)
+    // Nose layers (above eye_cover, part of expression base)
     const sortedNoseLayers = [...noseLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
     for (const noseLayer of sortedNoseLayers) {
-      compositeOps.push({
+      exprOps.push({
         input: noseLayer.buffer,
         left: noseLayer.scaledX,
         top: noseLayer.scaledY,
         blend: 'over'
       });
     }
+
+    // Composite Level 1: staticBase + expression layers + nose → PNG
+    exprBaseBuffer = await sharp(staticBaseBuffer)
+      .composite(exprOps)
+      .png()
+      .toBuffer();
+
+    // Cache expression base (evict if full)
+    const exprBaseKeys = Object.keys(exprBaseCache);
+    if (exprBaseKeys.length >= EXPR_BASE_CACHE_MAX) {
+      for (let i = 0; i < 5; i++) delete exprBaseCache[exprBaseKeys[i]];
+    }
+    exprBaseCache[exprBaseCacheKey] = exprBaseBuffer;
+  }
+
+  // Level 2: character frame (expression base + mouth + blink + emission + lights)
+  const charCacheKey = `${exprBaseCacheKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  let charBuffer = frameCache[charCacheKey];
+
+  if (!charBuffer) {
+    const m = loadManifest();
+    const charOps = [];
 
     const sortedLayers = [...m.layers]
       .filter(l => l.type === 'mouth' || l.type === 'blink')
@@ -834,7 +852,7 @@ async function compositeFrame(state) {
 
       const buffer = scaledLayerBuffers[layer.id];
       if (buffer) {
-        compositeOps.push({
+        charOps.push({
           input: buffer,
           left: Math.round(layer.x * OUTPUT_SCALE),
           top: Math.round(layer.y * OUTPUT_SCALE),
@@ -843,9 +861,9 @@ async function compositeFrame(state) {
       }
     }
 
-    // Bake foreground emission into character frame (above mouths/blinks)
+    // Emission (above mouths/blinks)
     if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
-      compositeOps.push({
+      charOps.push({
         input: foregroundEmissionBuffer,
         left: foregroundEmissionPos.x,
         top: foregroundEmissionPos.y,
@@ -853,9 +871,9 @@ async function compositeFrame(state) {
       });
     }
 
-    // Bake lights into character frame (above emission)
+    // Lights (above emission)
     if (lightsMode === 'on' && lightsOnBuffer) {
-      compositeOps.push({
+      charOps.push({
         input: lightsOnBuffer,
         left: lightsOnPos.x,
         top: lightsOnPos.y,
@@ -863,13 +881,13 @@ async function compositeFrame(state) {
       });
     }
 
-    // Composite: static base + mouths + blinks + emission + lights → JPEG
-    charBuffer = await sharp(staticBaseBuffer)
-      .composite(compositeOps)
+    // Composite Level 2: expression base + mouth/blink/emission/lights → JPEG
+    charBuffer = await sharp(exprBaseBuffer)
+      .composite(charOps)
       .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
 
-    // Cache the result (evict oldest entries if full)
+    // Cache character frame (evict if full)
     const frameCacheKeys = Object.keys(frameCache);
     if (frameCacheKeys.length >= 100) {
       for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
@@ -942,6 +960,7 @@ function clearCache() {
   staticBaseBuffer = null;
   frameCache = {};
   exprLayerCache = {};
+  exprBaseCache = {};
   outputCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
