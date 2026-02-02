@@ -48,6 +48,7 @@ const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
 // Stream mode: 'synced' (audio muxed into video) or 'separate' (audio played separately)
 const STREAM_MODE = process.env.STREAM_MODE || 'synced';
 const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'gpt-4o-mini';
+const USE_LLM_EXPRESSIONS = process.env.EXPRESSION_LLM === '1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
@@ -638,28 +639,30 @@ async function startPlayback(item) {
     console.log(`[Expr] Heuristic plan for ${item.character}:`, JSON.stringify(plan));
     expressionEvaluator.loadPlan(plan, limits);
 
-    // Fire-and-forget LLM plan: swap in when ready
-    buildExpressionPlanLLM({
-      message: item.messageText,
-      character: item.character,
-      listener,
-      durationSec: item.duration,
-      limits
-    }).then(llmPlan => {
-      if (llmPlan && isAudioActive && currentSpeaker === item.character) {
-        llmPlan = augmentExpressionPlan(llmPlan, {
-          message: item.messageText,
-          character: item.character,
-          listener,
-          durationSec: item.duration
-        });
-        llmPlan = normalizePlanTiming(llmPlan, item.duration);
-        console.log(`[Expr] LLM plan swapped in for ${item.character}:`, JSON.stringify(llmPlan));
-        expressionEvaluator.loadPlan(llmPlan, limits);
-      }
-    }).catch(err => {
-      console.warn('[Expr] LLM plan async error:', err.message);
-    });
+    if (USE_LLM_EXPRESSIONS) {
+      // Fire-and-forget LLM plan: swap in when ready
+      buildExpressionPlanLLM({
+        message: item.messageText,
+        character: item.character,
+        listener,
+        durationSec: item.duration,
+        limits
+      }).then(llmPlan => {
+        if (llmPlan && isAudioActive && currentSpeaker === item.character) {
+          llmPlan = augmentExpressionPlan(llmPlan, {
+            message: item.messageText,
+            character: item.character,
+            listener,
+            durationSec: item.duration
+          });
+          llmPlan = normalizePlanTiming(llmPlan, item.duration);
+          console.log(`[Expr] LLM plan swapped in for ${item.character}:`, JSON.stringify(llmPlan));
+          expressionEvaluator.loadPlan(llmPlan, limits);
+        }
+      }).catch(err => {
+        console.warn('[Expr] LLM plan async error:', err.message);
+      });
+    }
   }
 
   scheduleAudioCleanup(item.audioMp3Path, item.duration);

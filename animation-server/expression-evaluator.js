@@ -68,11 +68,13 @@ class ExpressionEvaluator {
           tracks.browY.push({ t, targetVal: down, tweenMs: 200 });
           tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 300 });  // Return to neutral
 
-        } else if (action.emote === 'skeptical') {
+        } else if (action.emote === 'skeptical' || action.emote === 'skeptical_left' || action.emote === 'skeptical_right') {
           const up = browRange.up * (action.amount || 0.6);
           const dur = action.durationMs || 500;
-          tracks.browAsymL.push({ t, targetVal: up, tweenMs: 80 });
-          tracks.browAsymR.push({ t, targetVal: 0, tweenMs: 80 });
+          const leftUp = action.emote === 'skeptical_right' ? 0 : up;
+          const rightUp = action.emote === 'skeptical_left' ? 0 : up;
+          tracks.browAsymL.push({ t, targetVal: leftUp, tweenMs: 80 });
+          tracks.browAsymR.push({ t, targetVal: rightUp, tweenMs: 80 });
           tracks.browAsymL.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
           tracks.browAsymR.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
         }

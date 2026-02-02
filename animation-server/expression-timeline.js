@@ -10,7 +10,7 @@ function makeSeed(str) {
 }
 
 function makeRng(seed) {
-  let s = seed >>> 0;
+  let s = (seed ^ Date.now() ^ Math.floor(Math.random() * 1000000000)) >>> 0;
   return () => {
     s ^= s << 13;
     s ^= s >>> 17;
@@ -50,6 +50,18 @@ function splitSentences(text) {
   }
 
   return sentences.map(s => ({ text: s, type: 'sentence' }));
+}
+
+function hasPauseMarkers(text) {
+  return /[,;:—-]/.test(text || '');
+}
+
+function hasSurpriseCues(text) {
+  return /(\bwhoa\b|\bwow\b|\bwhat\b|\breally\b|\bno way\b|!)/i.test(text || '');
+}
+
+function hasSmileCues(text) {
+  return /(\blol\b|\bhaha\b|\bfunny\b|\bnice\b|\bgreat\b|\bawesome\b|\blove\b|\bgood\b|\bwin\b)/i.test(text || '');
 }
 
 function classifyTone(text) {
@@ -102,6 +114,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   for (let i = 0; i < sentenceTimings.length; i++) {
     const sent = sentenceTimings[i];
     const sentTone = sent.tone !== 'neutral' ? sent.tone : overallTone;
+    const hasPause = hasPauseMarkers(sent.text);
 
     // === SPEAKER EYES ===
     // Start of sentence: look at listener
@@ -110,7 +123,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       type: 'eye',
       target: character,
       look: 'listener',
-      amount: randRange(rng, 0.45, 0.55),
+      amount: randRange(rng, 0.42, 0.55),
       durationMs: Math.round(randRange(rng, 220, 320))
     });
 
@@ -162,6 +175,29 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       }
     }
 
+    // Thinking/pauses: brief eye-up or eye-down around commas/long pauses
+    if (hasPause || sent.durationMs > 1600) {
+      const thinkTime = sent.startMs + sent.durationMs * randRange(rng, 0.45, 0.7);
+      const thinkDir = rng() < 0.6 ? 'up' : 'down';
+      plan.actions.push({
+        t: Math.round(thinkTime),
+        type: 'eye',
+        target: character,
+        look: thinkDir,
+        amount: randRange(rng, 0.22, 0.32),
+        durationMs: Math.round(randRange(rng, 180, 260))
+      });
+
+      plan.actions.push({
+        t: Math.round(thinkTime + randRange(rng, 260, 420)),
+        type: 'eye',
+        target: character,
+        look: 'listener',
+        amount: randRange(rng, 0.4, 0.5),
+        durationMs: Math.round(randRange(rng, 200, 280))
+      });
+    }
+
     // Micro saccades: small, quick eye moves to avoid staring
     const microCount = Math.max(0, Math.floor(sent.durationMs / 1200));
     for (let m = 0; m < microCount; m++) {
@@ -198,11 +234,12 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         durationMs: Math.round(Math.min(1200, sent.durationMs * 0.8))
       });
     } else if (sentTone === 'question') {
+      const skepticalEmote = rng() < 0.5 ? 'skeptical_left' : 'skeptical_right';
       plan.actions.push({
         t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.5, 0.7)),
         type: 'brow',
         target: character,
-        emote: 'skeptical',
+        emote: skepticalEmote,
         amount: randRange(rng, 0.4, 0.55),
         durationMs: Math.round(Math.min(800, sent.durationMs * 0.4))
       });
@@ -218,11 +255,12 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     } else {
       // Subtle neutral brow motion to avoid dead face
       if (rng() < 0.45) {
+        const neutralEmote = rng() < 0.5 ? 'skeptical_left' : 'skeptical_right';
         plan.actions.push({
           t: sent.startMs + Math.round(randRange(rng, 180, 380)),
           type: 'brow',
           target: character,
-          emote: rng() < 0.6 ? 'raise' : 'skeptical',
+          emote: rng() < 0.6 ? 'raise' : neutralEmote,
           amount: randRange(rng, 0.22, 0.35),
           durationMs: Math.round(randRange(rng, 220, 420))
         });
@@ -231,11 +269,12 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
     // Occasional extra asymmetry pop on longer sentences
     if (sent.durationMs > 1400 && rng() < 0.35) {
+      const asymEmote = rng() < 0.5 ? 'skeptical_left' : 'skeptical_right';
       plan.actions.push({
         t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.4, 0.75)),
         type: 'brow',
         target: character,
-        emote: 'skeptical',
+        emote: asymEmote,
         amount: randRange(rng, 0.22, 0.32),
         durationMs: Math.round(randRange(rng, 220, 380))
       });
@@ -243,8 +282,8 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
     // === LISTENER REACTIONS ===
     if (listener) {
-      // Listener glances at speaker every other sentence
-      if (i % 2 === 1) {
+      // Listener glances at speaker frequently
+      if (i % 2 === 1 || rng() < 0.6) {
         plan.actions.push({
           t: sent.startMs + Math.round(randRange(rng, 220, 380)),
           type: 'eye',
@@ -267,15 +306,26 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         }
       }
 
-      // Listener smiles occasionally during positive content
-      if (sentenceTimings.length >= 2 && i === Math.floor(sentenceTimings.length / 2)) {
-        if (sentTone === 'happy' || sentTone === 'confident') {
+      // Listener mouth reactions to speaker content
+      const listenerReactTime = sent.startMs + sent.durationMs * randRange(rng, 0.35, 0.65);
+      if (sentTone === 'happy' || sentTone === 'confident' || hasSmileCues(sent.text)) {
+        if (rng() < 0.7) {
           plan.actions.push({
-            t: sent.startMs + sent.durationMs * 0.5,
+            t: Math.round(listenerReactTime),
             type: 'mouth',
             target: listener,
             shape: 'SMILE',
-            durationMs: 700
+            durationMs: Math.round(randRange(rng, 500, 850))
+          });
+        }
+      } else if (sentTone === 'angry' || sentTone === 'question' || hasSurpriseCues(sent.text)) {
+        if (rng() < 0.55) {
+          plan.actions.push({
+            t: Math.round(listenerReactTime),
+            type: 'mouth',
+            target: listener,
+            shape: 'SURPRISE',
+            durationMs: Math.round(randRange(rng, 420, 700))
           });
         }
       }
@@ -337,11 +387,12 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
   if (browCount < 2) {
     const browAdds = 2 - browCount;
     for (let i = 0; i < browAdds; i++) {
+      const emote = rng() < 0.6 ? 'raise' : (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right');
       actions.push({
         t: Math.round(totalMs * randRange(rng, 0.25, 0.8)),
         type: 'brow',
         target: character,
-        emote: rng() < 0.6 ? 'raise' : 'skeptical',
+        emote,
         amount: randRange(rng, 0.2, 0.32),
         durationMs: Math.round(randRange(rng, 220, 360))
       });
