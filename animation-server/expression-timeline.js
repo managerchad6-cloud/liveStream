@@ -29,6 +29,11 @@ function classifyTone(text) {
   return 'neutral';
 }
 
+function pickLook(i) {
+  const looks = ['listener', 'down_left', 'down_right', 'up_left', 'up_right', 'away', 'listener'];
+  return looks[i % looks.length];
+}
+
 function buildExpressionPlan({ message, character, listener, durationSec, limits }) {
   const clauses = splitClauses(message);
   const tone = classifyTone(message);
@@ -48,15 +53,26 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     const clause = clauses[i];
     const words = clause.split(/\s+/).filter(Boolean);
     const clauseMs = Math.max(200, words.length * perWord);
+    const baseLook = pickLook(i);
 
     // Default gaze toward listener
     plan.actions.push({
       t: cursorMs,
       type: 'eye',
-      look: 'listener',
+      look: baseLook,
       amount: 0.5,
       durationMs: Math.min(600, clauseMs * 0.6)
     });
+
+    if (i % 2 === 1) {
+      plan.actions.push({
+        t: cursorMs + Math.max(120, clauseMs * 0.3),
+        type: 'eye',
+        look: pickLook(i + 1),
+        amount: 0.4,
+        durationMs: 300
+      });
+    }
 
     // Tone-driven brow/eye accents
     if (tone === 'nervous') {
@@ -126,49 +142,59 @@ function scheduleExpressionPlan(plan, api) {
   const log = api.log || (() => {});
   const totalMs = plan.totalMs || Math.max(200, (plan.durationSec || 1) * 1000);
 
-  const eyeRange = getEyeRange(api.limits, plan.character);
-  const browRange = getBrowRange(api.limits, plan.character);
-
-  const tweenEyeX = makeTweener((val) => api.setEyes(plan.character, val, api.getEyeY(plan.character)), timers);
-  const tweenEyeY = makeTweener((val) => api.setEyes(plan.character, api.getEyeX(plan.character), val), timers);
-  const tweenBrow = makeTweener((val) => api.setBrows(plan.character, val), timers);
+  const getEyeRangeFor = (c) => getEyeRange(api.limits, c);
+  const getBrowRangeFor = (c) => getBrowRange(api.limits, c);
 
   for (const action of plan.actions || []) {
     const id = setTimeout(() => {
       log(`[Expr] ${plan.character} action: ${JSON.stringify(action)}`);
+      const target = action.target || plan.character;
       if (action.type === 'eye') {
-        const { x, y } = resolveEyeLook(action.look, plan.character, plan.listener, eyeRange, action.amount || 0.5);
-        if (typeof x === 'number') tweenEyeX(api.getEyeX(plan.character), x, action.durationMs || DEFAULT_TWEEN_MS);
-        if (typeof y === 'number') tweenEyeY(api.getEyeY(plan.character), y, action.durationMs || DEFAULT_TWEEN_MS);
+        const eyeRange = getEyeRangeFor(target);
+        const targetListener = target === plan.character ? plan.listener : plan.character;
+        const { x, y } = resolveEyeLook(action.look, target, targetListener, eyeRange, action.amount || 0.5);
+        if (typeof x === 'number') {
+          const tweenEyeX = makeTweener((val) => api.setEyes(target, val, api.getEyeY(target)), timers);
+          tweenEyeX(api.getEyeX(target), x, action.durationMs || DEFAULT_TWEEN_MS);
+        }
+        if (typeof y === 'number') {
+          const tweenEyeY = makeTweener((val) => api.setEyes(target, api.getEyeX(target), val), timers);
+          tweenEyeY(api.getEyeY(target), y, action.durationMs || DEFAULT_TWEEN_MS);
+        }
       } else if (action.type === 'brow') {
+        const browRange = getBrowRangeFor(target);
+        const tweenBrow = makeTweener((val) => api.setBrows(target, val), timers);
         if (action.emote === 'flick') {
           const up = browRange.up * (action.amount || 0.4);
           const down = 0;
           const count = Math.max(1, action.count || 2);
           let t = 0;
           for (let i = 0; i < count; i++) {
-            const upId = setTimeout(() => tweenBrow(api.getBrowBase(plan.character), up, 120), t);
+            const upId = setTimeout(() => tweenBrow(api.getBrowBase(target), up, 120), t);
             timers.push(upId);
             t += 140;
-            const downId = setTimeout(() => tweenBrow(api.getBrowBase(plan.character), down, 120), t);
+            const downId = setTimeout(() => tweenBrow(api.getBrowBase(target), down, 120), t);
             timers.push(downId);
             t += 140;
           }
         } else if (action.emote === 'raise') {
           const up = browRange.up * (action.amount || 0.5);
-          tweenBrow(api.getBrowBase(plan.character), up, action.durationMs || 220);
-          const id2 = setTimeout(() => tweenBrow(api.getBrowBase(plan.character), 0, 200), action.durationMs || 220);
+          tweenBrow(api.getBrowBase(target), up, action.durationMs || 220);
+          const id2 = setTimeout(() => tweenBrow(api.getBrowBase(target), 0, 200), action.durationMs || 220);
           timers.push(id2);
         } else if (action.emote === 'frown') {
           const down = browRange.down * (action.amount || 0.6);
-          tweenBrow(api.getBrowBase(plan.character), down, action.durationMs || 240);
+          tweenBrow(api.getBrowBase(target), down, action.durationMs || 240);
         } else if (action.emote === 'skeptical') {
           const up = browRange.up * (action.amount || 0.6);
-          const id3 = setTimeout(() => api.setBrowAsym(plan.character, up, 0), 0);
+          const id3 = setTimeout(() => api.setBrowAsym(target, up, 0), 0);
           timers.push(id3);
-          const id4 = setTimeout(() => api.setBrowAsym(plan.character, 0, 0), action.durationMs || 500);
+          const id4 = setTimeout(() => api.setBrowAsym(target, 0, 0), action.durationMs || 500);
           timers.push(id4);
         }
+      } else if (action.type === 'mouth') {
+        const durationMs = Math.max(200, Number(action.durationMs) || 500);
+        api.setMouth(target, action.shape, durationMs);
       }
     }, action.t);
     timers.push(id);
@@ -178,6 +204,10 @@ function scheduleExpressionPlan(plan, api) {
   timers.push(setTimeout(() => {
     api.resetFace(plan.character);
     log(`[Expr] ${plan.character} reset to neutral`);
+    if (plan.listener && plan.listener !== plan.character) {
+      api.resetFace(plan.listener);
+      log(`[Expr] ${plan.listener} reset to neutral`);
+    }
   }, totalMs + 200));
 
   return timers;
@@ -208,6 +238,12 @@ function resolveEyeLook(look, character, listener, range, amount) {
   }
   if (look === 'down') return { x: 0, y: amtY };
   if (look === 'up') return { x: 0, y: -amtY };
+  if (look === 'left') return { x: -amtX, y: 0 };
+  if (look === 'right') return { x: amtX, y: 0 };
+  if (look === 'up_left') return { x: -amtX, y: -amtY };
+  if (look === 'up_right') return { x: amtX, y: -amtY };
+  if (look === 'down_left') return { x: -amtX, y: amtY };
+  if (look === 'down_right') return { x: amtX, y: amtY };
   return { x: 0, y: 0 };
 }
 

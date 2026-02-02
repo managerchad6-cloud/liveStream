@@ -388,6 +388,10 @@ let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
 let expressionTimers = [];
+let mouthOverrides = {
+  chad: { phoneme: null, expiresAt: 0 },
+  virgin: { phoneme: null, expiresAt: 0 }
+};
 
 // Track current speaking state for synced mode
 let currentSpeaker = null;
@@ -439,6 +443,28 @@ function clearExpressionTimers() {
   expressionTimers = [];
 }
 
+function setMouthOverride(character, phoneme, durationMs) {
+  const safe = (phoneme || '').toUpperCase();
+  if (!['SMILE', 'SURPRISE', 'A'].includes(safe)) {
+    return;
+  }
+  mouthOverrides[character] = {
+    phoneme: safe,
+    expiresAt: Date.now() + Math.max(200, durationMs || 500)
+  };
+  console.log(`[Expr] ${character} mouth override: ${safe} for ${durationMs || 500}ms`);
+}
+
+function getMouthOverride(character) {
+  const entry = mouthOverrides[character];
+  if (!entry || !entry.phoneme) return null;
+  if (Date.now() > entry.expiresAt) {
+    mouthOverrides[character] = { phoneme: null, expiresAt: 0 };
+    return null;
+  }
+  return entry.phoneme;
+}
+
 async function buildExpressionPlanLLM({ message, character, listener, durationSec, limits }) {
   if (!openai) {
     console.warn('[Expr] OPENAI_API_KEY not set, using heuristic expression plan');
@@ -448,21 +474,24 @@ async function buildExpressionPlanLLM({ message, character, listener, durationSe
   const prompt = `You are generating a timed expression plan for an animated character.
 Output ONLY valid JSON with this schema:
 {
-  "character": "chad|virgin",
+  "character": "chad|virgin",      // speaker
   "listener": "chad|virgin",
   "totalMs": number,
   "actions": [
     {
       "t": number,                // milliseconds from start
-      "type": "eye"|"brow",
+      "type": "eye"|"brow"|"mouth",
+      "target": "chad|virgin",     // optional, defaults to speaker
       // for type="eye":
-      "look": "listener"|"away"|"down"|"up"|"neutral",
+      "look": "listener"|"away"|"down"|"up"|"neutral"|"left"|"right"|"up_left"|"up_right"|"down_left"|"down_right",
       "amount": 0.0-1.0,
       "durationMs": number,
       // for type="brow":
       "emote": "raise"|"frown"|"skeptical"|"flick",
       "amount": 0.0-1.0,
       "count": number            // only for flick
+      // for type="mouth":
+      "shape": "SMILE"|"SURPRISE"
     }
   ]
 }
@@ -473,7 +502,9 @@ Rules:
 - Align actions to natural phrasing and pauses.
 - totalMs should match the audio duration (in ms).
 - Keep actions within 0..totalMs.
-- Prefer subtlety over jitter.`;
+- Prefer subtlety over jitter.
+- Include expression changes every 3-7 words.
+- Use both characters: the listener should react (eyes/brows, occasional mouth SMILE/SURPRISE).`;
 
   const content = `Character: ${character}\nListener: ${listener}\nDurationSec: ${durationSec}\nMessage: ${message}\n` +
     `Notes: Virgin is on right, Chad on left. When speaking to the other, look toward them.`;
@@ -507,25 +538,33 @@ function normalizeExpressionPlan(plan, context) {
     : Math.max(200, (context.durationSec || 1) * 1000);
 
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
-  const allowedLooks = new Set(['listener', 'away', 'down', 'up', 'neutral']);
+  const allowedLooks = new Set(['listener', 'away', 'down', 'up', 'neutral', 'left', 'right', 'up_left', 'up_right', 'down_left', 'down_right']);
   const allowedEmotes = new Set(['raise', 'frown', 'skeptical', 'flick']);
+  const allowedMouth = new Set(['SMILE', 'SURPRISE']);
+  const allowedTargets = new Set(['chad', 'virgin']);
 
   const cleaned = actions.map(a => {
     const t = Math.max(0, Math.min(totalMs, Number(a.t) || 0));
+    const target = allowedTargets.has(a.target) ? a.target : undefined;
     if (a.type === 'eye') {
       const look = allowedLooks.has(a.look) ? a.look : 'neutral';
       const amount = Math.max(0, Math.min(1, Number(a.amount) || 0.4));
       const durationMs = Math.max(80, Number(a.durationMs) || 200);
-      return { t, type: 'eye', look, amount, durationMs };
+      return { t, type: 'eye', target, look, amount, durationMs };
     }
     if (a.type === 'brow') {
       const emote = allowedEmotes.has(a.emote) ? a.emote : 'raise';
       const amount = Math.max(0, Math.min(1, Number(a.amount) || 0.4));
       const durationMs = Math.max(80, Number(a.durationMs) || 220);
       const count = Math.max(1, Math.round(Number(a.count) || 2));
-      const entry = { t, type: 'brow', emote, amount, durationMs };
+      const entry = { t, type: 'brow', target, emote, amount, durationMs };
       if (emote === 'flick') entry.count = count;
       return entry;
+    }
+    if (a.type === 'mouth') {
+      const shape = typeof a.shape === 'string' ? a.shape.toUpperCase() : 'SMILE';
+      const durationMs = Math.max(200, Number(a.durationMs) || 500);
+      return { t, type: 'mouth', target, shape: allowedMouth.has(shape) ? shape : 'SMILE', durationMs };
     }
     return null;
   }).filter(Boolean);
@@ -608,6 +647,7 @@ async function startPlayback(item) {
       setEyes: (character, x, y) => setExpressionOffset(character, 'eyes', x, y),
       setBrows: (character, y) => setExpressionOffset(character, 'eyebrows', 0, y),
       setBrowAsym: (character, leftY, rightY) => setEyebrowAsymmetry(character, leftY, rightY),
+      setMouth: (character, shape, durationMs) => setMouthOverride(character, shape, durationMs),
       getEyeX: (character) => getExpressionOffsets()[character]?.eyes?.x || 0,
       getEyeY: (character) => getExpressionOffsets()[character]?.eyes?.y || 0,
       getBrowBase: (character) => getExpressionOffsets()[character]?.eyebrows?.y || 0,
@@ -664,9 +704,19 @@ async function renderFrame(frame, audioProgress = null) {
   }
 
   // Chad gets the phoneme if he's speaking, otherwise neutral
-  const chadPhoneme = speakingCharacter === 'chad' ? currentPhoneme : 'A';
+  let chadPhoneme = speakingCharacter === 'chad' ? currentPhoneme : 'A';
   // Virgin gets the phoneme if she's speaking, otherwise neutral
-  const virginPhoneme = speakingCharacter === 'virgin' ? currentPhoneme : 'A';
+  let virginPhoneme = speakingCharacter === 'virgin' ? currentPhoneme : 'A';
+
+  // Apply non-speaking mouth overrides (expressions)
+  if (speakingCharacter !== 'chad') {
+    const override = getMouthOverride('chad');
+    if (override) chadPhoneme = override;
+  }
+  if (speakingCharacter !== 'virgin') {
+    const override = getMouthOverride('virgin');
+    if (override) virginPhoneme = override;
+  }
 
   // Update blink for both characters
   // Don't blink while speaking
