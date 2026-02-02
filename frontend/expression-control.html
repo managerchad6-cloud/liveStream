@@ -288,6 +288,64 @@
       margin-top: 4px;
     }
     .hidden { display: none !important; }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 12px 16px;
+    }
+    .toggle-row label {
+      color: #93c5fd;
+      font-weight: 600;
+      font-size: 0.95em;
+      cursor: pointer;
+      user-select: none;
+    }
+    .toggle-switch {
+      position: relative;
+      width: 48px;
+      height: 26px;
+      flex-shrink: 0;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: #334155;
+      border-radius: 13px;
+      transition: background 0.2s;
+    }
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      height: 20px;
+      width: 20px;
+      left: 3px;
+      bottom: 3px;
+      background: #e2e8f0;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: #38bdf8;
+    }
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(22px);
+    }
+    .toggle-status {
+      color: #64748b;
+      font-size: 0.85em;
+    }
+    .toggle-status.on { color: #38bdf8; }
+    .toggle-status.off { color: #f87171; }
   </style>
 </head>
 <body>
@@ -301,6 +359,15 @@
   </div>
   <div class="right">
     <h1>Expression Controller</h1>
+
+    <div class="toggle-row">
+      <div class="toggle-switch">
+        <input type="checkbox" id="auto-expr-toggle" checked>
+        <span class="toggle-slider" onclick="document.getElementById('auto-expr-toggle').click()"></span>
+      </div>
+      <label for="auto-expr-toggle">Auto Expressions</label>
+      <span class="toggle-status on" id="auto-expr-status">ON</span>
+    </div>
 
     <!-- Calibration banner (hidden once limits are locked) -->
     <div class="calibration-banner hidden" id="calibration-banner">
@@ -885,8 +952,42 @@
       } catch (err) {}
     }
 
+    // ---- Auto Expressions Toggle ----
+    const autoExprToggle = document.getElementById('auto-expr-toggle');
+    const autoExprStatus = document.getElementById('auto-expr-status');
+
+    function updateAutoExprDisplay(enabled) {
+      autoExprToggle.checked = enabled;
+      autoExprStatus.textContent = enabled ? 'ON' : 'OFF';
+      autoExprStatus.className = 'toggle-status ' + (enabled ? 'on' : 'off');
+    }
+
+    autoExprToggle.addEventListener('change', async () => {
+      const enabled = autoExprToggle.checked;
+      try {
+        const res = await fetch(`${API_BASE}/expression/auto`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        updateAutoExprDisplay(data.enabled);
+      } catch (err) {
+        updateAutoExprDisplay(!enabled);
+      }
+    });
+
+    async function loadAutoExprState() {
+      try {
+        const res = await fetch(`${API_BASE}/expression/auto`);
+        const data = await res.json();
+        updateAutoExprDisplay(data.enabled);
+      } catch (err) {}
+    }
+
     init();
     initAsymControls();
+    loadAutoExprState();
   </script>
 </body>
 </html>

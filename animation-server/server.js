@@ -371,6 +371,23 @@ app.post('/expression/eyebrow-asym', (req, res) => {
   res.json({ success: true, offsets: getExpressionOffsets() });
 });
 
+app.get('/expression/auto', (req, res) => {
+  res.json({ enabled: autoExpressions });
+});
+
+app.post('/expression/auto', (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  autoExpressions = enabled;
+  if (!enabled) {
+    expressionEvaluator.clear();
+    resetExpressionOffsets();
+    lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
+    lastExprState.virgin = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
+  }
+  console.log(`[Expression] Auto expressions: ${enabled}`);
+  res.json({ enabled: autoExpressions });
+});
+
 // ============== End Expression Control API ==============
 
 // Global state
@@ -389,6 +406,7 @@ let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
 const expressionEvaluator = new ExpressionEvaluator();
+let autoExpressions = true; // Toggle for automatic expression system
 // Last applied expression state per character — skip compositor calls when unchanged
 let lastExprState = {
   chad: { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null },
@@ -600,7 +618,7 @@ async function startPlayback(item) {
   }
 
   // Build expression plan and load into frame-driven evaluator
-  if (item.messageText) {
+  if (item.messageText && autoExpressions) {
     const listener = item.character === 'virgin' ? 'chad' : 'virgin';
     const limits = getExpressionLimits();
 
@@ -700,7 +718,7 @@ async function renderFrame(frame, audioProgress = null) {
   let virginPhoneme = speakingCharacter === 'virgin' ? currentPhoneme : 'A';
 
   // Frame-driven expression evaluation
-  if (expressionEvaluator.loaded && isAudioActive) {
+  if (autoExpressions && expressionEvaluator.loaded && isAudioActive) {
     // In synced mode, use audio frame position; otherwise fall back to elapsed video frames
     const currentTimeMs = (audioProgress && audioProgress.playing)
       ? (audioProgress.frame / STREAM_FPS) * 1000
