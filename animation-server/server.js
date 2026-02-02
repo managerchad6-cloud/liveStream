@@ -736,6 +736,7 @@ async function renderFrame(frame, audioProgress = null) {
       ? (audioProgress.frame / STREAM_FPS) * 1000
       : ((frame - playbackStartFrame) / STREAM_FPS) * 1000;
     const exprState = expressionEvaluator.evaluateAtMs(currentTimeMs);
+    const shouldApplyExpr = (frame % 3) === 0; // throttle expression updates to reduce cache churn
 
     for (const c of ['chad', 'virgin']) {
       if (!exprState[c]) continue;
@@ -745,7 +746,7 @@ async function renderFrame(frame, audioProgress = null) {
       // Quantize expression values to reduce cache key space explosion.
       // Rounding to multiples of 3 pixels reduces unique cache entries by ~9x
       // while maintaining visually smooth animation (with fewer expression changes).
-      const QUANT = 3;
+      const QUANT = 4;
       const BROW_QUANT = 2;
       const browMin = 2;
       s.eyeX = Math.round(s.eyeX / QUANT) * QUANT;
@@ -765,26 +766,30 @@ async function renderFrame(frame, audioProgress = null) {
 
       // Only call compositor setters when values actually changed —
       // each call wipes the frame cache, forcing expensive re-compositing
-      if (s.eyeX !== prev.eyeX || s.eyeY !== prev.eyeY) {
-        setExpressionOffset(c, 'eyes', s.eyeX, s.eyeY);
-        prev.eyeX = s.eyeX;
-        prev.eyeY = s.eyeY;
-      }
+      if (shouldApplyExpr) {
+        const eyeXChanged = Math.abs(s.eyeX - prev.eyeX) >= 2;
+        const eyeYChanged = Math.abs(s.eyeY - prev.eyeY) >= 2;
+        if (eyeXChanged || eyeYChanged) {
+          setExpressionOffset(c, 'eyes', s.eyeX, s.eyeY);
+          prev.eyeX = s.eyeX;
+          prev.eyeY = s.eyeY;
+        }
 
-      const browYChanged = s.browY !== prev.browY;
-      const asymChanged = s.browAsymL !== prev.browAsymL || s.browAsymR !== prev.browAsymR;
+        const browYChanged = s.browY !== prev.browY;
+        const asymChanged = s.browAsymL !== prev.browAsymL || s.browAsymR !== prev.browAsymR;
 
-      // Apply base brow movement first so asymmetry is layered on top of latest Y.
-      if (browYChanged) {
-        setExpressionOffset(c, 'eyebrows', 0, s.browY);
-        prev.browY = s.browY;
-      }
+        // Apply base brow movement first so asymmetry is layered on top of latest Y.
+        if (browYChanged) {
+          setExpressionOffset(c, 'eyebrows', 0, s.browY);
+          prev.browY = s.browY;
+        }
 
-      // Always apply asymmetry changes, including returning to neutral (0,0).
-      if (asymChanged) {
-        setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
-        prev.browAsymL = s.browAsymL;
-        prev.browAsymR = s.browAsymR;
+        // Always apply asymmetry changes, including returning to neutral (0,0).
+        if (asymChanged) {
+          setEyebrowAsymmetry(c, s.browAsymL, s.browAsymR);
+          prev.browAsymL = s.browAsymL;
+          prev.browAsymR = s.browAsymR;
+        }
       }
 
       // Apply mouth override for non-speaking character
