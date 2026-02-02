@@ -450,7 +450,10 @@ function getEyeRange(limits, character) {
 function getBrowRange(limits, character) {
   const lim = limits?.[character]?.eyebrows;
   if (!lim) return { up: -6, down: 6 };
-  return { up: lim.minY || -6, down: lim.maxY || 6 };
+  const up = lim.minY || -6;
+  const down = lim.maxY || 6;
+  // Clamp downward movement to 2px max
+  return { up, down: Math.min(down, 2) };
 }
 
 function resolveEyeLook(look, character, listener, range, amount) {

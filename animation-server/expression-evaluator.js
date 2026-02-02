@@ -59,14 +59,14 @@ class ExpressionEvaluator {
         } else if (action.emote === 'raise') {
           const up = browRange.up * (action.amount || 0.5);
           const dur = action.durationMs || 220;
-          // Hold this target until the next brow action (or end-of-plan neutral)
           tracks.browY.push({ t, targetVal: up, tweenMs: dur });
+          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 200 });
 
         } else if (action.emote === 'frown') {
           const down = browRange.down * (action.amount || 0.6);
           const dur = action.durationMs || 400;
-          // Hold this target until the next brow action (or end-of-plan neutral)
-          tracks.browY.push({ t, targetVal: down, tweenMs: dur });
+          tracks.browY.push({ t, targetVal: down, tweenMs: 200 });
+          tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 300 });  // Return to neutral
 
         } else if (
           action.emote === 'skeptical' ||
@@ -100,9 +100,10 @@ class ExpressionEvaluator {
             rightVal = down;
           }
 
-          // Hold asymmetry until the next brow action (or end-of-plan neutral)
-          tracks.browAsymL.push({ t, targetVal: leftVal, tweenMs: dur });
-          tracks.browAsymR.push({ t, targetVal: rightVal, tweenMs: dur });
+          tracks.browAsymL.push({ t, targetVal: leftVal, tweenMs: 80 });
+          tracks.browAsymR.push({ t, targetVal: rightVal, tweenMs: 80 });
+          tracks.browAsymL.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
+          tracks.browAsymR.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
         }
 
       } else if (action.type === 'mouth') {
