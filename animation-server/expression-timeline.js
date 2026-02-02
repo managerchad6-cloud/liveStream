@@ -57,11 +57,11 @@ function hasPauseMarkers(text) {
 }
 
 function hasSurpriseCues(text) {
-  return /(\bwhoa\b|\bwow\b|\bwhat\b|\breally\b|\bno way\b|!)/i.test(text || '');
+  return /(\bwhoa\b|\bwow\b|\bwhat\b|\breally\b|\bno way\b|\bomg\b|\bunbelievable\b|\bshocking\b|\bbreaking\b|!)/i.test(text || '');
 }
 
 function hasSmileCues(text) {
-  return /(\blol\b|\bhaha\b|\bfunny\b|\bnice\b|\bgreat\b|\bawesome\b|\blove\b|\bgood\b|\bwin\b)/i.test(text || '');
+  return /(\blol\b|\bhaha\b|\blmao\b|\brofl\b|\bfunny\b|\bjoke\b|\bpunchline\b|\blaugh\b|\bnice\b|\bgreat\b|\bawesome\b|\blove\b|\bgood\b|\bwin\b)/i.test(text || '');
 }
 
 function pickListenerMouthReaction(sentTone, text, rng) {
@@ -75,7 +75,7 @@ function pickListenerMouthReaction(sentTone, text, rng) {
 }
 
 function reactionDurationMs(rng) {
-  return Math.round(randRange(rng, 1800, 2600));
+  return Math.round(randRange(rng, 2200, 3200));
 }
 
 function listenerBrowForReaction(shape, rng) {
@@ -108,6 +108,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
   const sentences = splitSentences(message);
   const { totalMs, perWord, wordCount } = estimateWordTimings(message, durationSec);
   const overallTone = classifyTone(message);
+  let listenerReactionCount = 0;
 
   const plan = {
     character,
@@ -334,6 +335,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
             shape: reaction,
             durationMs: dur
           });
+          listenerReactionCount++;
 
           const brow = listenerBrowForReaction(reaction, rng);
           if (brow) {
@@ -383,6 +385,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
             shape: reaction,
             durationMs: dur
           });
+          listenerReactionCount++;
 
           const brow = listenerBrowForReaction(reaction, rng);
           if (brow) {
@@ -397,6 +400,31 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
           }
         }
       }
+    }
+  }
+
+  // Ensure at least one listener reaction per turn
+  if (listener && listenerReactionCount === 0) {
+    const fallbackReaction = pickListenerMouthReaction(overallTone, message, rng) || (hasSurpriseCues(message) ? 'SURPRISE' : 'SMILE');
+    const t = Math.round(totalMs * randRange(rng, 0.4, 0.7));
+    const dur = reactionDurationMs(rng);
+    plan.actions.push({
+      t,
+      type: 'mouth',
+      target: listener,
+      shape: fallbackReaction,
+      durationMs: dur
+    });
+    const brow = listenerBrowForReaction(fallbackReaction, rng);
+    if (brow) {
+      plan.actions.push({
+        t: t + Math.round(randRange(rng, 120, 260)),
+        type: 'brow',
+        target: listener,
+        emote: brow.emote,
+        amount: brow.amount,
+        durationMs: Math.round(Math.min(1600, dur))
+      });
     }
   }
 
