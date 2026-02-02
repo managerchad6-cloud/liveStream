@@ -68,13 +68,40 @@ class ExpressionEvaluator {
           tracks.browY.push({ t, targetVal: down, tweenMs: 200 });
           tracks.browY.push({ t: t + dur, targetVal: 0, tweenMs: 300 });  // Return to neutral
 
-        } else if (action.emote === 'skeptical' || action.emote === 'skeptical_left' || action.emote === 'skeptical_right') {
+        } else if (
+          action.emote === 'skeptical' ||
+          action.emote === 'skeptical_left' ||
+          action.emote === 'skeptical_right' ||
+          action.emote === 'asym_up_left' ||
+          action.emote === 'asym_up_right' ||
+          action.emote === 'asym_down_left' ||
+          action.emote === 'asym_down_right'
+        ) {
           const up = browRange.up * (action.amount || 0.6);
+          const down = browRange.down * (action.amount || 0.6);
           const dur = action.durationMs || 500;
-          const leftUp = action.emote === 'skeptical_right' ? 0 : up;
-          const rightUp = action.emote === 'skeptical_left' ? 0 : up;
-          tracks.browAsymL.push({ t, targetVal: leftUp, tweenMs: 80 });
-          tracks.browAsymR.push({ t, targetVal: rightUp, tweenMs: 80 });
+          let leftVal = 0;
+          let rightVal = 0;
+
+          if (action.emote === 'skeptical' || action.emote === 'skeptical_left' || action.emote === 'skeptical_right') {
+            leftVal = action.emote === 'skeptical_right' ? 0 : up;
+            rightVal = action.emote === 'skeptical_left' ? 0 : up;
+          } else if (action.emote === 'asym_up_left') {
+            leftVal = up;
+            rightVal = down * 0.4;
+          } else if (action.emote === 'asym_up_right') {
+            leftVal = down * 0.4;
+            rightVal = up;
+          } else if (action.emote === 'asym_down_left') {
+            leftVal = down;
+            rightVal = up * 0.4;
+          } else if (action.emote === 'asym_down_right') {
+            leftVal = up * 0.4;
+            rightVal = down;
+          }
+
+          tracks.browAsymL.push({ t, targetVal: leftVal, tweenMs: 80 });
+          tracks.browAsymR.push({ t, targetVal: rightVal, tweenMs: 80 });
           tracks.browAsymL.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
           tracks.browAsymR.push({ t: t + dur, targetVal: 0, tweenMs: 80 });
         }

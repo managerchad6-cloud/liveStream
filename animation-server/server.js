@@ -534,7 +534,18 @@ function normalizeExpressionPlan(plan, context) {
 
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const allowedLooks = new Set(['listener', 'away', 'down', 'up', 'neutral', 'left', 'right', 'up_left', 'up_right', 'down_left', 'down_right']);
-  const allowedEmotes = new Set(['raise', 'frown', 'skeptical', 'skeptical_left', 'skeptical_right', 'flick']);
+  const allowedEmotes = new Set([
+    'raise',
+    'frown',
+    'skeptical',
+    'skeptical_left',
+    'skeptical_right',
+    'asym_up_left',
+    'asym_up_right',
+    'asym_down_left',
+    'asym_down_right',
+    'flick'
+  ]);
   const allowedMouth = new Set(['SMILE', 'SURPRISE']);
   const allowedTargets = new Set(['chad', 'virgin']);
 

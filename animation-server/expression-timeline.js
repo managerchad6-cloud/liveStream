@@ -215,6 +215,8 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
     // === SPEAKER BROWS ===
     // One brow expression per sentence based on tone
+    const asymEmotes = ['asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
+
     if (sentTone === 'nervous') {
       plan.actions.push({
         t: sent.startMs + Math.round(randRange(rng, 120, 260)),
@@ -269,7 +271,7 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
 
     // Occasional extra asymmetry pop on longer sentences
     if (sent.durationMs > 1400 && rng() < 0.35) {
-      const asymEmote = rng() < 0.5 ? 'skeptical_left' : 'skeptical_right';
+      const asymEmote = asymEmotes[Math.floor(rng() * asymEmotes.length)];
       plan.actions.push({
         t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.4, 0.75)),
         type: 'brow',
@@ -277,6 +279,19 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         emote: asymEmote,
         amount: randRange(rng, 0.22, 0.32),
         durationMs: Math.round(randRange(rng, 220, 380))
+      });
+    }
+
+    // Extra asymmetry for short/neutral sentences to add life
+    if (sent.durationMs < 1600 && rng() < 0.3) {
+      const asymEmote = asymEmotes[Math.floor(rng() * asymEmotes.length)];
+      plan.actions.push({
+        t: sent.startMs + Math.round(sent.durationMs * randRange(rng, 0.35, 0.6)),
+        type: 'brow',
+        target: character,
+        emote: asymEmote,
+        amount: randRange(rng, 0.18, 0.28),
+        durationMs: Math.round(randRange(rng, 200, 320))
       });
     }
 
@@ -387,7 +402,8 @@ function augmentExpressionPlan(plan, { message, character, listener, durationSec
   if (browCount < 2) {
     const browAdds = 2 - browCount;
     for (let i = 0; i < browAdds; i++) {
-      const emote = rng() < 0.6 ? 'raise' : (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right');
+      const asymEmotes = ['skeptical_left', 'skeptical_right', 'asym_up_left', 'asym_up_right', 'asym_down_left', 'asym_down_right'];
+      const emote = rng() < 0.6 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
       actions.push({
         t: Math.round(totalMs * randRange(rng, 0.25, 0.8)),
         type: 'brow',
