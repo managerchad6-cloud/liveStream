@@ -7,10 +7,10 @@ class RealtimeLipSync {
     this.fps = fps;
     this.samplesPerFrame = Math.floor(sampleRate / fps); // ~1066 samples at 16kHz/15fps
 
-    // Sub-frame analysis for faster phoneme detection
-    this.analysisMultiplier = 6; // Analyze 6x per video frame for quicker phoneme changes
-    this.samplesPerAnalysis = Math.floor(this.samplesPerFrame / this.analysisMultiplier);
-    this.analysisHop = Math.max(1, Math.floor(this.samplesPerAnalysis / 2)); // 50% overlap
+    // Micro-frame analysis for smoother, time-consistent visemes
+    this.microFrameMs = 10;
+    this.samplesPerAnalysis = Math.max(1, Math.floor(this.sampleRate * (this.microFrameMs / 1000)));
+    this.analysisHop = this.samplesPerAnalysis; // non-overlapping to reduce jitter
 
     // Thresholds (tune these based on your audio)
     this.silenceThreshold = 0.015;
@@ -19,20 +19,33 @@ class RealtimeLipSync {
     this.highEnergyThreshold = 0.12;
     this.fricativeZcrThreshold = 0.35;
 
-    // Reduced smoothing for faster response
+    // Smoothing/hysteresis
     this.lastPhoneme = 'A';
-    this.phonemeHoldFrames = 0;
-    this.minHoldFrames = 1; // Slightly more persistence to reduce jitter
-    this.fricativeHoldFrames = 2;
-    this.fricativeHoldCounter = 0;
-    this.fricativeHoldCounter = 0;
+    this.currentHoldMs = 0;
+    this.minHoldMs = {
+      A: 60,
+      B: 80,
+      C: 100,
+      D: 100,
+      E: 100,
+      F: 80,
+      G: 80,
+      H: 80
+    };
+    this.switchMargin = 0.35;
+    this.fricativeHoldMs = 100;
+    this.fricativeHoldMsLeft = 0;
 
     // History for advanced analysis
     this.energyHistory = [];
-    this.maxHistoryLength = 10;
+    this.maxHistoryLength = 25;
 
     // Phoneme priority for sub-frame analysis (more open = higher priority)
     this.phonemePriority = { 'A': 0, 'B': 1, 'F': 2, 'G': 2, 'E': 3, 'C': 4, 'D': 5, 'H': 4 };
+
+    // Rolling micro-frame history (for majority/weighted vote)
+    this.historyFrames = [];
+    this.maxHistoryFrames = 10; // last 100ms if microFrameMs=10
   }
 
   /**
@@ -43,31 +56,22 @@ class RealtimeLipSync {
    */
   analyzeChunk(samples) {
     if (!samples || samples.length === 0) {
-      return this.applySmoothing('A');
+      return this.applySmoothing('A', 0);
     }
 
-    // Sub-frame analysis: analyze multiple smaller windows
-    // and pick the most significant (most open) phoneme
-    let bestPhoneme = 'A';
-    let bestScore = 0;
-
+    // Micro-frame analysis: build a rolling history for cadence-aware decisions
+    let analyzed = 0;
     for (let start = 0; start < samples.length; start += this.analysisHop) {
       const end = Math.min(start + this.samplesPerAnalysis, samples.length);
-
       if (end <= start) continue;
-
       const subChunk = samples.slice(start, end);
 
-      // Calculate features for this sub-chunk
       const rms = this.calculateRMS(subChunk);
       const zcr = this.calculateZCR(subChunk);
       const peak = this.calculatePeak(subChunk);
 
-      // Track energy history
       this.updateEnergyHistory(rms);
       const avgEnergy = this.getAverageEnergy();
-
-      // Classify phoneme
       const phoneme = this.classifyPhoneme(rms, zcr, peak, avgEnergy);
       const priority = this.phonemePriority[phoneme] || 0;
       const energyScore = this.highEnergyThreshold > 0
@@ -75,14 +79,16 @@ class RealtimeLipSync {
         : 0;
       const score = priority + energyScore;
 
-      // Keep the most "open" phoneme from all sub-chunks
-      if (score > bestScore) {
-        bestScore = score;
-        bestPhoneme = phoneme;
+      this.historyFrames.push({ phoneme, score, rms });
+      if (this.historyFrames.length > this.maxHistoryFrames) {
+        this.historyFrames.shift();
       }
+      analyzed++;
     }
 
-    return this.applySmoothing(bestPhoneme);
+    const winning = this.pickPhonemeFromHistory();
+    const frameMs = analyzed * this.microFrameMs;
+    return this.applySmoothing(winning.phoneme, frameMs);
   }
 
   /**
@@ -222,40 +228,75 @@ class RealtimeLipSync {
     return 'A'; // Default to closed
   }
 
+  pickPhonemeFromHistory() {
+    if (this.historyFrames.length === 0) {
+      return { phoneme: 'A', score: 0 };
+    }
+
+    const tallies = {};
+    for (const entry of this.historyFrames) {
+      if (!tallies[entry.phoneme]) tallies[entry.phoneme] = 0;
+      tallies[entry.phoneme] += entry.score;
+    }
+
+    let best = { phoneme: 'A', score: -Infinity };
+    for (const [p, score] of Object.entries(tallies)) {
+      if (score > best.score) best = { phoneme: p, score };
+    }
+    return best;
+  }
+
   /**
    * Smooth phoneme transitions to prevent jitter
+   * Uses hysteresis + minimum dwell time (ms)
    */
-  applySmoothing(newPhoneme) {
-    if (this.lastPhoneme === 'F' && newPhoneme !== 'F') {
-      if (this.fricativeHoldCounter < this.fricativeHoldFrames) {
-        this.fricativeHoldCounter++;
-        return this.lastPhoneme;
+  applySmoothing(newPhoneme, frameMs) {
+    const current = this.lastPhoneme;
+    const minHold = this.minHoldMs[current] || 80;
+
+    // Update dwell time
+    this.currentHoldMs += frameMs;
+
+    // Fricatives can end quickly but hold briefly to avoid flicker
+    if (current === 'F' && newPhoneme !== 'F') {
+      if (this.fricativeHoldMsLeft < this.fricativeHoldMs) {
+        this.fricativeHoldMsLeft += frameMs;
+        return current;
       }
     }
-
     if (newPhoneme === 'F') {
-      this.fricativeHoldCounter = 0;
-    } else if (this.lastPhoneme !== 'F') {
-      this.fricativeHoldCounter = 0;
+      this.fricativeHoldMsLeft = 0;
     }
 
-
-    // If same phoneme, reset hold counter
-    if (newPhoneme === this.lastPhoneme) {
-      this.phonemeHoldFrames = 0;
-      return newPhoneme;
+    if (newPhoneme === current) {
+      return current;
     }
 
-    // If different, only change if we've held long enough
-    this.phonemeHoldFrames++;
-    if (this.phonemeHoldFrames >= this.minHoldFrames) {
-      this.lastPhoneme = newPhoneme;
-      this.phonemeHoldFrames = 0;
-      return newPhoneme;
+    // Enforce minimum dwell time
+    if (this.currentHoldMs < minHold) {
+      return current;
     }
 
-    // Hold previous phoneme
-    return this.lastPhoneme;
+    // Hysteresis: require stronger evidence to switch
+    const currentScore = this.scoreForPhoneme(current);
+    const newScore = this.scoreForPhoneme(newPhoneme);
+    if (newScore < currentScore + this.switchMargin) {
+      return current;
+    }
+
+    this.lastPhoneme = newPhoneme;
+    this.currentHoldMs = 0;
+    return newPhoneme;
+  }
+
+  scoreForPhoneme(phoneme) {
+    let score = 0;
+    for (const entry of this.historyFrames) {
+      if (entry.phoneme === phoneme) {
+        score += entry.score;
+      }
+    }
+    return score;
   }
 
   /**
@@ -281,8 +322,10 @@ class RealtimeLipSync {
    */
   reset() {
     this.lastPhoneme = 'A';
-    this.phonemeHoldFrames = 0;
+    this.currentHoldMs = 0;
+    this.fricativeHoldMsLeft = 0;
     this.energyHistory = [];
+    this.historyFrames = [];
   }
 
   /**
