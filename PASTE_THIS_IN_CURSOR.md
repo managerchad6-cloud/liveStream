@@ -96,4 +96,3 @@ When editing deployment or performance:
    - `sharp.concurrency(2)` — libvips threads; keep 2 on low-core VPS, can increase on beefy local/Win.
 
 3. **Don’t break:** Linux VPS is production; any path or env change must stay cross-platform.
-

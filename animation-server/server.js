@@ -26,7 +26,9 @@ const {
   getLightingHue,
   setExpressionOffset,
   getExpressionOffsets,
-  resetExpressionOffsets
+  resetExpressionOffsets,
+  getExpressionLimits,
+  saveExpressionLimits
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -317,6 +319,29 @@ app.post('/expression/reset', (req, res) => {
   const { character } = req.body || {};
   resetExpressionOffsets(character);
   res.json({ success: true, offsets: getExpressionOffsets() });
+});
+
+// Expression limits (calibration)
+app.get('/expression/limits', (req, res) => {
+  const limits = getExpressionLimits();
+  res.json({ limits, locked: limits !== null });
+});
+
+app.post('/expression/limits/save', (req, res) => {
+  const existing = getExpressionLimits();
+  if (existing) {
+    return res.status(409).json({ error: 'Limits already locked. Delete expression-limits.json to recalibrate.' });
+  }
+  const limits = req.body;
+  if (!limits || !limits.chad || !limits.virgin) {
+    return res.status(400).json({ error: 'Invalid limits structure' });
+  }
+  try {
+    saveExpressionLimits(limits);
+    res.json({ success: true, limits: getExpressionLimits() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============== End Expression Control API ==============

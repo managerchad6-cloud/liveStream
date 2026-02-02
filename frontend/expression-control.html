@@ -160,6 +160,75 @@
       font-size: 0.85em;
       margin-top: 8px;
     }
+    /* Calibration mode */
+    .calibration-banner {
+      background: #1e3a5f;
+      border: 1px solid #38bdf8;
+      border-radius: 12px;
+      padding: 14px 18px;
+    }
+    .calibration-banner .label {
+      color: #7dd3fc;
+      font-weight: 600;
+      font-size: 0.95em;
+      margin-bottom: 4px;
+    }
+    .calibration-banner .desc {
+      color: #94a3b8;
+      font-size: 0.85em;
+    }
+    .cal-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.85em;
+      font-variant-numeric: tabular-nums;
+    }
+    .cal-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .cal-row .cal-label {
+      color: #94a3b8;
+      width: 44px;
+      text-align: right;
+    }
+    .cal-row .cal-val {
+      color: #7dd3fc;
+      font-weight: 600;
+      width: 36px;
+      text-align: center;
+    }
+    .cal-row .cal-val.unset {
+      color: #475569;
+    }
+    button.cal-set {
+      background: #334155;
+      color: #e2e8f0;
+      padding: 3px 10px;
+      font-size: 0.8em;
+      border-radius: 5px;
+    }
+    button.cal-set:hover { background: #475569; }
+    button.cal-set.is-set {
+      background: #164e63;
+      color: #7dd3fc;
+    }
+    button.save-lock {
+      background: #22c55e;
+      color: #0b1224;
+      font-size: 1em;
+      padding: 12px 28px;
+      margin-top: 8px;
+    }
+    button.save-lock:hover { background: #4ade80; }
+    .save-row {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 4px;
+    }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
@@ -174,7 +243,13 @@
   <div class="right">
     <h1>Expression Controller</h1>
 
-    <div class="panel">
+    <!-- Calibration banner (hidden once limits are locked) -->
+    <div class="calibration-banner hidden" id="calibration-banner">
+      <div class="label">Calibration Mode</div>
+      <div class="desc">Drag a joystick to the desired max position, then click "Set" for that direction. Do this for each direction on each joystick, then Save &amp; Lock.</div>
+    </div>
+
+    <div class="panel" id="panel-chad-eyes">
       <h2>Chad Eyes</h2>
       <div class="joystick-container">
         <div class="joystick-pad" id="pad-chad-eyes">
@@ -184,24 +259,34 @@
           <div>X: <span class="val" id="val-chad-eyes-x">0</span> px</div>
           <div>Y: <span class="val" id="val-chad-eyes-y">0</span> px</div>
         </div>
+        <div class="cal-controls hidden" id="cal-chad-eyes">
+          <div class="cal-row"><span class="cal-label">Left:</span><span class="cal-val unset" id="cal-chad-eyes-minX">--</span><button class="cal-set" onclick="setCalLimit('chad','eyes','minX')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Right:</span><span class="cal-val unset" id="cal-chad-eyes-maxX">--</span><button class="cal-set" onclick="setCalLimit('chad','eyes','maxX')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-chad-eyes-minY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyes','minY')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-chad-eyes-maxY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyes','maxY')">Set</button></div>
+        </div>
       </div>
     </div>
 
-    <div class="panel">
-      <h2>Chad Eyebrows</h2>
+    <div class="panel" id="panel-chad-eyebrows">
+      <h2>Chad Eyebrows <span style="color:#64748b;font-weight:400;font-size:0.85em">(vertical + rotation)</span></h2>
       <div class="joystick-container">
         <div class="joystick-pad" id="pad-chad-eyebrows">
           <div class="joystick-dot" id="dot-chad-eyebrows"></div>
         </div>
         <div class="joystick-info">
-          <div>X: <span class="val" id="val-chad-eyebrows-x">0</span> px</div>
           <div>Y: <span class="val" id="val-chad-eyebrows-y">0</span> px</div>
+          <div style="display:none">X: <span class="val" id="val-chad-eyebrows-x">0</span></div>
+        </div>
+        <div class="cal-controls hidden" id="cal-chad-eyebrows">
+          <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-chad-eyebrows-minY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyebrows','minY')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-chad-eyebrows-maxY">--</span><button class="cal-set" onclick="setCalLimit('chad','eyebrows','maxY')">Set</button></div>
         </div>
       </div>
-      <div class="note">Requires static_chad_eyebrow_left/right layers in PSD.</div>
+      <div class="note">Vertical movement with outward/inward rotation (10°).</div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="panel-virgin-eyes">
       <h2>Virgin Eyes</h2>
       <div class="joystick-container">
         <div class="joystick-pad" id="pad-virgin-eyes">
@@ -211,19 +296,36 @@
           <div>X: <span class="val" id="val-virgin-eyes-x">0</span> px</div>
           <div>Y: <span class="val" id="val-virgin-eyes-y">0</span> px</div>
         </div>
+        <div class="cal-controls hidden" id="cal-virgin-eyes">
+          <div class="cal-row"><span class="cal-label">Left:</span><span class="cal-val unset" id="cal-virgin-eyes-minX">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyes','minX')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Right:</span><span class="cal-val unset" id="cal-virgin-eyes-maxX">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyes','maxX')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-virgin-eyes-minY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyes','minY')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-virgin-eyes-maxY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyes','maxY')">Set</button></div>
+        </div>
       </div>
     </div>
 
-    <div class="panel">
-      <h2>Virgin Eyebrows</h2>
+    <div class="panel" id="panel-virgin-eyebrows">
+      <h2>Virgin Eyebrows <span style="color:#64748b;font-weight:400;font-size:0.85em">(vertical + rotation)</span></h2>
       <div class="joystick-container">
         <div class="joystick-pad" id="pad-virgin-eyebrows">
           <div class="joystick-dot" id="dot-virgin-eyebrows"></div>
         </div>
         <div class="joystick-info">
-          <div>X: <span class="val" id="val-virgin-eyebrows-x">0</span> px</div>
           <div>Y: <span class="val" id="val-virgin-eyebrows-y">0</span> px</div>
+          <div style="display:none">X: <span class="val" id="val-virgin-eyebrows-x">0</span></div>
         </div>
+        <div class="cal-controls hidden" id="cal-virgin-eyebrows">
+          <div class="cal-row"><span class="cal-label">Up:</span><span class="cal-val unset" id="cal-virgin-eyebrows-minY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyebrows','minY')">Set</button></div>
+          <div class="cal-row"><span class="cal-label">Down:</span><span class="cal-val unset" id="cal-virgin-eyebrows-maxY">--</span><button class="cal-set" onclick="setCalLimit('virgin','eyebrows','maxY')">Set</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Save & Lock (calibration only) -->
+    <div class="panel hidden" id="save-panel">
+      <div class="save-row">
+        <button class="save-lock" onclick="saveLimits()">Save &amp; Lock</button>
       </div>
     </div>
 
@@ -234,7 +336,7 @@
         <button class="secondary" onclick="resetCharacter('chad')">Reset Chad</button>
         <button class="secondary" onclick="resetCharacter('virgin')">Reset Virgin</button>
       </div>
-      <div class="note">Range: -20 to +20 pixels at output scale (1280x720).</div>
+      <div class="note" id="range-note">Range: -20 to +20 pixels at output scale (1280x720).</div>
     </div>
   </div>
 
@@ -243,12 +345,28 @@
       ? 'http://localhost:3003'
       : `http://${window.location.hostname}:3003`;
 
-    const OFFSET_RANGE = 20; // -20 to +20 pixels
+    const DEFAULT_RANGE = 20; // fallback symmetric range
 
     const streamEl = document.getElementById('stream');
     const streamOverlay = document.getElementById('stream-overlay');
     const streamPlayBtn = document.getElementById('stream-play-btn');
     let hlsPlayer = null;
+
+    // Mode state
+    let calibrationMode = false;
+    let activeLimits = null;
+
+    // Calibration data: null means "not set yet" for each direction
+    const calData = {
+      chad: {
+        eyes:     { minX: null, maxX: null, minY: null, maxY: null },
+        eyebrows: { minX: null, maxX: null, minY: null, maxY: null }
+      },
+      virgin: {
+        eyes:     { minX: null, maxX: null, minY: null, maxY: null },
+        eyebrows: { minX: null, maxX: null, minY: null, maxY: null }
+      }
+    };
 
     // ---- HLS Stream ----
     function connectStream() {
@@ -282,6 +400,32 @@
       streamEl.play().then(() => { streamOverlay.style.display = 'none'; }).catch(() => {});
     });
 
+    // ---- Helpers for asymmetric mapping ----
+    function getLimitsFor(character, feature) {
+      if (activeLimits && activeLimits[character] && activeLimits[character][feature]) {
+        return activeLimits[character][feature];
+      }
+      return { minX: -DEFAULT_RANGE, maxX: DEFAULT_RANGE, minY: -DEFAULT_RANGE, maxY: DEFAULT_RANGE };
+    }
+
+    function relToOffset(rel, minVal, maxVal) {
+      if (rel < 0.5) {
+        return Math.round((rel / 0.5 - 1) * Math.abs(minVal));
+      } else {
+        return Math.round(((rel - 0.5) / 0.5) * maxVal);
+      }
+    }
+
+    function offsetToRel(off, minVal, maxVal) {
+      if (off <= 0) {
+        const absMin = Math.abs(minVal) || 1;
+        return (off / absMin + 1) * 0.5;
+      } else {
+        const absMax = maxVal || 1;
+        return 0.5 + (off / absMax) * 0.5;
+      }
+    }
+
     // ---- Joystick Controls ----
     const joysticks = [
       { id: 'chad-eyes', character: 'chad', feature: 'eyes' },
@@ -299,8 +443,6 @@
       const valY = document.getElementById(`val-${j.id}-y`);
 
       joystickState[j.id] = { x: 0, y: 0, pad, dot, valX, valY, ...j };
-
-      // Position dot at center initially
       updateDotPosition(j.id, 0, 0);
 
       let dragging = false;
@@ -308,18 +450,28 @@
 
       function onMove(clientX, clientY) {
         const rect = pad.getBoundingClientRect();
-        const relX = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        let relX = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
         const relY = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
 
-        // Map 0..1 to -OFFSET_RANGE..+OFFSET_RANGE
-        const offX = Math.round((relX - 0.5) * 2 * OFFSET_RANGE);
-        const offY = Math.round((relY - 0.5) * 2 * OFFSET_RANGE);
+        // Eyebrows: vertical only (X locked to center)
+        const isEyebrow = j.feature === 'eyebrows';
+        if (isEyebrow) relX = 0.5;
+
+        let offX, offY;
+
+        if (calibrationMode) {
+          offX = isEyebrow ? 0 : Math.round((relX - 0.5) * 2 * DEFAULT_RANGE);
+          offY = Math.round((relY - 0.5) * 2 * DEFAULT_RANGE);
+        } else {
+          const lim = getLimitsFor(j.character, j.feature);
+          offX = isEyebrow ? 0 : relToOffset(relX, lim.minX, lim.maxX);
+          offY = relToOffset(relY, lim.minY, lim.maxY);
+        }
 
         joystickState[j.id].x = offX;
         joystickState[j.id].y = offY;
         updateDotPosition(j.id, offX, offY);
 
-        // Debounced send
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
           sendOffset(j.character, j.feature, offX, offY);
@@ -332,31 +484,35 @@
         pad.setPointerCapture(e.pointerId);
         onMove(e.clientX, e.clientY);
       });
-
       pad.addEventListener('pointermove', (e) => {
         if (!dragging) return;
         onMove(e.clientX, e.clientY);
       });
-
-      pad.addEventListener('pointerup', () => {
-        dragging = false;
-        pad.classList.remove('dragging');
-      });
-
-      pad.addEventListener('pointercancel', () => {
-        dragging = false;
-        pad.classList.remove('dragging');
-      });
+      pad.addEventListener('pointerup', () => { dragging = false; pad.classList.remove('dragging'); });
+      pad.addEventListener('pointercancel', () => { dragging = false; pad.classList.remove('dragging'); });
     });
 
     function updateDotPosition(id, offX, offY) {
       const state = joystickState[id];
-      // Map offset back to percentage position on the pad
-      const pctX = (offX / OFFSET_RANGE + 1) / 2;
-      const pctY = (offY / OFFSET_RANGE + 1) / 2;
-      state.dot.style.left = `${pctX * 100}%`;
-      state.dot.style.top = `${pctY * 100}%`;
-      state.valX.textContent = offX;
+      const isEyebrow = state.feature === 'eyebrows';
+      let pctX, pctY;
+      if (isEyebrow) {
+        pctX = 0.5;
+      } else if (calibrationMode) {
+        pctX = (offX / DEFAULT_RANGE + 1) / 2;
+      } else {
+        const lim = getLimitsFor(state.character, state.feature);
+        pctX = offsetToRel(offX, lim.minX, lim.maxX);
+      }
+      if (calibrationMode) {
+        pctY = (offY / DEFAULT_RANGE + 1) / 2;
+      } else {
+        const lim = getLimitsFor(state.character, state.feature);
+        pctY = offsetToRel(offY, lim.minY, lim.maxY);
+      }
+      state.dot.style.left = `${Math.max(0, Math.min(100, pctX * 100))}%`;
+      state.dot.style.top = `${Math.max(0, Math.min(100, pctY * 100))}%`;
+      if (state.valX) state.valX.textContent = offX;
       state.valY.textContent = offY;
     }
 
@@ -366,6 +522,81 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ character, feature, x, y })
       }).catch(() => {});
+    }
+
+    // ---- Calibration: "Set" button for a single direction ----
+    function setCalLimit(character, feature, direction) {
+      const jId = `${character}-${feature}`;
+      const state = joystickState[jId];
+      if (!state) return;
+
+      // Capture the current joystick position for this direction
+      const value = (direction === 'minX' || direction === 'maxX') ? state.x : state.y;
+      calData[character][feature][direction] = value;
+
+      // Update the readout
+      const valEl = document.getElementById(`cal-${jId}-${direction}`);
+      if (valEl) {
+        valEl.textContent = value;
+        valEl.classList.remove('unset');
+      }
+
+      // Mark the Set button as set (find the row containing this direction's button)
+      const calEl = document.getElementById(`cal-${jId}`);
+      if (calEl) {
+        const btns = calEl.querySelectorAll('.cal-set');
+        btns.forEach(btn => {
+          // Match by the onclick attribute content
+          if (btn.getAttribute('onclick')?.includes(`'${direction}'`)) {
+            btn.classList.add('is-set');
+          }
+        });
+      }
+    }
+
+    // ---- Save & Lock ----
+    async function saveLimits() {
+      // Build the limits object, using defaults for any direction not set
+      const limits = {};
+      for (const char of ['chad', 'virgin']) {
+        limits[char] = {};
+        for (const feat of ['eyes', 'eyebrows']) {
+          const cd = calData[char][feat];
+          limits[char][feat] = {
+            minX: cd.minX !== null ? cd.minX : -DEFAULT_RANGE,
+            maxX: cd.maxX !== null ? cd.maxX : DEFAULT_RANGE,
+            minY: cd.minY !== null ? cd.minY : -DEFAULT_RANGE,
+            maxY: cd.maxY !== null ? cd.maxY : DEFAULT_RANGE
+          };
+          // Enforce valid ranges (min must be <= 0, max must be >= 0, at least 1px)
+          const l = limits[char][feat];
+          if (l.minX > 0) l.minX = 0;
+          if (l.maxX < 0) l.maxX = 0;
+          if (l.minY > 0) l.minY = 0;
+          if (l.maxY < 0) l.maxY = 0;
+          if (l.minX === 0) l.minX = -1;
+          if (l.maxX === 0) l.maxX = 1;
+          if (l.minY === 0) l.minY = -1;
+          if (l.maxY === 0) l.maxY = 1;
+        }
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/expression/limits/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(limits)
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeLimits = data.limits;
+          enterNormalMode();
+        } else {
+          alert('Failed to save: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed to save limits: ' + err.message);
+      }
     }
 
     function resetAll() {
@@ -396,8 +627,55 @@
       }).catch(() => {});
     }
 
-    // ---- Load current state ----
-    async function loadStatus() {
+    // ---- Mode switching ----
+    function enterCalibrationMode() {
+      calibrationMode = true;
+      document.getElementById('calibration-banner').classList.remove('hidden');
+      document.getElementById('save-panel').classList.remove('hidden');
+      joysticks.forEach(j => {
+        document.getElementById(`cal-${j.id}`).classList.remove('hidden');
+      });
+      document.getElementById('range-note').textContent = 'Drag joystick to position, click Set for each direction.';
+    }
+
+    function enterNormalMode() {
+      calibrationMode = false;
+      document.getElementById('calibration-banner').classList.add('hidden');
+      document.getElementById('save-panel').classList.add('hidden');
+      joysticks.forEach(j => {
+        document.getElementById(`cal-${j.id}`).classList.add('hidden');
+      });
+      if (activeLimits) {
+        document.getElementById('range-note').textContent = 'Ranges calibrated and locked.';
+      } else {
+        document.getElementById('range-note').textContent = `Range: -${DEFAULT_RANGE} to +${DEFAULT_RANGE} pixels at output scale (1280x720).`;
+      }
+      // Re-center all dots
+      joysticks.forEach(j => {
+        joystickState[j.id].x = 0;
+        joystickState[j.id].y = 0;
+        updateDotPosition(j.id, 0, 0);
+      });
+    }
+
+    // ---- Init ----
+    async function init() {
+      connectStream();
+
+      try {
+        const res = await fetch(`${API_BASE}/expression/limits`);
+        const data = await res.json();
+        if (data.locked && data.limits) {
+          activeLimits = data.limits;
+          enterNormalMode();
+        } else {
+          enterCalibrationMode();
+        }
+      } catch (err) {
+        enterCalibrationMode();
+      }
+
+      // Load current offsets
       try {
         const res = await fetch(`${API_BASE}/expression/status`);
         const data = await res.json();
@@ -414,8 +692,7 @@
       } catch (err) {}
     }
 
-    connectStream();
-    loadStatus();
+    init();
   </script>
 </body>
 </html>

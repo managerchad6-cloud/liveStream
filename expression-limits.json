@@ -1,0 +1,30 @@
+{
+  "chad": {
+    "eyes": {
+      "minX": -7,
+      "maxX": 5,
+      "minY": -4,
+      "maxY": 4
+    },
+    "eyebrows": {
+      "minX": -1,
+      "maxX": 1,
+      "minY": -5,
+      "maxY": 4
+    }
+  },
+  "virgin": {
+    "eyes": {
+      "minX": -9,
+      "maxX": 9,
+      "minY": -4,
+      "maxY": 4
+    },
+    "eyebrows": {
+      "minX": -1,
+      "maxX": 1,
+      "minY": -6,
+      "maxY": 4
+    }
+  }
+}

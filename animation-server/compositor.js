@@ -10,6 +10,7 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const LAYERS_DIR = path.join(ROOT_DIR, 'exported-layers');
 const MANIFEST_PATH = path.join(LAYERS_DIR, 'manifest.json');
 const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
+const EXPRESSION_LIMITS_PATH = path.join(ROOT_DIR, 'expression-limits.json');
 
 let manifest = null;
 let scaledLayerBuffers = {};
@@ -23,6 +24,7 @@ let outputWidth = 0;
 let outputHeight = 0;
 let staticLayerEntries = [];
 let expressionLayerEntries = []; // Eye/eyebrow layers composited dynamically with offsets
+let noseLayerEntries = [];       // Nose layers composited above eye_cover (z-order)
 let staticBaseVersion = 0;
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
@@ -46,15 +48,26 @@ let lightingUpdateId = 0;
 let lightingBaseBuffers = {};
 let lightingLayerMeta = {};
 
+// Expression limits (loaded from expression-limits.json if it exists)
+let expressionLimits = null;
+try {
+  if (fs.existsSync(EXPRESSION_LIMITS_PATH)) {
+    expressionLimits = JSON.parse(fs.readFileSync(EXPRESSION_LIMITS_PATH, 'utf8'));
+    console.log('[Compositor] Loaded expression limits from', EXPRESSION_LIMITS_PATH);
+  }
+} catch (err) {
+  console.warn('[Compositor] Failed to load expression limits:', err.message);
+}
+
 // Expression control (eye and eyebrow positions)
 let expressionOffsets = {
   chad: {
-    eyes: { x: 0, y: 0 },      // Applies to both eye_left and eye_right
-    eyebrows: { x: 0, y: 0 }   // Applies to both eyebrow layers
+    eyes: { x: 0, y: 0 },
+    eyebrows: { x: 0, y: 0, rotation: 0 }  // rotation in degrees, sent by frontend
   },
   virgin: {
     eyes: { x: 0, y: 0 },
-    eyebrows: { x: 0, y: 0 }
+    eyebrows: { x: 0, y: 0, rotation: 0 }
   }
 };
 
@@ -84,6 +97,18 @@ const EXPRESSION_LAYER_MAP = {
   'static_virgin_eye_cover': null,
   'static_virgin_eyebrow_left': { character: 'virgin', feature: 'eyebrows' },
   'static_virgin_eyebrow_right': { character: 'virgin', feature: 'eyebrows' }
+};
+
+// Nose layers are composited above eye_cover (drawn after expression layers)
+const NOSE_LAYER_IDS = new Set(['static_virgin_nose', 'static_chad_nose']);
+
+// Eyebrow rotation: vertical-only movement with rotation proportional to Y offset
+const EYEBROW_ROTATION_FACTOR = 0.5; // degrees per pixel of Y offset (10° at max 20px)
+const EYEBROW_LAYER_SIDES = {
+  'static_chad_eyebrow_left': 'left',
+  'static_chad_eyebrow_right': 'right',
+  'static_virgin_eyebrow_left': 'left',
+  'static_virgin_eyebrow_right': 'right'
 };
 
 const EMISSION_LAYER_KEYS = {
@@ -190,6 +215,41 @@ async function extractTVViewport() {
   }
 }
 
+/**
+ * Find bounding box of non-transparent pixels in a full-frame PNG buffer.
+ * Used to locate eyebrow content for rotation around its center.
+ */
+async function findContentBounds(pngBuffer, totalWidth, totalHeight) {
+  const { data } = await sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = totalWidth, minY = totalHeight, maxX = 0, maxY = 0;
+  let found = false;
+
+  for (let y = 0; y < totalHeight; y++) {
+    for (let x = 0; x < totalWidth; x++) {
+      if (data[(y * totalWidth + x) * 4 + 3] > 0) {
+        found = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (!found) return null;
+  const pad = 4;
+  return {
+    left: Math.max(0, minX - pad),
+    top: Math.max(0, minY - pad),
+    width: Math.min(totalWidth - Math.max(0, minX - pad), maxX - minX + 1 + pad * 2),
+    height: Math.min(totalHeight - Math.max(0, minY - pad), maxY - minY + 1 + pad * 2)
+  };
+}
+
 async function preloadLayers() {
   const m = loadManifest();
   outputWidth = Math.round(m.width * OUTPUT_SCALE);
@@ -205,6 +265,7 @@ async function preloadLayers() {
   const dynamicLayers = [];
   staticLayerEntries = [];
   expressionLayerEntries = [];
+  noseLayerEntries = [];
   foregroundEmissionBuffer = null;
   foregroundEmissionPos = { x: 0, y: 0 };
   foregroundEmissionLayerId = null;
@@ -297,7 +358,7 @@ async function preloadLayers() {
           lightingBaseBuffers[layer.id] = buffer;
           lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
         } else if (layer.type === 'static' && layer.visible !== false && EXPRESSION_LAYER_NAMES.has(layer.id)) {
-          // Expression layers (eyes/eyebrows) are composited dynamically with offsets
+          // Expression layers (eyes/eyebrows/eye_cover) are composited dynamically with offsets
           // Ensure buffer matches output dimensions exactly (avoid rounding mismatches)
           let exprBuffer = buffer;
           if (scaledWidth !== outputWidth || scaledHeight !== outputHeight) {
@@ -306,15 +367,43 @@ async function preloadLayers() {
               .png()
               .toBuffer();
           }
-          expressionLayerEntries.push({
+          const exprEntry = {
             ...layer,
             buffer: exprBuffer,
             scaledX: Math.round(layer.x * OUTPUT_SCALE),
             scaledY: Math.round(layer.y * OUTPUT_SCALE),
             scaledWidth: outputWidth,
             scaledHeight: outputHeight
-          });
+          };
+
+          // For eyebrow layers, find content bounds and store cropped buffer for rotation
+          const eyebrowSide = EYEBROW_LAYER_SIDES[layer.id];
+          if (eyebrowSide) {
+            const bounds = await findContentBounds(exprBuffer, outputWidth, outputHeight);
+            if (bounds) {
+              exprEntry.eyebrowSide = eyebrowSide;
+              exprEntry.contentBounds = bounds;
+              exprEntry.croppedBuffer = await sharp(exprBuffer)
+                .extract(bounds)
+                .png()
+                .toBuffer();
+              console.log(`[Compositor] Eyebrow bounds for ${layer.id}: ${bounds.left},${bounds.top} ${bounds.width}x${bounds.height} (side: ${eyebrowSide})`);
+            }
+          }
+
+          expressionLayerEntries.push(exprEntry);
           console.log(`[Compositor] Expression layer stored: ${layer.id} (${scaledWidth}x${scaledHeight})`);
+        } else if (layer.type === 'static' && layer.visible !== false && NOSE_LAYER_IDS.has(layer.id)) {
+          // Nose layers: composite above eye_cover (stored separately, drawn after expression layers)
+          noseLayerEntries.push({
+            ...layer,
+            buffer,
+            scaledX: Math.round(layer.x * OUTPUT_SCALE),
+            scaledY: Math.round(layer.y * OUTPUT_SCALE),
+            scaledWidth,
+            scaledHeight
+          });
+          console.log(`[Compositor] Nose layer stored (above eye_cover): ${layer.id}`);
         } else if (layer.type === 'static' && layer.visible !== false) {
           if (EMISSION_LAYER_NAMES.has(layer.name)) {
             emissionBaseBuffers[layer.id] = buffer;
@@ -526,8 +615,9 @@ async function compositeFrame(state) {
   const hasTv = currentTVFrame ? 1 : 0;
   const captionKey = caption ? caption.slice(0, 40) : '';
   const exprOutputKey = `ce${expressionOffsets.chad.eyes.x},${expressionOffsets.chad.eyes.y}`
+    + `cb${expressionOffsets.chad.eyebrows.y}r${expressionOffsets.chad.eyebrows.rotation}`
     + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
-    + `vb${expressionOffsets.virgin.eyebrows.x},${expressionOffsets.virgin.eyebrows.y}`;
+    + `vb${expressionOffsets.virgin.eyebrows.y}r${expressionOffsets.virgin.eyebrows.rotation}`;
   const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}-${exprOutputKey}`;
 
   // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
@@ -538,8 +628,9 @@ async function compositeFrame(state) {
   // Character frame cache includes: static base + expression layers + mouths + blinks + emission + lights
   // This means idle frames (no TV, no caption) need 0 overlay pipelines
   const exprKey = `ce${expressionOffsets.chad.eyes.x},${expressionOffsets.chad.eyes.y}`
+    + `cb${expressionOffsets.chad.eyebrows.y}r${expressionOffsets.chad.eyebrows.rotation}`
     + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
-    + `vb${expressionOffsets.virgin.eyebrows.x},${expressionOffsets.virgin.eyebrows.y}`;
+    + `vb${expressionOffsets.virgin.eyebrows.y}r${expressionOffsets.virgin.eyebrows.rotation}`;
   const charCacheKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-${exprKey}`;
   let charBuffer = frameCache[charCacheKey];
 
@@ -551,7 +642,8 @@ async function compositeFrame(state) {
 
     // Expression layers (eyes/eyebrows with offsets, eye_cover without offsets for z-order)
     // Buffers are full-frame (outputWidth x outputHeight) at position (0,0).
-    // To handle negative offsets, shift pixel content within the buffer using extract+extend.
+    // Eye layers: shift pixel content using extract+extend.
+    // Eyebrow layers: vertical shift + rotation around content center.
     const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
     for (const exprLayer of sortedExprLayers) {
       const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
@@ -560,6 +652,61 @@ async function compositeFrame(state) {
         ? (expressionOffsets[mapping.character]?.[mapping.feature] || { x: 0, y: 0 })
         : { x: 0, y: 0 };
 
+      // Eyebrow layers: vertical-only with rotation
+      if (exprLayer.eyebrowSide && exprLayer.croppedBuffer && exprLayer.contentBounds) {
+        const dy = Math.round(offset.y);
+        const rotation = Number(offset.rotation) || 0;
+        const bounds = exprLayer.contentBounds;
+        const centerX = bounds.left + bounds.width / 2;
+        const centerY = bounds.top + bounds.height / 2;
+
+        if (dy === 0 && rotation === 0) {
+          // No movement, no rotation — use original buffer
+          compositeOps.push({ input: exprLayer.buffer, left: 0, top: 0, blend: 'over' });
+        } else {
+          // Rotation angle: frontend sends a signed rotation value.
+          // Left eyebrow uses it as-is, right eyebrow negates it (mirrored).
+          const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
+
+          const rotated = await sharp(exprLayer.croppedBuffer)
+            .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .png()
+            .toBuffer();
+
+          // Calculate new dimensions after rotation
+          const rad = Math.abs(angle) * Math.PI / 180;
+          const cosA = Math.cos(rad);
+          const sinA = Math.sin(rad);
+          const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
+          const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
+
+          // Place so rotated center aligns with original center + vertical offset
+          let placeLeft = Math.round(centerX - newW / 2);
+          let placeTop = Math.round(centerY - newH / 2 + dy);
+
+          // Handle negative positions by trimming the rotated buffer
+          let finalBuffer = rotated;
+          if (placeLeft < 0 || placeTop < 0) {
+            const trimLeft = Math.max(0, -placeLeft);
+            const trimTop = Math.max(0, -placeTop);
+            const trimW = Math.min(newW - trimLeft, outputWidth);
+            const trimH = Math.min(newH - trimTop, outputHeight);
+            if (trimW > 0 && trimH > 0) {
+              finalBuffer = await sharp(rotated)
+                .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
+                .png()
+                .toBuffer();
+            }
+            placeLeft = Math.max(0, placeLeft);
+            placeTop = Math.max(0, placeTop);
+          }
+
+          compositeOps.push({ input: finalBuffer, left: placeLeft, top: placeTop, blend: 'over' });
+        }
+        continue;
+      }
+
+      // Eye layers and eye_cover: translate via extract+extend
       const dx = Math.round(offset.x);
       const dy = Math.round(offset.y);
       let layerBuffer = exprLayer.buffer;
@@ -591,6 +738,17 @@ async function compositeFrame(state) {
         input: layerBuffer,
         left: 0,
         top: 0,
+        blend: 'over'
+      });
+    }
+
+    // Nose layers: drawn above eye_cover (after expression layers)
+    const sortedNoseLayers = [...noseLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
+    for (const noseLayer of sortedNoseLayers) {
+      compositeOps.push({
+        input: noseLayer.buffer,
+        left: noseLayer.scaledX,
+        top: noseLayer.scaledY,
         blend: 'over'
       });
     }
@@ -909,9 +1067,22 @@ function setExpressionOffset(character, feature, x, y) {
     return;
   }
 
+  let clampedX = Number(x) || 0;
+  let clampedY = Number(y) || 0;
+
+  // Eyebrows: vertical movement only (rotation handled in compositeFrame)
+  if (feature === 'eyebrows') clampedX = 0;
+
+  // Clamp to calibrated limits if they exist
+  if (expressionLimits && expressionLimits[character] && expressionLimits[character][feature]) {
+    const lim = expressionLimits[character][feature];
+    clampedX = Math.max(lim.minX, Math.min(lim.maxX, clampedX));
+    clampedY = Math.max(lim.minY, Math.min(lim.maxY, clampedY));
+  }
+
   expressionOffsets[character][feature] = {
-    x: Number(x) || 0,
-    y: Number(y) || 0
+    x: clampedX,
+    y: clampedY
   };
 
   // Clear cache to force re-render with new offsets
@@ -948,6 +1119,25 @@ function resetExpressionOffsets(character) {
   lastOutputBuffer = null;
 }
 
+/**
+ * Get current expression limits (null if not calibrated)
+ */
+function getExpressionLimits() {
+  return expressionLimits ? JSON.parse(JSON.stringify(expressionLimits)) : null;
+}
+
+/**
+ * Save expression limits to file and set in memory
+ * @param {Object} limits - limits object with chad/virgin > eyes/eyebrows > minX/maxX/minY/maxY
+ * @returns {boolean} true if saved
+ */
+function saveExpressionLimits(limits) {
+  expressionLimits = JSON.parse(JSON.stringify(limits));
+  fs.writeFileSync(EXPRESSION_LIMITS_PATH, JSON.stringify(limits, null, 2), 'utf8');
+  console.log('[Compositor] Saved expression limits to', EXPRESSION_LIMITS_PATH);
+  return true;
+}
+
 module.exports = {
   compositeFrame,
   loadManifest,
@@ -969,5 +1159,7 @@ module.exports = {
   getLightingHue,
   setExpressionOffset,
   getExpressionOffsets,
-  resetExpressionOffsets
+  resetExpressionOffsets,
+  getExpressionLimits,
+  saveExpressionLimits
 };

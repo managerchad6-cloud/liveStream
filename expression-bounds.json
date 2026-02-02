@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-01T21:27:16.397Z",
+  "timestamp": "2026-02-01T22:32:43.043Z",
   "sceneSize": {
     "width": 3840,
     "height": 2160
@@ -108,6 +108,32 @@
       "character": "chad",
       "name": "static_chad_eye_cover",
       "layerId": "static_chad_eye_cover"
+    },
+    "static_chad_eyebrow_left": {
+      "left": 1098,
+      "top": 747,
+      "right": 1158,
+      "bottom": 761,
+      "width": 61,
+      "height": 15,
+      "centerX": 1128,
+      "centerY": 754,
+      "character": "chad",
+      "name": "static_chad_eyebrow_left",
+      "layerId": "static_chad_eyebrow_left"
+    },
+    "static_chad_eyebrow_right": {
+      "left": 999,
+      "top": 745,
+      "right": 1079,
+      "bottom": 758,
+      "width": 81,
+      "height": 14,
+      "centerX": 1039,
+      "centerY": 752,
+      "character": "chad",
+      "name": "static_chad_eyebrow_right",
+      "layerId": "static_chad_eyebrow_right"
     }
   },
   "grouped": {
@@ -153,7 +179,34 @@
           "layerId": "static_chad_eye_cover"
         }
       },
-      "eyebrows": {}
+      "eyebrows": {
+        "static_chad_eyebrow_left": {
+          "left": 1098,
+          "top": 747,
+          "right": 1158,
+          "bottom": 761,
+          "width": 61,
+          "height": 15,
+          "centerX": 1128,
+          "centerY": 754,
+          "character": "chad",
+          "name": "static_chad_eyebrow_left",
+          "layerId": "static_chad_eyebrow_left"
+        },
+        "static_chad_eyebrow_right": {
+          "left": 999,
+          "top": 745,
+          "right": 1079,
+          "bottom": 758,
+          "width": 81,
+          "height": 14,
+          "centerX": 1039,
+          "centerY": 752,
+          "character": "chad",
+          "name": "static_chad_eyebrow_right",
+          "layerId": "static_chad_eyebrow_right"
+        }
+      }
     },
     "virgin": {
       "eyes": {
