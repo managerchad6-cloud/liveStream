@@ -29,7 +29,8 @@ const {
   resetExpressionOffsets,
   getExpressionLimits,
   saveExpressionLimits,
-  setEyebrowRotationLimits
+  setEyebrowRotationLimits,
+  setEyebrowAsymmetry
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -352,6 +353,16 @@ app.post('/expression/rotation-limits', (req, res) => {
   }
   setEyebrowRotationLimits(character, rotUp, rotDown);
   res.json({ success: true, limits: getExpressionLimits() });
+});
+
+app.post('/expression/eyebrow-asym', (req, res) => {
+  const { character, leftY, rightY } = req.body || {};
+  if (!character || typeof leftY !== 'number' || typeof rightY !== 'number') {
+    return res.status(400).json({ error: 'Required: character, leftY, rightY' });
+  }
+  setEyebrowAsymmetry(character, leftY, rightY);
+  console.log(`[Expression] ${character} brow asym L:${leftY} R:${rightY}`);
+  res.json({ success: true, offsets: getExpressionOffsets() });
 });
 
 // ============== End Expression Control API ==============

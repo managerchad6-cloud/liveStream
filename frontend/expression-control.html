@@ -223,6 +223,27 @@
       margin-top: 8px;
       flex-wrap: wrap;
     }
+    .asym-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .asym-controls .asym-label {
+      color: #94a3b8;
+      font-size: 0.85em;
+      min-width: 90px;
+    }
+    .asym-controls .asym-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85em;
+    }
+    .asym-controls input[type="range"] {
+      width: 90px;
+    }
     .rotation-controls .rot-label {
       color: #94a3b8;
       font-size: 0.85em;
@@ -328,6 +349,11 @@
         <div class="rot-row">Down <input class="cal-input" id="rot-chad-down" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         <button class="rot-apply" onclick="applyRotation('chad')">Apply</button>
       </div>
+      <div class="asym-controls">
+        <div class="asym-label">Asymmetry</div>
+        <div class="asym-row">Left <input type="range" id="asym-chad-left" min="-10" max="10" step="1" value="0"><span class="cal-unit" id="asym-chad-left-val">0</span>px</div>
+        <div class="asym-row">Right <input type="range" id="asym-chad-right" min="-10" max="10" step="1" value="0"><span class="cal-unit" id="asym-chad-right-val">0</span>px</div>
+      </div>
     </div>
 
     <div class="panel" id="panel-virgin-eyes">
@@ -369,6 +395,11 @@
         <div class="rot-row">Up <input class="cal-input" id="rot-virgin-up" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         <div class="rot-row">Down <input class="cal-input" id="rot-virgin-down" type="number" min="0" max="45" step="1" value="10"><span class="cal-unit">deg</span></div>
         <button class="rot-apply" onclick="applyRotation('virgin')">Apply</button>
+      </div>
+      <div class="asym-controls">
+        <div class="asym-label">Asymmetry</div>
+        <div class="asym-row">Left <input type="range" id="asym-virgin-left" min="-10" max="10" step="1" value="0"><span class="cal-unit" id="asym-virgin-left-val">0</span>px</div>
+        <div class="asym-row">Right <input type="range" id="asym-virgin-right" min="-10" max="10" step="1" value="0"><span class="cal-unit" id="asym-virgin-right-val">0</span>px</div>
       </div>
     </div>
 
@@ -485,6 +516,36 @@
         return direction === 'rotUp' ? DEFAULT_EYEBROW_ROTATION_UP : DEFAULT_EYEBROW_ROTATION_DOWN;
       }
       return raw;
+    }
+
+    function updateAsymDisplay(character) {
+      const left = document.getElementById(`asym-${character}-left`);
+      const right = document.getElementById(`asym-${character}-right`);
+      const leftVal = document.getElementById(`asym-${character}-left-val`);
+      const rightVal = document.getElementById(`asym-${character}-right-val`);
+      if (left && leftVal) leftVal.textContent = left.value;
+      if (right && rightVal) rightVal.textContent = right.value;
+    }
+
+    async function applyAsymmetry(character) {
+      const left = Number(document.getElementById(`asym-${character}-left`)?.value || 0);
+      const right = Number(document.getElementById(`asym-${character}-right`)?.value || 0);
+      updateAsymDisplay(character);
+      try {
+        const res = await fetch(`${API_BASE}/expression/eyebrow-asym`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ character, leftY: left, rightY: right })
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeLimits = data.limits || activeLimits;
+        } else {
+          alert('Failed to apply asymmetry: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed to apply asymmetry: ' + err.message);
+      }
     }
 
     // ---- Joystick Controls ----
@@ -695,6 +756,13 @@
           joystickState[j.id].y = 0;
           updateDotPosition(j.id, 0, 0);
         });
+        for (const char of ['chad', 'virgin']) {
+          const left = document.getElementById(`asym-${char}-left`);
+          const right = document.getElementById(`asym-${char}-right`);
+          if (left) left.value = 0;
+          if (right) right.value = 0;
+          updateAsymDisplay(char);
+        }
       }).catch(() => {});
     }
 
@@ -709,6 +777,11 @@
           joystickState[j.id].y = 0;
           updateDotPosition(j.id, 0, 0);
         });
+        const left = document.getElementById(`asym-${character}-left`);
+        const right = document.getElementById(`asym-${character}-right`);
+        if (left) left.value = 0;
+        if (right) right.value = 0;
+        updateAsymDisplay(character);
       }).catch(() => {});
     }
 
@@ -755,6 +828,16 @@
       }
     }
 
+    function initAsymControls() {
+      for (const char of ['chad', 'virgin']) {
+        const left = document.getElementById(`asym-${char}-left`);
+        const right = document.getElementById(`asym-${char}-right`);
+        if (left) left.addEventListener('input', () => applyAsymmetry(char));
+        if (right) right.addEventListener('input', () => applyAsymmetry(char));
+        updateAsymDisplay(char);
+      }
+    }
+
     // ---- Init ----
     async function init() {
       connectStream();
@@ -788,11 +871,22 @@
               updateDotPosition(j.id, off.x, off.y);
             }
           });
+          for (const char of ['chad', 'virgin']) {
+            const brow = data.offsets[char]?.eyebrows;
+            if (brow?.bias) {
+              const left = document.getElementById(`asym-${char}-left`);
+              const right = document.getElementById(`asym-${char}-right`);
+              if (left) left.value = brow.bias.leftY || 0;
+              if (right) right.value = brow.bias.rightY || 0;
+              updateAsymDisplay(char);
+            }
+          }
         }
       } catch (err) {}
     }
 
     init();
+    initAsymControls();
   </script>
 </body>
 </html>
