@@ -47,7 +47,8 @@ const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
 // Stream mode: 'synced' (audio muxed into video) or 'separate' (audio played separately)
 const STREAM_MODE = process.env.STREAM_MODE || 'synced';
 const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'gpt-4o-mini';
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 const app = express();
 const port = process.env.ANIMATION_PORT || 3003;
@@ -439,7 +440,7 @@ function clearExpressionTimers() {
 }
 
 async function buildExpressionPlanLLM({ message, character, listener, durationSec, limits }) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!openai) {
     console.warn('[Expr] OPENAI_API_KEY not set, using heuristic expression plan');
     return null;
   }
