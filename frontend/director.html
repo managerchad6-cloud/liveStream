@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Director Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    :root {
+      --bg: #0f1014;
+      --panel: #1b1f2a;
+      --panel-2: #232838;
+      --text: #f0f2f8;
+      --muted: #9aa4bf;
+      --accent: #ffb347;
+      --accent-2: #5cc8ff;
+      --danger: #ff6b6b;
+      --good: #6ee7b7;
+      --warning: #f5d565;
+      --shadow: rgba(0,0,0,0.3);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Space Grotesk', sans-serif;
+      background: radial-gradient(1200px 800px at 20% -10%, #1b2a3a 0%, #0f1014 50%, #0a0b0f 100%);
+      color: var(--text);
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 20px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .panel {
+      background: var(--panel);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 10px 30px var(--shadow);
+    }
+
+    #stream-preview video {
+      width: 100%;
+      height: 160px;
+      border-radius: 12px;
+      background: #000;
+      object-fit: cover;
+    }
+
+    #buffer-health {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .health-bar {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #2a3142;
+      overflow: hidden;
+    }
+
+    .health-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--danger), var(--warning), var(--good));
+      transition: width 0.4s ease;
+    }
+
+    .muted { color: var(--muted); }
+
+    main {
+      display: grid;
+      grid-template-columns: 1.1fr 1.2fr;
+      gap: 16px;
+    }
+
+    #ammunition {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .ammo-column {
+      min-height: 280px;
+    }
+
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 12px;
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .card {
+      background: var(--panel-2);
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .card small { color: var(--muted); }
+
+    #draft-preview {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 280px;
+    }
+
+    #draft-preview.hidden { display: none; }
+
+    #script-lines {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 380px;
+      overflow: auto;
+    }
+
+    .script-line {
+      padding: 10px;
+      background: #1a2030;
+      border-radius: 10px;
+      border-left: 3px solid var(--accent);
+    }
+
+    #director-input {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 90px;
+      border-radius: 12px;
+      background: #0f1422;
+      color: var(--text);
+      border: 1px solid #2a3142;
+      padding: 12px;
+      font-family: inherit;
+    }
+
+    button {
+      background: var(--accent);
+      color: #111;
+      border: none;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.secondary { background: #2a3142; color: var(--text); }
+    button.danger { background: var(--danger); color: #111; }
+
+    #pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .pipeline-row {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }
+
+    .pipeline-card {
+      min-width: 220px;
+      background: #1b2131;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.05);
+      cursor: grab;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #2f364a;
+      color: var(--muted);
+    }
+
+    .status-draft { background: #2a3142; color: var(--muted); }
+    .status-forming { background: #3a2d52; color: #f0b3ff; }
+    .status-ready { background: #1f3a2b; color: #7bf2b9; }
+    .status-pre-air { background: #42321c; color: #f5d565; }
+    .status-on-air { background: #3a1f1f; color: #ff9090; }
+    .status-aired { background: #20252f; color: #7c879f; }
+
+    .pipeline-slot {
+      padding: 10px 14px;
+      border: 1px dashed #3a4257;
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    #media-attachments {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .media-pill {
+      background: #1f2737;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .media-pill button {
+      padding: 2px 6px;
+      font-size: 12px;
+      background: #2a3142;
+      color: var(--text);
+    }
+
+    #media-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+
+    #media-modal .panel {
+      width: min(900px, 90vw);
+      max-height: 80vh;
+      overflow: auto;
+    }
+
+    .media-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .media-item {
+      background: #151a26;
+      border-radius: 10px;
+      padding: 8px;
+      border: 1px solid rgba(255,255,255,0.05);
+      cursor: pointer;
+    }
+
+    .media-item img {
+      width: 100%;
+      height: 80px;
+      object-fit: cover;
+      border-radius: 6px;
+    }
+
+    @media (max-width: 900px) {
+      header {
+        grid-template-columns: 1fr;
+      }
+      main {
+        grid-template-columns: 1fr;
+      }
+      #ammunition {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="panel" id="stream-preview">
+        <div class="muted">Stream Preview</div>
+        <video id="preview-player" muted playsinline></video>
+      </div>
+      <div class="panel" id="buffer-health">
+        <div class="muted">Buffer Health</div>
+        <div class="health-bar"><div class="health-fill" id="health-fill"></div></div>
+        <div class="muted" id="health-text">0s ready</div>
+      </div>
+      <div class="panel" id="on-air-info">
+        <div class="muted">On-Air</div>
+        <div id="on-air-status">Idle</div>
+      </div>
+    </header>
+
+    <main>
+      <div id="ammunition">
+        <div class="panel ammo-column" id="chat-inbox">
+          <div>Chat Inbox</div>
+          <div class="card-list" id="chat-cards"></div>
+        </div>
+        <div class="panel ammo-column" id="auto-ideas">
+          <div>Ideas</div>
+          <textarea id="idea-input" placeholder="Quick seed..."></textarea>
+          <button id="create-idea">Create</button>
+          <div class="card-list" id="idea-cards"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="draft-preview">
+        <div>Draft Preview</div>
+        <div id="script-lines"></div>
+        <div id="draft-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="approve-draft">Approve</button>
+          <button id="regen-draft" class="secondary">Regenerate</button>
+          <button id="discard-draft" class="danger">Discard</button>
+        </div>
+      </div>
+
+      <div class="panel" id="director-input">
+        <div id="media-attachments"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="attach-file" class="secondary">Upload</button>
+          <button id="attach-library" class="secondary">Library</button>
+          <input type="file" id="file-input" hidden accept="image/*,video/*">
+        </div>
+        <textarea id="director-note" placeholder="Director's note..."></textarea>
+        <button id="create-draft">Create Draft</button>
+      </div>
+    </main>
+
+    <div class="panel" id="pipeline">
+      <div>Pipeline</div>
+      <div id="pipeline-cards" class="pipeline-row"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div id="pre-air-slot" class="pipeline-slot">PRE-AIR</div>
+        <div id="on-air-slot" class="pipeline-slot">ON-AIR</div>
+      </div>
+    </div>
+
+    <details class="panel" id="aired-archive">
+      <summary>Aired Archive</summary>
+      <div id="aired-list"></div>
+    </details>
+  </div>
+
+  <div id="media-modal">
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>Media Library</div>
+        <button id="close-media" class="secondary">Close</button>
+      </div>
+      <div class="media-grid" id="media-grid"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    let currentDraft = null;
+    let attachedMedia = [];
+
+    async function apiGet(path) {
+      const res = await fetch(`${API_BASE}${path}`);
+      return res.json();
+    }
+
+    async function apiPost(path, body) {
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      return res.json();
+    }
+
+    function renderBuffer(health) {
+      const total = health?.totalSeconds || 0;
+      const percent = Math.min(100, Math.round((total / 30) * 100));
+      document.getElementById('health-fill').style.width = `${percent}%`;
+      document.getElementById('health-text').textContent = `${Math.round(total)}s ready`;
+    }
+
+    function renderPipelineCards(segments) {
+      const container = document.getElementById('pipeline-cards');
+      container.innerHTML = '';
+      segments.filter(s => s.status !== 'aired').forEach(seg => {
+        const card = document.createElement('div');
+        card.className = 'pipeline-card';
+        card.dataset.id = seg.id;
+        card.innerHTML = `
+          <div><strong>${seg.type}</strong></div>
+          <div class="muted">${(seg.seed || '').slice(0, 40)}</div>
+          <div class="status-badge status-${seg.status}">${seg.status}${seg.status === 'forming' ? ` ${Math.round((seg.renderProgress || 0) * 100)}%` : ''}</div>
+          <div class="muted">${seg.estimatedDuration || 0}s</div>
+        `;
+        card.addEventListener('click', () => showDraft(seg.id));
+        container.appendChild(card);
+      });
+
+      const aired = segments.filter(s => s.status === 'aired');
+      const airedList = document.getElementById('aired-list');
+      airedList.innerHTML = aired.map(seg => `<div class="card">${seg.type}: ${(seg.seed || '').slice(0, 60)}</div>`).join('');
+    }
+
+    async function refreshPipeline() {
+      const data = await apiGet('/api/pipeline');
+      renderPipelineCards(data.segments || []);
+      renderBuffer(data.bufferHealth || {});
+    }
+
+    async function refreshChatInbox() {
+      const data = await apiGet('/api/orchestrator/chat/inbox');
+      const container = document.getElementById('chat-cards');
+      container.innerHTML = (data.inbox || []).map(card => `
+        <div class="card">
+          <div><strong>${card.username}</strong></div>
+          <div>${card.text}</div>
+          <small>${card.reason || ''}</small>
+        </div>
+      `).join('');
+    }
+
+    async function showDraft(id) {
+      const seg = await apiGet(`/api/pipeline/${id}`);
+      if (!seg || !seg.script) return;
+      currentDraft = seg;
+      document.getElementById('draft-preview').classList.remove('hidden');
+      document.getElementById('script-lines').innerHTML = seg.script.map(line => `
+        <div class="script-line"><strong>${line.speaker}:</strong> ${line.text}</div>
+      `).join('');
+    }
+
+    async function createDraft() {
+      const seed = document.getElementById('director-note').value.trim();
+      if (!seed) return;
+      const result = await apiPost('/api/orchestrator/expand', { seed, mediaRefs: attachedMedia });
+      if (result.error) return alert(result.error);
+      attachedMedia = [];
+      renderAttachments();
+      document.getElementById('director-note').value = '';
+      await refreshPipeline();
+      await showDraft(result.id);
+    }
+
+    async function approveDraft() {
+      if (!currentDraft) return;
+      await apiPost(`/api/pipeline/${currentDraft.id}/status`, { status: 'forming' });
+      await apiPost(`/api/orchestrator/render/${currentDraft.id}`, {});
+      await refreshPipeline();
+    }
+
+    async function regenDraft() {
+      if (!currentDraft) return;
+      const feedback = prompt('Regenerate feedback?');
+      const result = await apiPost('/api/orchestrator/regenerate', { segmentId: currentDraft.id, feedback });
+      if (!result.error) {
+        await showDraft(currentDraft.id);
+        await refreshPipeline();
+      }
+    }
+
+    async function discardDraft() {
+      if (!currentDraft) return;
+      await apiPost(`/api/pipeline/${currentDraft.id}/status`, { status: 'deleted' });
+      currentDraft = null;
+      document.getElementById('draft-preview').classList.add('hidden');
+      await refreshPipeline();
+    }
+
+    function renderAttachments() {
+      const container = document.getElementById('media-attachments');
+      container.innerHTML = attachedMedia.map(id => `
+        <div class="media-pill">${id}<button data-id="${id}">x</button></div>
+      `).join('');
+      container.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          attachedMedia = attachedMedia.filter(item => item !== btn.dataset.id);
+          renderAttachments();
+        });
+      });
+    }
+
+    async function uploadFile(file) {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API_BASE}/api/media/upload`, { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.id) {
+        attachedMedia.push(data.id);
+        renderAttachments();
+      } else {
+        alert(data.error || 'Upload failed');
+      }
+    }
+
+    async function openMediaLibrary() {
+      const data = await apiGet('/api/media');
+      const grid = document.getElementById('media-grid');
+      grid.innerHTML = (data.items || []).map(item => `
+        <div class="media-item" data-id="${item.id}">
+          <img src="/api/media/${item.id}/thumbnail" alt="thumb">
+          <div class="muted">${item.originalName}</div>
+        </div>
+      `).join('');
+      document.querySelectorAll('.media-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const id = el.dataset.id;
+          if (!attachedMedia.includes(id)) {
+            attachedMedia.push(id);
+            renderAttachments();
+          }
+        });
+      });
+      document.getElementById('media-modal').style.display = 'flex';
+    }
+
+    function setupSortable() {
+      const container = document.getElementById('pipeline-cards');
+      new Sortable(container, {
+        animation: 150,
+        onEnd: async () => {
+          const order = Array.from(container.children).map(el => el.dataset.id);
+          await apiPost('/api/pipeline/reorder', { order });
+        }
+      });
+    }
+
+    function initPreview() {
+      const video = document.getElementById('preview-player');
+      if (Hls.isSupported()) {
+        const hls = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 6 });
+        hls.loadSource(`${API_BASE}/streams/live/stream.m3u8`);
+        hls.attachMedia(video);
+        video.play().catch(() => {});
+      } else {
+        video.src = `${API_BASE}/streams/live/stream.m3u8`;
+        video.play().catch(() => {});
+      }
+    }
+
+    function connectWebSocket() {
+      const ws = new WebSocket(`ws://${window.location.host}/ws/orchestrator`);
+      ws.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.event === 'pipeline:update') {
+          renderPipelineCards(payload.data.segments || []);
+          renderBuffer(payload.data.bufferHealth || {});
+        }
+        if (payload.event === 'segment:progress') {
+          refreshPipeline();
+        }
+        if (payload.event === 'chat:new-card') {
+          refreshChatInbox();
+        }
+      };
+      ws.onclose = () => setTimeout(connectWebSocket, 3000);
+    }
+
+    document.getElementById('create-draft').addEventListener('click', createDraft);
+    document.getElementById('approve-draft').addEventListener('click', approveDraft);
+    document.getElementById('regen-draft').addEventListener('click', regenDraft);
+    document.getElementById('discard-draft').addEventListener('click', discardDraft);
+    document.getElementById('create-idea').addEventListener('click', async () => {
+      const seed = document.getElementById('idea-input').value.trim();
+      if (!seed) return;
+      await apiPost('/api/orchestrator/expand', { seed });
+      document.getElementById('idea-input').value = '';
+      refreshPipeline();
+    });
+
+    document.getElementById('attach-file').addEventListener('click', () => {
+      document.getElementById('file-input').click();
+    });
+    document.getElementById('file-input').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) uploadFile(file);
+      e.target.value = '';
+    });
+    document.getElementById('attach-library').addEventListener('click', openMediaLibrary);
+    document.getElementById('close-media').addEventListener('click', () => {
+      document.getElementById('media-modal').style.display = 'none';
+    });
+
+    setupSortable();
+    initPreview();
+    refreshPipeline();
+    refreshChatInbox();
+    connectWebSocket();
+  </script>
+</body>
+</html>

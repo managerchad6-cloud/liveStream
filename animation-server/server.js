@@ -45,6 +45,8 @@ const OpenAI = require('openai');
 const MediaLibrary = require('./media-library');
 const PipelineStore = require('./orchestrator/pipeline-store');
 const TVLayerManager = require('./orchestrator/tv-layer-manager');
+const OrchestratorSocket = require('./orchestrator/websocket');
+const Orchestrator = require('./orchestrator');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
@@ -65,6 +67,7 @@ const STREAMS_DIR = path.join(ROOT_DIR, 'streams');
 const TEMP_DIR = path.join(__dirname, 'temp');
 const AUDIO_DIR = path.join(STREAMS_DIR, 'audio');
 const TV_CONTENT_DIR = path.join(__dirname, 'tv-content', 'content');
+const ORCHESTRATOR_CONFIG_PATH = path.join(ROOT_DIR, 'data', 'orchestrator-config.json');
 
 // Ensure directories exist
 fs.mkdirSync(STREAMS_DIR, { recursive: true });
@@ -74,6 +77,38 @@ fs.mkdirSync(TV_CONTENT_DIR, { recursive: true });
 
 app.use(cors());
 app.use(express.json());
+
+const DEFAULT_ORCHESTRATOR_CONFIG = {
+  buffer: { warningThresholdSeconds: 15, criticalThresholdSeconds: 5 },
+  filler: { enabled: true, maxConsecutive: 3, style: 'callback' },
+  chatIntake: { enabled: true, ratePerMinute: 1, autoApprove: false },
+  rendering: { maxConcurrentForming: 2, ttsModel: 'eleven_turbo_v2', retryAttempts: 3 },
+  scriptGeneration: { model: 'gpt-4o', defaultExchanges: 8, maxExchanges: 30, wordsPerMinute: 150 }
+};
+
+function broadcastPipelineUpdate() {
+  if (!orchestratorSocket || !pipelineStore) return;
+  orchestratorSocket.broadcast('pipeline:update', {
+    segments: pipelineStore.getAllSegments(),
+    bufferHealth: pipelineStore.getBufferHealth()
+  });
+}
+
+function loadOrchestratorConfig() {
+  try {
+    const raw = fs.readFileSync(ORCHESTRATOR_CONFIG_PATH, 'utf8');
+    return { ...DEFAULT_ORCHESTRATOR_CONFIG, ...JSON.parse(raw) };
+  } catch (err) {
+    return { ...DEFAULT_ORCHESTRATOR_CONFIG };
+  }
+}
+
+async function saveOrchestratorConfig(config) {
+  const payload = JSON.stringify(config, null, 2);
+  const tmpPath = `${ORCHESTRATOR_CONFIG_PATH}.tmp`;
+  await fs.promises.writeFile(tmpPath, payload, 'utf8');
+  await fs.promises.rename(tmpPath, ORCHESTRATOR_CONFIG_PATH);
+}
 
 // Configure multer
 const upload = multer({
@@ -414,6 +449,14 @@ let tvService = null;  // TV content service (initialized after preloadLayers)
 let mediaLibrary = null;
 let pipelineStore = null;
 let tvLayerManager = null;
+let scriptGenerator = null;
+let bridgeGenerator = null;
+let fillerGenerator = null;
+let segmentRenderer = null;
+let playbackController = null;
+let chatIntake = null;
+let orchestrator = null;
+let orchestratorSocket = null;
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
@@ -1037,6 +1080,11 @@ app.get('/tv', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'tv-control.html'));
 });
 
+// Serve Director control panel
+app.get('/director', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'director.html'));
+});
+
 // ============== TV Content API ==============
 
 const { spawn } = require('child_process');
@@ -1398,6 +1446,7 @@ app.post('/api/pipeline', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
   try {
     const segment = await pipelineStore.createSegment(req.body || {});
+    broadcastPipelineUpdate();
     res.json(segment);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1408,6 +1457,7 @@ app.patch('/api/pipeline/:id', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
   try {
     const segment = await pipelineStore.updateSegment(req.params.id, req.body || {});
+    broadcastPipelineUpdate();
     res.json(segment);
   } catch (err) {
     if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
@@ -1422,6 +1472,7 @@ app.post('/api/pipeline/:id/status', async (req, res) => {
 
   try {
     const segment = await pipelineStore.transitionStatus(req.params.id, status);
+    broadcastPipelineUpdate();
     res.json(segment);
   } catch (err) {
     if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
@@ -1437,6 +1488,7 @@ app.post('/api/pipeline/reorder', async (req, res) => {
 
   try {
     const segments = await pipelineStore.reorder(order);
+    broadcastPipelineUpdate();
     res.json({ segments });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1447,6 +1499,7 @@ app.delete('/api/pipeline/:id', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
   try {
     await pipelineStore.removeSegment(req.params.id);
+    broadcastPipelineUpdate();
     res.json({ success: true });
   } catch (err) {
     if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
@@ -1471,7 +1524,9 @@ app.post('/api/tv-layer/default', async (req, res) => {
 
   try {
     await tvLayerManager.setDefault(mediaId);
-    res.json(tvLayerManager.getState());
+    const state = tvLayerManager.getState();
+    if (orchestratorSocket) orchestratorSocket.broadcast('tv:state-change', state);
+    res.json(state);
   } catch (err) {
     if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1485,7 +1540,9 @@ app.post('/api/tv-layer/override', async (req, res) => {
 
   try {
     await tvLayerManager.pushOverride(mediaId);
-    res.json(tvLayerManager.getState());
+    const state = tvLayerManager.getState();
+    if (orchestratorSocket) orchestratorSocket.broadcast('tv:state-change', state);
+    res.json(state);
   } catch (err) {
     if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1499,7 +1556,9 @@ app.post('/api/tv-layer/manual', async (req, res) => {
 
   try {
     await tvLayerManager.pushManualOverride(mediaId);
-    res.json(tvLayerManager.getState());
+    const state = tvLayerManager.getState();
+    if (orchestratorSocket) orchestratorSocket.broadcast('tv:state-change', state);
+    res.json(state);
   } catch (err) {
     if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1510,7 +1569,9 @@ app.post('/api/tv-layer/release', async (req, res) => {
   if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
   try {
     await tvLayerManager.releaseOverride();
-    res.json(tvLayerManager.getState());
+    const state = tvLayerManager.getState();
+    if (orchestratorSocket) orchestratorSocket.broadcast('tv:state-change', state);
+    res.json(state);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1520,13 +1581,231 @@ app.post('/api/tv-layer/clear-manual', async (req, res) => {
   if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
   try {
     await tvLayerManager.clearManualOverride();
-    res.json(tvLayerManager.getState());
+    const state = tvLayerManager.getState();
+    if (orchestratorSocket) orchestratorSocket.broadcast('tv:state-change', state);
+    res.json(state);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ============== End TV Layer API ==============
+
+// ============== Orchestrator Script API ==============
+app.post('/api/orchestrator/expand', async (req, res) => {
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  const { seed, mediaRefs, showContext } = req.body || {};
+  if (!seed) return res.status(400).json({ error: 'Missing seed' });
+  try {
+    const segment = await scriptGenerator.expandDirectorNote(seed, mediaRefs || [], showContext || {});
+    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/expand-chat', async (req, res) => {
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  const { message, showContext } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'Missing message' });
+  try {
+    const segment = await scriptGenerator.expandChatMessage(message, showContext || {});
+    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/regenerate', async (req, res) => {
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  const { segmentId, feedback } = req.body || {};
+  if (!segmentId) return res.status(400).json({ error: 'Missing segmentId' });
+  try {
+    const segment = await scriptGenerator.regenerateScript(segmentId, feedback);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/regenerate-partial', async (req, res) => {
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  const { segmentId, startLine, endLine, feedback } = req.body || {};
+  if (!segmentId) return res.status(400).json({ error: 'Missing segmentId' });
+  if (startLine === undefined || endLine === undefined) {
+    return res.status(400).json({ error: 'Missing startLine/endLine' });
+  }
+  try {
+    const segment = await scriptGenerator.regeneratePartial(segmentId, startLine, endLine, feedback);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/bridge', async (req, res) => {
+  if (!bridgeGenerator) return res.status(503).json({ error: 'Bridge generator not initialized' });
+  const { exitContext, nextSeed, lastSpeaker } = req.body || {};
+  if (!exitContext || !nextSeed) return res.status(400).json({ error: 'Missing exitContext/nextSeed' });
+  try {
+    const segment = await bridgeGenerator.generateBridge(exitContext, nextSeed, lastSpeaker);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/filler', async (req, res) => {
+  if (!fillerGenerator) return res.status(503).json({ error: 'Filler generator not initialized' });
+  const { recentContexts } = req.body || {};
+  try {
+    const segment = await fillerGenerator.generateFiller(Array.isArray(recentContexts) ? recentContexts : []);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/render/:id', async (req, res) => {
+  if (!segmentRenderer) return res.status(503).json({ error: 'Segment renderer not initialized' });
+  const segmentId = req.params.id;
+  try {
+    const segment = await segmentRenderer.queueRender(segmentId);
+    broadcastPipelineUpdate();
+    res.json(segment);
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/orchestrator/render/:id', (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  const segment = pipelineStore.getSegment(req.params.id);
+  if (!segment) return res.status(404).json({ error: 'Segment not found' });
+  res.json({ id: segment.id, status: segment.status, renderProgress: segment.renderProgress });
+});
+
+app.post('/api/orchestrator/play', async (req, res) => {
+  if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
+  try {
+    const status = await playbackController.start();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/stop', async (req, res) => {
+  if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
+  try {
+    const status = await playbackController.stop();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/orchestrator/status', (req, res) => {
+  if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
+  res.json(playbackController.getStatus());
+});
+
+// ============== Orchestrator Chat Intake API ==============
+app.post('/api/orchestrator/chat/message', async (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  const { username, text } = req.body || {};
+  if (!text) return res.status(400).json({ error: 'Missing text' });
+  chatIntake.addMessage(username || 'anonymous', text, Date.now());
+  res.json({ success: true });
+});
+
+app.get('/api/orchestrator/chat/inbox', (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  res.json({ inbox: chatIntake.getInbox() });
+});
+
+app.post('/api/orchestrator/chat/intake-rate', (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  const { rate } = req.body || {};
+  try {
+    chatIntake.setIntakeRate(rate);
+    res.json(chatIntake.getConfig());
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/chat/auto-approve', (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  const { enabled } = req.body || {};
+  chatIntake.setAutoApprove(enabled);
+  res.json(chatIntake.getConfig());
+});
+
+app.get('/api/orchestrator/chat/config', (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  res.json(chatIntake.getConfig());
+});
+
+// ============== Orchestrator State & Config API ==============
+app.get('/api/orchestrator/state', (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  res.json({
+    pipeline: { segments: pipelineStore.getAllSegments(), bufferHealth: pipelineStore.getBufferHealth() },
+    tvLayer: tvLayerManager ? tvLayerManager.getState() : null,
+    lighting: {
+      hue: getLightingHue(),
+      emissionOpacity: getEmissionOpacity(),
+      lightsMode: getLightsMode(),
+      lightsOpacity: getLightsOnOpacity(),
+      emissionBlend: getEmissionLayerBlend(),
+      rainbow: lightingState.rainbow,
+      flicker: lightingState.flicker
+    },
+    playback: playbackController ? playbackController.getStatus() : null,
+    chatIntake: chatIntake ? { inbox: chatIntake.getInbox(), ...chatIntake.getConfig() } : null
+  });
+});
+
+app.get('/api/orchestrator/config', (req, res) => {
+  const config = loadOrchestratorConfig();
+  res.json(config);
+});
+
+app.post('/api/orchestrator/config', async (req, res) => {
+  const config = { ...DEFAULT_ORCHESTRATOR_CONFIG, ...(req.body || {}) };
+  try {
+    await saveOrchestratorConfig(config);
+    if (orchestrator) {
+      if (chatIntake && config.chatIntake) {
+        if (config.chatIntake.ratePerMinute) chatIntake.setIntakeRate(config.chatIntake.ratePerMinute);
+        if (typeof config.chatIntake.autoApprove !== 'undefined') {
+          chatIntake.setAutoApprove(config.chatIntake.autoApprove);
+        }
+      }
+      if (orchestrator.bufferMonitor && config.buffer) {
+        orchestrator.bufferMonitor.config = config.buffer;
+        orchestrator.bufferMonitor.fillerEnabled = config.filler?.enabled ?? true;
+      }
+    }
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============== End Orchestrator Script API ==============
 
 // Health check
 app.get('/health', (req, res) => {
@@ -1575,6 +1854,9 @@ async function start() {
     console.log('[TVLayer] Manager initialized');
   }
 
+  const animationServerUrl = `http://${host}:${port}`;
+  const orchestratorConfig = loadOrchestratorConfig();
+
   // Start live stream
   if (STREAM_MODE === 'synced') {
     streamManager = new ContinuousStreamManager(STREAMS_DIR, STREAM_FPS);
@@ -1588,13 +1870,34 @@ async function start() {
   }
   streamManager.start(renderFrame);
 
-  app.listen(port, host, () => {
+  const server = app.listen(port, host, () => {
     console.log(`Animation server running on http://${host}:${port}`);
     console.log(`Live stream: http://${host}:${port}${streamManager.getStreamUrl()}`);
     console.log(`Platform: ${process.platform}`);
     console.log(`Lip sync mode: ${LIPSYNC_MODE} | Stream mode: ${STREAM_MODE}`);
     console.log(`TV content: ${tvService ? 'enabled' : 'disabled'}`);
   });
+
+  orchestratorSocket = new OrchestratorSocket(server);
+
+  orchestrator = new Orchestrator({
+    openai,
+    pipelineStore,
+    mediaLibrary,
+    tvLayerManager,
+    animationServerUrl,
+    eventEmitter: orchestratorSocket,
+    config: orchestratorConfig
+  });
+
+  orchestrator.init();
+  scriptGenerator = orchestrator.scriptGenerator;
+  bridgeGenerator = orchestrator.bridgeGenerator;
+  fillerGenerator = orchestrator.fillerGenerator;
+  segmentRenderer = orchestrator.segmentRenderer;
+  playbackController = orchestrator.playbackController;
+  chatIntake = orchestrator.chatIntake;
+  console.log('[Orchestrator] Initialized');
 }
 
 start();
