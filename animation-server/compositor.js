@@ -26,6 +26,9 @@ const OUTPUT_CACHE_MAX = 60;  // Max cached output frames
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
 const EXPR_LAYER_CACHE_MAX = 300; // Max cached expression layer buffers
 let exprBaseCache = {};       // Level 1 cache: staticBase + expression layers + nose → PNG
+let exprBaseInFlight = new Map();
+let lastExprBaseKey = null;
+let lastExprBaseBuffer = null;
 const EXPR_BASE_CACHE_MAX = 50;   // Increased: quantized values reduce unique states
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
@@ -633,6 +636,196 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
  * Uses caching for common frame states (most frames are identical)
  * TV content is composited before character layers (appears behind them)
  */
+async function buildExpressionBase(exprBaseCacheKey, exprSnapshot) {
+  // Build expression layer composite ops
+  const l1Start = Date.now();
+  const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
+  const layerTasks = [];  // { index, exprLayer, type, cacheKey, taskFn } or { index, op }
+
+  for (let i = 0; i < sortedExprLayers.length; i++) {
+    const exprLayer = sortedExprLayers[i];
+    const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
+    if (mapping === undefined) continue;
+    const offset = mapping
+      ? (exprSnapshot[mapping.character]?.[mapping.feature] || { x: 0, y: 0 })
+      : { x: 0, y: 0 };
+
+    // Eyebrow layers: vertical-only with rotation
+    if (exprLayer.eyebrowSide && exprLayer.croppedBuffer && exprLayer.contentBounds) {
+      let dy = Math.round(offset.y);
+      let rotation = Number(offset.rotation) || 0;
+      if (offset.left && offset.right) {
+        const sideData = exprLayer.eyebrowSide === 'left' ? offset.left : offset.right;
+        if (sideData) {
+          dy = Math.round(sideData.y ?? dy);
+          rotation = Number(sideData.rotation ?? rotation) || 0;
+        }
+      }
+      rotation = Math.round(rotation * 10) / 10;
+
+      if (dy === 0 && rotation === 0) {
+        layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
+      } else {
+        const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
+        const cached = exprLayerCache[browCacheKey];
+        if (cached) {
+          layerTasks.push({ index: i, op: { input: cached.input, left: cached.left, top: cached.top, blend: 'over' } });
+        } else {
+          // Queue async task for parallel execution
+          const bounds = exprLayer.contentBounds;
+          const centerX = bounds.left + bounds.width / 2;
+          const centerY = bounds.top + bounds.height / 2;
+          const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
+
+          layerTasks.push({
+            index: i,
+            type: 'brow',
+            cacheKey: browCacheKey,
+            taskFn: async () => {
+              const rotated = await sharp(exprLayer.croppedBuffer)
+                .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .png()
+                .toBuffer();
+
+              const rad = Math.abs(angle) * Math.PI / 180;
+              const cosA = Math.cos(rad);
+              const sinA = Math.sin(rad);
+              const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
+              const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
+
+              let placeLeft = Math.round(centerX - newW / 2);
+              let placeTop = Math.round(centerY - newH / 2 + dy);
+
+              let finalBuffer = rotated;
+              if (placeLeft < 0 || placeTop < 0) {
+                const trimLeft = Math.max(0, -placeLeft);
+                const trimTop = Math.max(0, -placeTop);
+                const trimW = Math.min(newW - trimLeft, outputWidth);
+                const trimH = Math.min(newH - trimTop, outputHeight);
+                if (trimW > 0 && trimH > 0) {
+                  finalBuffer = await sharp(rotated)
+                    .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
+                    .png()
+                    .toBuffer();
+                }
+                placeLeft = Math.max(0, placeLeft);
+                placeTop = Math.max(0, placeTop);
+              }
+
+              return { input: finalBuffer, left: placeLeft, top: placeTop };
+            }
+          });
+        }
+      }
+      continue;
+    }
+
+    // Eye layers and eye_cover: translate via extract+extend
+    const dx = Math.round(offset.x);
+    const dy = Math.round(offset.y);
+
+    if (dx === 0 && dy === 0) {
+      layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
+    } else {
+      const eyeCacheKey = `eye_${exprLayer.id}_${dx}_${dy}`;
+      const cached = exprLayerCache[eyeCacheKey];
+      if (cached) {
+        layerTasks.push({ index: i, op: { input: cached, left: 0, top: 0, blend: 'over' } });
+      } else {
+        const layerW = exprLayer.scaledWidth;
+        const layerH = exprLayer.scaledHeight;
+        const extractLeft = Math.max(0, -dx);
+        const extractTop = Math.max(0, -dy);
+        const extractWidth = layerW - Math.abs(dx);
+        const extractHeight = layerH - Math.abs(dy);
+
+        if (extractWidth > 0 && extractHeight > 0) {
+          layerTasks.push({
+            index: i,
+            type: 'eye',
+            cacheKey: eyeCacheKey,
+            taskFn: async () => {
+              return sharp(exprLayer.buffer)
+                .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+                .extend({
+                  top: Math.max(0, dy),
+                  bottom: Math.max(0, -dy),
+                  left: Math.max(0, dx),
+                  right: Math.max(0, -dx),
+                  background: { r: 0, g: 0, b: 0, alpha: 0 }
+                })
+                .png()
+                .toBuffer();
+            }
+          });
+        } else {
+          layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
+        }
+      }
+    }
+  }
+
+  // Run all pending transforms in parallel
+  const pendingTasks = layerTasks.filter(t => t.taskFn);
+  if (pendingTasks.length > 0) {
+    const results = await Promise.all(pendingTasks.map(t => t.taskFn()));
+    for (let j = 0; j < pendingTasks.length; j++) {
+      const task = pendingTasks[j];
+      const result = results[j];
+      // Cache the result
+      const keys = Object.keys(exprLayerCache);
+      if (keys.length >= EXPR_LAYER_CACHE_MAX) {
+        for (let k = 0; k < 20; k++) delete exprLayerCache[keys[k]];
+      }
+      if (task.type === 'brow') {
+        exprLayerCache[task.cacheKey] = result;
+        task.op = { input: result.input, left: result.left, top: result.top, blend: 'over' };
+      } else {
+        exprLayerCache[task.cacheKey] = result;
+        task.op = { input: result, left: 0, top: 0, blend: 'over' };
+      }
+    }
+  }
+
+  // Build exprOps array in z-order
+  const exprOps = layerTasks
+    .sort((a, b) => a.index - b.index)
+    .map(t => t.op)
+    .filter(Boolean);
+
+  // Nose layers (above eye_cover, part of expression base)
+  const sortedNoseLayers = [...noseLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
+  for (const noseLayer of sortedNoseLayers) {
+    exprOps.push({
+      input: noseLayer.buffer,
+      left: noseLayer.scaledX,
+      top: noseLayer.scaledY,
+      blend: 'over'
+    });
+  }
+
+  // Composite Level 1: staticBase + expression layers + nose → PNG
+  const exprBaseBuffer = await sharp(staticBaseBuffer)
+    .composite(exprOps)
+    .png()
+    .toBuffer();
+
+  // Cache expression base (evict if full)
+  const exprBaseKeys = Object.keys(exprBaseCache);
+  if (exprBaseKeys.length >= EXPR_BASE_CACHE_MAX) {
+    for (let k = 0; k < 5; k++) delete exprBaseCache[exprBaseKeys[k]];
+  }
+  exprBaseCache[exprBaseCacheKey] = exprBaseBuffer;
+  lastExprBaseKey = exprBaseCacheKey;
+  lastExprBaseBuffer = exprBaseBuffer;
+
+  const l1Time = Date.now() - l1Start;
+  if (l1Time > 30) {
+    console.log(`[Compositor] L1 cache miss: ${l1Time}ms (${pendingTasks.length} transforms)`);
+  }
+  return exprBaseBuffer;
+}
+
 async function compositeFrame(state) {
   stepExpressionOffsets(Date.now());
   const {
@@ -646,13 +839,14 @@ async function compositeFrame(state) {
   // Build a full output key that includes ALL visual state
   const hasTv = currentTVFrame ? 1 : 0;
   const captionKey = caption ? caption.slice(0, 40) : '';
-  const exprOutputKey = `ce${expressionOffsets.chad.eyes.x},${expressionOffsets.chad.eyes.y}`
-    + `cbl${expressionOffsets.chad.eyebrows.left.y}r${expressionOffsets.chad.eyebrows.left.rotation}`
-    + `cbr${expressionOffsets.chad.eyebrows.right.y}r${expressionOffsets.chad.eyebrows.right.rotation}`
-    + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
-    + `vbl${expressionOffsets.virgin.eyebrows.left.y}r${expressionOffsets.virgin.eyebrows.left.rotation}`
-    + `vbr${expressionOffsets.virgin.eyebrows.right.y}r${expressionOffsets.virgin.eyebrows.right.rotation}`;
-  const outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}-${exprOutputKey}`;
+  const exprSnapshot = JSON.parse(JSON.stringify(expressionOffsets));
+  const exprOutputKey = `ce${exprSnapshot.chad.eyes.x},${exprSnapshot.chad.eyes.y}`
+    + `cbl${exprSnapshot.chad.eyebrows.left.y}r${exprSnapshot.chad.eyebrows.left.rotation}`
+    + `cbr${exprSnapshot.chad.eyebrows.right.y}r${exprSnapshot.chad.eyebrows.right.rotation}`
+    + `ve${exprSnapshot.virgin.eyes.x},${exprSnapshot.virgin.eyes.y}`
+    + `vbl${exprSnapshot.virgin.eyebrows.left.y}r${exprSnapshot.virgin.eyebrows.left.rotation}`
+    + `vbr${exprSnapshot.virgin.eyebrows.right.y}r${exprSnapshot.virgin.eyebrows.right.rotation}`;
+  let outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}-${exprOutputKey}`;
 
   // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
   if (outputKey === lastOutputKey && lastOutputBuffer && !hasTv) {
@@ -661,12 +855,12 @@ async function compositeFrame(state) {
 
   // Character frame cache includes: static base + expression layers + mouths + blinks + emission + lights
   // This means idle frames (no TV, no caption) need 0 overlay pipelines
-  const exprKey = `ce${expressionOffsets.chad.eyes.x},${expressionOffsets.chad.eyes.y}`
-    + `cbl${expressionOffsets.chad.eyebrows.left.y}r${expressionOffsets.chad.eyebrows.left.rotation}`
-    + `cbr${expressionOffsets.chad.eyebrows.right.y}r${expressionOffsets.chad.eyebrows.right.rotation}`
-    + `ve${expressionOffsets.virgin.eyes.x},${expressionOffsets.virgin.eyes.y}`
-    + `vbl${expressionOffsets.virgin.eyebrows.left.y}r${expressionOffsets.virgin.eyebrows.left.rotation}`
-    + `vbr${expressionOffsets.virgin.eyebrows.right.y}r${expressionOffsets.virgin.eyebrows.right.rotation}`;
+  const exprKey = `ce${exprSnapshot.chad.eyes.x},${exprSnapshot.chad.eyes.y}`
+    + `cbl${exprSnapshot.chad.eyebrows.left.y}r${exprSnapshot.chad.eyebrows.left.rotation}`
+    + `cbr${exprSnapshot.chad.eyebrows.right.y}r${exprSnapshot.chad.eyebrows.right.rotation}`
+    + `ve${exprSnapshot.virgin.eyes.x},${exprSnapshot.virgin.eyes.y}`
+    + `vbl${exprSnapshot.virgin.eyebrows.left.y}r${exprSnapshot.virgin.eyebrows.left.rotation}`
+    + `vbr${exprSnapshot.virgin.eyebrows.right.y}r${exprSnapshot.virgin.eyebrows.right.rotation}`;
   // === Two-level compositing ===
   // Level 1: Expression base (staticBase + expression layers + nose) — cached by exprKey.
   //   Only recomputes when expression offsets change (~3-5x/sec).
@@ -676,196 +870,35 @@ async function compositeFrame(state) {
 
   const exprBaseCacheKey = `${staticBaseVersion}-${exprKey}`;
   let exprBaseBuffer = exprBaseCache[exprBaseCacheKey];
+  let usedFallbackBase = false;
 
   if (!exprBaseBuffer) {
-    // Build expression layer composite ops
-    // PARALLELIZED: Collect all transform tasks first, run them concurrently
-    const l1Start = Date.now();
-    const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
-    const layerTasks = [];  // { index, exprLayer, type, cacheKey, taskFn } or { index, op }
-
-    for (let i = 0; i < sortedExprLayers.length; i++) {
-      const exprLayer = sortedExprLayers[i];
-      const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
-      if (mapping === undefined) continue;
-      const offset = mapping
-        ? (expressionOffsets[mapping.character]?.[mapping.feature] || { x: 0, y: 0 })
-        : { x: 0, y: 0 };
-
-      // Eyebrow layers: vertical-only with rotation
-      if (exprLayer.eyebrowSide && exprLayer.croppedBuffer && exprLayer.contentBounds) {
-        let dy = Math.round(offset.y);
-        let rotation = Number(offset.rotation) || 0;
-        if (offset.left && offset.right) {
-          const sideData = exprLayer.eyebrowSide === 'left' ? offset.left : offset.right;
-          if (sideData) {
-            dy = Math.round(sideData.y ?? dy);
-            rotation = Number(sideData.rotation ?? rotation) || 0;
-          }
-        }
-        rotation = Math.round(rotation * 10) / 10;
-
-        if (dy === 0 && rotation === 0) {
-          layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
-        } else {
-          const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
-          const cached = exprLayerCache[browCacheKey];
-          if (cached) {
-            layerTasks.push({ index: i, op: { input: cached.input, left: cached.left, top: cached.top, blend: 'over' } });
-          } else {
-            // Queue async task for parallel execution
-            const bounds = exprLayer.contentBounds;
-            const centerX = bounds.left + bounds.width / 2;
-            const centerY = bounds.top + bounds.height / 2;
-            const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
-
-            layerTasks.push({
-              index: i,
-              type: 'brow',
-              cacheKey: browCacheKey,
-              taskFn: async () => {
-                const rotated = await sharp(exprLayer.croppedBuffer)
-                  .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-                  .png()
-                  .toBuffer();
-
-                const rad = Math.abs(angle) * Math.PI / 180;
-                const cosA = Math.cos(rad);
-                const sinA = Math.sin(rad);
-                const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
-                const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
-
-                let placeLeft = Math.round(centerX - newW / 2);
-                let placeTop = Math.round(centerY - newH / 2 + dy);
-
-                let finalBuffer = rotated;
-                if (placeLeft < 0 || placeTop < 0) {
-                  const trimLeft = Math.max(0, -placeLeft);
-                  const trimTop = Math.max(0, -placeTop);
-                  const trimW = Math.min(newW - trimLeft, outputWidth);
-                  const trimH = Math.min(newH - trimTop, outputHeight);
-                  if (trimW > 0 && trimH > 0) {
-                    finalBuffer = await sharp(rotated)
-                      .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
-                      .png()
-                      .toBuffer();
-                  }
-                  placeLeft = Math.max(0, placeLeft);
-                  placeTop = Math.max(0, placeTop);
-                }
-
-                return { input: finalBuffer, left: placeLeft, top: placeTop };
-              }
-            });
-          }
-        }
-        continue;
-      }
-
-      // Eye layers and eye_cover: translate via extract+extend
-      const dx = Math.round(offset.x);
-      const dy = Math.round(offset.y);
-
-      if (dx === 0 && dy === 0) {
-        layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
-      } else {
-        const eyeCacheKey = `eye_${exprLayer.id}_${dx}_${dy}`;
-        const cached = exprLayerCache[eyeCacheKey];
-        if (cached) {
-          layerTasks.push({ index: i, op: { input: cached, left: 0, top: 0, blend: 'over' } });
-        } else {
-          const layerW = exprLayer.scaledWidth;
-          const layerH = exprLayer.scaledHeight;
-          const extractLeft = Math.max(0, -dx);
-          const extractTop = Math.max(0, -dy);
-          const extractWidth = layerW - Math.abs(dx);
-          const extractHeight = layerH - Math.abs(dy);
-
-          if (extractWidth > 0 && extractHeight > 0) {
-            layerTasks.push({
-              index: i,
-              type: 'eye',
-              cacheKey: eyeCacheKey,
-              taskFn: async () => {
-                return sharp(exprLayer.buffer)
-                  .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
-                  .extend({
-                    top: Math.max(0, dy),
-                    bottom: Math.max(0, -dy),
-                    left: Math.max(0, dx),
-                    right: Math.max(0, -dx),
-                    background: { r: 0, g: 0, b: 0, alpha: 0 }
-                  })
-                  .png()
-                  .toBuffer();
-              }
-            });
-          } else {
-            layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
-          }
-        }
-      }
+    if (!exprBaseInFlight.has(exprBaseCacheKey)) {
+      const snapshot = JSON.parse(JSON.stringify(exprSnapshot));
+      const task = buildExpressionBase(exprBaseCacheKey, snapshot)
+        .catch(err => {
+          console.warn('[Compositor] L1 build failed:', err.message);
+        })
+        .finally(() => {
+          exprBaseInFlight.delete(exprBaseCacheKey);
+        });
+      exprBaseInFlight.set(exprBaseCacheKey, task);
     }
 
-    // Run all pending transforms in parallel
-    const pendingTasks = layerTasks.filter(t => t.taskFn);
-    if (pendingTasks.length > 0) {
-      const results = await Promise.all(pendingTasks.map(t => t.taskFn()));
-      for (let j = 0; j < pendingTasks.length; j++) {
-        const task = pendingTasks[j];
-        const result = results[j];
-        // Cache the result
-        const keys = Object.keys(exprLayerCache);
-        if (keys.length >= EXPR_LAYER_CACHE_MAX) {
-          for (let k = 0; k < 20; k++) delete exprLayerCache[keys[k]];
-        }
-        if (task.type === 'brow') {
-          exprLayerCache[task.cacheKey] = result;
-          task.op = { input: result.input, left: result.left, top: result.top, blend: 'over' };
-        } else {
-          exprLayerCache[task.cacheKey] = result;
-          task.op = { input: result, left: 0, top: 0, blend: 'over' };
-        }
-      }
+    if (lastExprBaseBuffer) {
+      exprBaseBuffer = lastExprBaseBuffer;
+      usedFallbackBase = true;
+    } else {
+      exprBaseBuffer = await exprBaseInFlight.get(exprBaseCacheKey);
     }
-
-    // Build exprOps array in z-order
-    const exprOps = layerTasks
-      .sort((a, b) => a.index - b.index)
-      .map(t => t.op)
-      .filter(Boolean);
-
-    // Nose layers (above eye_cover, part of expression base)
-    const sortedNoseLayers = [...noseLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
-    for (const noseLayer of sortedNoseLayers) {
-      exprOps.push({
-        input: noseLayer.buffer,
-        left: noseLayer.scaledX,
-        top: noseLayer.scaledY,
-        blend: 'over'
-      });
-    }
-
-    // Composite Level 1: staticBase + expression layers + nose → PNG
-    exprBaseBuffer = await sharp(staticBaseBuffer)
-      .composite(exprOps)
-      .png()
-      .toBuffer();
-
-    // Cache expression base (evict if full)
-    const exprBaseKeys = Object.keys(exprBaseCache);
-    if (exprBaseKeys.length >= EXPR_BASE_CACHE_MAX) {
-      for (let k = 0; k < 5; k++) delete exprBaseCache[exprBaseKeys[k]];
-    }
-    exprBaseCache[exprBaseCacheKey] = exprBaseBuffer;
-    const l1Time = Date.now() - l1Start;
-    if (l1Time > 30) {
-      console.log(`[Compositor] L1 cache miss: ${l1Time}ms (${pendingTasks.length} transforms)`);
-    }
+  }
+  if (usedFallbackBase && lastExprBaseKey) {
+    outputKey = `${outputKey}-fb${lastExprBaseKey}`;
   }
 
   // Level 2: character frame (expression base + mouth + blink + emission + lights)
-  const charCacheKey = `${exprBaseCacheKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  const effectiveExprBaseKey = usedFallbackBase && lastExprBaseKey ? lastExprBaseKey : exprBaseCacheKey;
+  const charCacheKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
   let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
