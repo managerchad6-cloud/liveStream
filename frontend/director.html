@@ -219,6 +219,41 @@
       font-size: 12px;
       letter-spacing: 1px;
       text-transform: uppercase;
+      min-width: 220px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .slot-label {
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--muted);
+    }
+
+    .slot-body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .slot-empty {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: none;
+      letter-spacing: 0.5px;
+    }
+
+    .slot-card {
+      cursor: pointer;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: #1b2131;
+    }
+
+    .on-air-highlight {
+      border: 1px solid var(--danger);
+      box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.2);
+      background: linear-gradient(135deg, rgba(255,107,107,0.18), rgba(27,33,49,0.9));
     }
 
     #media-attachments {
@@ -353,8 +388,14 @@
       <div>Pipeline</div>
       <div id="pipeline-cards" class="pipeline-row"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <div id="pre-air-slot" class="pipeline-slot">PRE-AIR</div>
-        <div id="on-air-slot" class="pipeline-slot">ON-AIR</div>
+        <div id="pre-air-slot" class="pipeline-slot">
+          <div class="slot-label">PRE-AIR</div>
+          <div id="pre-air-card" class="slot-body"></div>
+        </div>
+        <div id="on-air-slot" class="pipeline-slot">
+          <div class="slot-label">ON-AIR</div>
+          <div id="on-air-card" class="slot-body"></div>
+        </div>
       </div>
     </div>
 
@@ -403,7 +444,11 @@
     function renderPipelineCards(segments) {
       const container = document.getElementById('pipeline-cards');
       container.innerHTML = '';
-      segments.filter(s => s.status !== 'aired').forEach(seg => {
+      const onAir = segments.find(s => s.status === 'on-air') || null;
+      const preAir = segments.find(s => s.status === 'pre-air') || null;
+      const pipelineList = segments.filter(s => !['aired', 'on-air', 'pre-air'].includes(s.status));
+
+      pipelineList.forEach(seg => {
         const card = document.createElement('div');
         card.className = 'pipeline-card';
         card.dataset.id = seg.id;
@@ -417,9 +462,33 @@
         container.appendChild(card);
       });
 
+      renderSlot('pre-air-card', preAir, false);
+      renderSlot('on-air-card', onAir, true);
+
       const aired = segments.filter(s => s.status === 'aired');
       const airedList = document.getElementById('aired-list');
       airedList.innerHTML = aired.map(seg => `<div class="card">${seg.type}: ${(seg.seed || '').slice(0, 60)}</div>`).join('');
+    }
+
+    function renderSlot(containerId, seg, highlight) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      container.innerHTML = '';
+      if (!seg) {
+        container.innerHTML = `<div class="slot-empty">Empty</div>`;
+        return;
+      }
+      const card = document.createElement('div');
+      card.className = `pipeline-card slot-card${highlight ? ' on-air-highlight' : ''}`;
+      card.dataset.id = seg.id;
+      card.innerHTML = `
+        <div><strong>${seg.type}</strong></div>
+        <div class="muted">${(seg.seed || '').slice(0, 40)}</div>
+        <div class="status-badge status-${seg.status}">${seg.status}</div>
+        <div class="muted">${seg.estimatedDuration || 0}s</div>
+      `;
+      card.addEventListener('click', () => showDraft(seg.id));
+      container.appendChild(card);
     }
 
     async function refreshPipeline() {
