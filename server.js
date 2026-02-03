@@ -764,7 +764,6 @@ function parseJsonArray(content) {
 async function playAutoScript(script, autoId) {
   const total = script.length;
   let index = 0;
-  const pauseBetweenTurnsMs = Math.max(0, parseInt(process.env.AUTO_TURN_PAUSE_MS || '1000', 10) || 1000);
   for (const entry of script) {
     if (autoId !== autoConversation.id) {
       return;
@@ -811,10 +810,6 @@ async function playAutoScript(script, autoId) {
       });
 
       appendDialogueLine(speakerId, text, autoConversation.history);
-
-      if (pauseBetweenTurnsMs > 0 && index < total) {
-        await new Promise(resolve => setTimeout(resolve, pauseBetweenTurnsMs));
-      }
     } catch (err) {
       console.error('[Auto] Playback failed (turn ' + index + '/' + total + '):', err.message);
       if (err.response) {
