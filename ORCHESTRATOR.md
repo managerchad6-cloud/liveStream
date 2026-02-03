@@ -1194,3 +1194,39 @@ Open `http://localhost:3003/director` in browser. Verify:
 - Approve triggers rendering
 - Buffer health bar updates
 - WebSocket events update UI in real-time
+
+---
+
+## PROGRESS (2026-02-03)
+
+Phase 1 complete previously. Phase 2–7 implemented and pushed.
+
+Implemented files:
+- `animation-server/orchestrator/script-generator.js`
+- `animation-server/orchestrator/bridge-generator.js`
+- `animation-server/orchestrator/filler-generator.js`
+- `animation-server/orchestrator/segment-renderer.js`
+- `animation-server/orchestrator/playback-controller.js`
+- `animation-server/orchestrator/buffer-monitor.js`
+- `animation-server/orchestrator/chat-intake.js`
+- `animation-server/orchestrator/websocket.js`
+- `animation-server/orchestrator/index.js`
+- `frontend/director.html`
+
+Wiring updates:
+- `animation-server/server.js` now initializes `Orchestrator`, WebSocket, buffer monitor, chat intake, segment renderer, playback controller, and adds orchestrator endpoints (`/api/orchestrator/*`) plus `/director`.
+- Added orchestrator config load/save (`data/orchestrator-config.json`).
+- Added pipeline updates broadcast + tv-layer state-change broadcasts.
+- Added WS dependency in `animation-server/package.json`.
+
+Local issue:
+- Windows `spawn EPERM` when starting FFmpeg in `ContinuousStreamManager.startFFmpeg` (server exits before binding).
+- Added `FFMPEG_PATH` override support in `animation-server/platform.js` (commit `23a859d`).
+
+Last commit pushed:
+- `23a859d` — Allow `FFMPEG_PATH` override (after `c97f563` for phases 3–7).
+
+Next steps:
+- Verify server boots locally with `FFMPEG_PATH`.
+- Run API sanity checks + `/director` UI.
+- If FFmpeg still blocked, move binary to `C:\ffmpeg\bin\ffmpeg.exe` or adjust AV/permissions.
