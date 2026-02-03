@@ -10,5 +10,17 @@
     "fileSize": 1226469,
     "addedAt": "2026-02-03T14:07:52.235Z",
     "metadata": {}
+  },
+  {
+    "id": "477c3434-ebfa-49e0-a148-9d6b08459470",
+    "originalName": "parliament.mp4",
+    "type": "video",
+    "mimeType": "video/mp4",
+    "ext": ".mp4",
+    "filename": "477c3434-ebfa-49e0-a148-9d6b08459470.mp4",
+    "thumbnailFilename": "477c3434-ebfa-49e0-a148-9d6b08459470.jpg",
+    "fileSize": 66496626,
+    "addedAt": "2026-02-03T16:12:11.172Z",
+    "metadata": {}
   }
 ]
