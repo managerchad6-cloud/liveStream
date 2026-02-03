@@ -30,7 +30,8 @@ const {
   getExpressionLimits,
   saveExpressionLimits,
   setEyebrowRotationLimits,
-  setEyebrowAsymmetry
+  setEyebrowAsymmetry,
+  setSpeakingCharacter
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -166,7 +167,11 @@ async function tickRainbow() {
     if (rpm > 0 && elapsed > 0) {
       const delta = (rpm * 360) * (elapsed / 60000);
       const nextHue = wrapHue(getLightingHue() + delta);
-      await setLightingHue(nextHue);
+      // Quantize to 2-degree steps: at 1 RPM (6 deg/sec) this means actual
+      // hue updates ~every 333ms instead of every 100ms — 3x fewer rebuilds
+      const quantized = Math.round(nextHue / 2) * 2;
+      if (quantized === getLightingHue()) return;
+      await setLightingHue(quantized);
     }
   } finally {
     rainbow.busy = false;
@@ -728,6 +733,9 @@ async function renderFrame(frame, audioProgress = null) {
     }
   }
 
+  // Inform compositor which character is speaking (for L2 pre-warming)
+  setSpeakingCharacter(speakingCharacter);
+
   // Chad gets the phoneme if he's speaking, otherwise neutral
   let chadPhoneme = speakingCharacter === 'chad' ? currentPhoneme : 'A';
   // Virgin gets the phoneme if she's speaking, otherwise neutral
@@ -840,11 +848,17 @@ async function renderFrame(frame, audioProgress = null) {
       virginPhoneme,
       chadBlinking,
       virginBlinking,
-      caption
+      caption,
+      tvFrameIndex: tvService ? tvService.frameIndex : -1
     });
     const elapsed = Date.now() - start;
-    if (elapsed > FRAME_BUDGET_MS * 1.2) {
-      skipCompositingFrames = Math.max(skipCompositingFrames, 1);
+    if (elapsed > FRAME_BUDGET_MS) {
+      // Proportional skip: longer overruns skip more frames (max 3)
+      const skipCount = Math.min(3, Math.ceil(elapsed / FRAME_BUDGET_MS) - 1);
+      skipCompositingFrames = Math.max(skipCompositingFrames, skipCount);
+      if (elapsed > FRAME_BUDGET_MS * 1.5) {
+        console.warn(`[Render] Frame over budget: ${elapsed}ms (skipping ${skipCount})`);
+      }
     }
     lastFrameBuffer = buffer;
     return buffer;

@@ -1,0 +1,39 @@
+AUTO-CONVERSATION SESSIONS REPORT (LAST 3 SESSIONS)
+
+Data from main app (port 3002) and animation server (port 3003) terminal logs. Animation server does not tag logs by session; frame ranges and L1/decode stats below are for the contiguous buffer (multiple runs may be interleaved). Session order is chronological, most recent last.
+
+——— SESSION 1 (3rd from end) ———
+Main app (3002):
+  Auto seed: "you are Virgin and Chad, the two Virgin ..."
+  Turn count: 12
+  [Auto] Playback failed: none
+Animation server (3003): (buffer does not split by session; see aggregated block below)
+
+——— SESSION 2 (2nd from end) ———
+Main app (3002):
+  Auto seed: "you are Virgin and Chad, the two Virgin ..."
+  Turn count: 12
+  [Auto] Playback failed: none
+Animation server (3003): (see aggregated block)
+
+——— SESSION 3 (most recent) ———
+Main app (3002):
+  Auto seed: "explain why the meme is so important, us..."
+  Turn count: 12
+  [Auto] Playback failed: none
+Animation server (3003): (see aggregated block)
+
+——— ANIMATION SERVER (3003) – CONTIGUOUS BUFFER ———
+Frame range in buffer: ~7470 to ~13500+ (speech and idle; [Frame N] every 30 frames).
+[Compositor] L1 cache miss: count 431+ in buffer. Timing range 57–170 ms (individual values: 57, 64, 65, 66, 68, 69, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 134, 135, 138, 140, 142, 144, 146, 150, 156, 164, 166, 170 ms).
+[Render] decode/total (12 lines in buffer): chad decode 67/80/80/92/93/114 ms total 96/81/81/93/94/115 ms; virgin decode 58/65/69/72/75/78 ms total 58/66/70/72/76/79 ms. Decode range 58–114 ms, total range 58–115 ms.
+Stutter notes: none reported by user; L1 misses and decode times exceed 33 ms frame budget so likely stutter when they occur.
+
+——— AGGREGATED SUMMARY (ACROSS 3 SESSIONS / BUFFER) ———
+L1 cache miss times: min 57 ms, max 170 ms, avg ~95–100 ms (from sample in buffer).
+L1 miss frequency: ~72 per 1000 frames (431 misses over ~6000 frames in buffer).
+Decode time range: 58–114 ms per /render (from 12 [Render] lines in buffer).
+Total (move+decode) per /render: 58–115 ms.
+Repeating error patterns: none in the last 3 auto sessions. Earlier in main-app log: [Auto] Playback failed (turn 1/12): connect ECONNREFUSED ::1:3003 (seed "talk about gas prices...") when animationServerUrl was localhost:3003; fixed by using ANIMATION_SERVER_URL=http://127.0.0.1:3003.
+
+——— PASTE END ———

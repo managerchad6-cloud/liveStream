@@ -76,6 +76,16 @@ curl -s http://localhost:3002/api/auto/diagnostic | jq
 
 ---
 
+## Windows: IPv6 localhost (ECONNREFUSED ::1:3003)
+
+On Windows, Node often resolves `localhost` to **IPv6** `::1`. If the animation server listens only on **IPv4** `127.0.0.1`, the main app gets:
+
+`[Auto] Playback failed: connect ECONNREFUSED ::1:3003`
+
+**Fix:** set `ANIMATION_SERVER_URL=http://127.0.0.1:3003` in `.env` (or the environment) so the main app uses IPv4.
+
+---
+
 ## Quick checklist
 
 1. Main server and animation server running (`npm start` on 3002, `npm run animation` on 3003).

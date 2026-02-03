@@ -220,6 +220,8 @@ class ContinuousStreamManager {
 
   // Unified render + output loop — single timer, no queue, no spin loop
   startFrameLoop() {
+    const RENDER_DEADLINE_MS = 30; // Hard deadline: drop to last frame if render exceeds this
+
     const tick = async () => {
       if (!this.isRunning) return;
 
@@ -227,17 +229,29 @@ class ContinuousStreamManager {
 
       if (now - this.lastFrameTime >= this.frameInterval && this.ffmpegProcess) {
         let videoData = null;
-        let audioData = this.silenceBuffer;
+        // Capture audio progress BEFORE advancing, so lip sync phoneme matches this frame's audio
+        const audioProgress = this.getAudioProgress();
+        // Always advance audio regardless of video render success (prevent A/V desync)
+        let audioData = this.getAudioChunkForFrame();
 
-        // Render a new frame
+        // Render a new frame with deadline enforcement
         if (this.onFrameRequest) {
           try {
-            const audioProgress = this.getAudioProgress();
-            const frameBuffer = await this.onFrameRequest(this.frameCount, audioProgress);
+            const renderPromise = this.onFrameRequest(this.frameCount, audioProgress);
+
+            // Race render against deadline — if render is slow, reuse last frame
+            const timeoutPromise = new Promise(resolve =>
+              setTimeout(() => resolve(null), RENDER_DEADLINE_MS)
+            );
+            const frameBuffer = await Promise.race([renderPromise, timeoutPromise]);
+
             if (frameBuffer) {
-              audioData = this.getAudioChunkForFrame();
               videoData = frameBuffer;
               this.lastVideoFrame = frameBuffer;
+              this.frameCount++;
+            } else if (this.lastVideoFrame) {
+              // Deadline exceeded — reuse last frame, timed-out render still populates cache
+              videoData = this.lastVideoFrame;
               this.frameCount++;
             }
           } catch (err) {

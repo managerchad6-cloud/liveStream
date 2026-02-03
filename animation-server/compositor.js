@@ -16,7 +16,7 @@ const EXPRESSION_LIMITS_PATH = path.join(ROOT_DIR, 'expression-limits.json');
 
 let manifest = null;
 let scaledLayerBuffers = {};
-let staticBaseBuffer = null; // Pre-composited static layers
+let staticBaseBuffer = null; // Pre-composited static layers { data, info } raw RGBA
 let frameCache = {};          // Cache for character state (JPEG buffers) - Level 2
 const FRAME_CACHE_MAX = 200;  // Level 2 cache: expression base + phoneme + blink
 let lastOutputKey = null;     // Key of the last full output frame
@@ -25,11 +25,20 @@ let outputCache = {};         // Cache for full output frames (charBuffer + capt
 const OUTPUT_CACHE_MAX = 60;  // Max cached output frames
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
 const EXPR_LAYER_CACHE_MAX = 300; // Max cached expression layer buffers
-let exprBaseCache = {};       // Level 1 cache: staticBase + expression layers + nose → PNG
+let exprBaseCache = {};       // Level 1 cache: staticBase + expression layers + nose → raw RGBA
 let exprBaseInFlight = new Map();
 let lastExprBaseKey = null;
-let lastExprBaseBuffer = null;
-const EXPR_BASE_CACHE_MAX = 50;   // Increased: quantized values reduce unique states
+let lastExprBaseBuffer = null;   // { data, info: {width, height, channels} }
+const EXPR_BASE_CACHE_MAX = 25;   // Raw buffers are ~3.7MB vs ~0.5-1MB PNG, so fewer entries
+
+// Committed-base pattern: the currently active expression base with pre-warmed L2 entries.
+// On L1 miss we keep using the committed base (guaranteeing L2 hits) until the new base
+// and its L2 pre-warm are both complete, then atomically swap.
+let committedExprBaseKey = null;
+let committedExprBaseBuffer = null; // { data, info } raw RGBA
+
+// Speaking character tracking for L2 pre-warming
+let currentSpeakingCharacter = null;
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
 const JPEG_QUALITY = 80;  // Reduced from 90 for faster encoding
 let outputWidth = 0;
@@ -38,6 +47,7 @@ let staticLayerEntries = [];
 let expressionLayerEntries = []; // Eye/eyebrow layers composited dynamically with offsets
 let noseLayerEntries = [];       // Nose layers composited above eye_cover (z-order)
 let staticBaseVersion = 0;
+let lightingVersion = 0;  // Incremented on lighting hue changes, included in L2 cache key
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
@@ -467,6 +477,10 @@ async function preloadLayers() {
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
+  committedExprBaseKey = null;
+  committedExprBaseBuffer = null;
+  lastExprBaseKey = null;
+  lastExprBaseBuffer = null;
 
   console.log(`Preloaded ${Object.keys(scaledLayerBuffers).length} layers, static base ready`);
 }
@@ -595,7 +609,7 @@ async function buildStaticBaseFromEntries(entries, layerBlendMap) {
     opacity: 1
   }));
 
-  return sharp({
+  const result = await sharp({
     create: {
       width: outputWidth,
       height: outputHeight,
@@ -604,8 +618,11 @@ async function buildStaticBaseFromEntries(entries, layerBlendMap) {
     }
   })
   .composite(staticOps)
-  .png()
-  .toBuffer();
+  .ensureAlpha()
+  .raw()
+  .toBuffer({ resolveWithObject: true });
+
+  return { data: result.data, info: result.info };
 }
 
 async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
@@ -804,26 +821,137 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot) {
     });
   }
 
-  // Composite Level 1: staticBase + expression layers + nose → PNG
-  const exprBaseBuffer = await sharp(staticBaseBuffer)
+  // Composite Level 1: staticBase (raw RGBA) + expression layers + nose → raw RGBA buffer
+  const exprBaseResult = await sharp(staticBaseBuffer.data, {
+    raw: { width: staticBaseBuffer.info.width, height: staticBaseBuffer.info.height, channels: staticBaseBuffer.info.channels }
+  })
     .composite(exprOps)
-    .png()
-    .toBuffer();
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const exprBaseRaw = { data: exprBaseResult.data, info: exprBaseResult.info };
 
   // Cache expression base (evict if full)
   const exprBaseKeys = Object.keys(exprBaseCache);
   if (exprBaseKeys.length >= EXPR_BASE_CACHE_MAX) {
     for (let k = 0; k < 5; k++) delete exprBaseCache[exprBaseKeys[k]];
   }
-  exprBaseCache[exprBaseCacheKey] = exprBaseBuffer;
+  exprBaseCache[exprBaseCacheKey] = exprBaseRaw;
   lastExprBaseKey = exprBaseCacheKey;
-  lastExprBaseBuffer = exprBaseBuffer;
+  lastExprBaseBuffer = exprBaseRaw;
 
   const l1Time = Date.now() - l1Start;
   if (l1Time > 30) {
     console.log(`[Compositor] L1 cache miss: ${l1Time}ms (${pendingTasks.length} transforms)`);
   }
-  return exprBaseBuffer;
+
+  // Fire L2 pre-warming in the background (never blocks frame loop)
+  const speakChar = currentSpeakingCharacter;
+  if (speakChar) {
+    setImmediate(() => preWarmL2(exprBaseCacheKey, exprBaseRaw, speakChar));
+  } else {
+    // No one speaking — just swap committed base directly
+    committedExprBaseKey = exprBaseCacheKey;
+    committedExprBaseBuffer = exprBaseRaw;
+  }
+
+  return exprBaseRaw;
+}
+
+/**
+ * Set the currently speaking character (used to decide which phonemes to pre-warm)
+ */
+function setSpeakingCharacter(char) {
+  currentSpeakingCharacter = char || null;
+}
+
+/**
+ * Pre-warm L2 cache entries for common phoneme combinations.
+ * Called via setImmediate after buildExpressionBase completes — never blocks the frame loop.
+ * For the speaking character we pre-warm phonemes A-F (most common during speech);
+ * the other character stays at 'A', blink=false.
+ */
+function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
+  const m = loadManifest();
+  const phonemes = ['A', 'B', 'C', 'D', 'E', 'F'];
+  const otherChar = speakingChar === 'chad' ? 'virgin' : 'chad';
+
+  const tasks = phonemes.map(async (ph) => {
+    const chadPh = speakingChar === 'chad' ? ph : 'A';
+    const virgPh = speakingChar === 'virgin' ? ph : 'A';
+    const charCacheKey = `${exprBaseCacheKey}-lv${lightingVersion}-${chadPh}-${virgPh}-0-0`;
+
+    if (frameCache[charCacheKey]) return; // already cached
+
+    const charOps = [];
+    const sortedLayers = [...m.layers]
+      .filter(l => l.type === 'mouth' || l.type === 'blink')
+      .sort((a, b) => a.zIndex - b.zIndex);
+
+    for (const layer of sortedLayers) {
+      let shouldInclude = false;
+      if (layer.type === 'mouth') {
+        if (layer.character === 'chad' && layer.phoneme === chadPh) shouldInclude = true;
+        else if (layer.character === 'virgin' && layer.phoneme === virgPh) shouldInclude = true;
+      }
+      // blink=false for pre-warm, skip blink layers
+      if (!shouldInclude) continue;
+      const buffer = scaledLayerBuffers[layer.id];
+      if (buffer) {
+        charOps.push({
+          input: buffer,
+          left: Math.round(layer.x * OUTPUT_SCALE),
+          top: Math.round(layer.y * OUTPUT_SCALE),
+          blend: 'over'
+        });
+      }
+    }
+
+    // Emission (above mouths/blinks)
+    if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
+      charOps.push({
+        input: foregroundEmissionBuffer,
+        left: foregroundEmissionPos.x,
+        top: foregroundEmissionPos.y,
+        blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light'
+      });
+    }
+
+    // Lights (above emission)
+    if (lightsMode === 'on' && lightsOnBuffer) {
+      charOps.push({
+        input: lightsOnBuffer,
+        left: lightsOnPos.x,
+        top: lightsOnPos.y,
+        blend: 'over'
+      });
+    }
+
+    // Composite Level 2 from raw RGBA expression base
+    const charBuffer = await sharp(exprBaseRaw.data, {
+      raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
+    })
+      .composite(charOps)
+      .jpeg({ quality: JPEG_QUALITY })
+      .toBuffer();
+
+    // Store in L2 cache
+    const frameCacheKeys = Object.keys(frameCache);
+    if (frameCacheKeys.length >= FRAME_CACHE_MAX) {
+      for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
+    }
+    frameCache[charCacheKey] = charBuffer;
+  });
+
+  Promise.all(tasks).then(() => {
+    // Atomically swap committed base now that L2 entries are pre-warmed
+    committedExprBaseKey = exprBaseCacheKey;
+    committedExprBaseBuffer = exprBaseRaw;
+    console.log(`[Compositor] L2 pre-warm complete for ${exprBaseCacheKey} (${phonemes.length} entries)`);
+  }).catch(err => {
+    console.warn('[Compositor] L2 pre-warm error:', err.message);
+  });
 }
 
 async function compositeFrame(state) {
@@ -833,28 +961,15 @@ async function compositeFrame(state) {
     virginPhoneme = 'A',
     chadBlinking = false,
     virginBlinking = false,
-    caption = null
+    caption = null,
+    tvFrameIndex = -1
   } = state;
 
-  // Build a full output key that includes ALL visual state
   const hasTv = currentTVFrame ? 1 : 0;
   const captionKey = caption ? caption.slice(0, 40) : '';
   const exprSnapshot = JSON.parse(JSON.stringify(expressionOffsets));
-  const exprOutputKey = `ce${exprSnapshot.chad.eyes.x},${exprSnapshot.chad.eyes.y}`
-    + `cbl${exprSnapshot.chad.eyebrows.left.y}r${exprSnapshot.chad.eyebrows.left.rotation}`
-    + `cbr${exprSnapshot.chad.eyebrows.right.y}r${exprSnapshot.chad.eyebrows.right.rotation}`
-    + `ve${exprSnapshot.virgin.eyes.x},${exprSnapshot.virgin.eyes.y}`
-    + `vbl${exprSnapshot.virgin.eyebrows.left.y}r${exprSnapshot.virgin.eyebrows.left.rotation}`
-    + `vbr${exprSnapshot.virgin.eyebrows.right.y}r${exprSnapshot.virgin.eyebrows.right.rotation}`;
-  let outputKey = `${staticBaseVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${hasTv}-c${captionKey}-${exprOutputKey}`;
 
-  // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
-  if (outputKey === lastOutputKey && lastOutputBuffer && !hasTv) {
-    return lastOutputBuffer;
-  }
-
-  // Character frame cache includes: static base + expression layers + mouths + blinks + emission + lights
-  // This means idle frames (no TV, no caption) need 0 overlay pipelines
+  // Expression key for L1 cache lookup (based on current expression offsets)
   const exprKey = `ce${exprSnapshot.chad.eyes.x},${exprSnapshot.chad.eyes.y}`
     + `cbl${exprSnapshot.chad.eyebrows.left.y}r${exprSnapshot.chad.eyebrows.left.rotation}`
     + `cbr${exprSnapshot.chad.eyebrows.right.y}r${exprSnapshot.chad.eyebrows.right.rotation}`
@@ -869,10 +984,12 @@ async function compositeFrame(state) {
   //   On phoneme changes, the expensive expression base is served from Level 1 cache.
 
   const exprBaseCacheKey = `${staticBaseVersion}-${exprKey}`;
-  let exprBaseBuffer = exprBaseCache[exprBaseCacheKey];
-  let usedFallbackBase = false;
+  const l1Hit = exprBaseCache[exprBaseCacheKey]; // { data, info } raw RGBA or undefined
+  let exprBaseRaw;
+  let effectiveExprBaseKey;
 
-  if (!exprBaseBuffer) {
+  if (!l1Hit) {
+    // L1 miss — fire background build (+ pre-warm → committed swap)
     if (!exprBaseInFlight.has(exprBaseCacheKey)) {
       const snapshot = JSON.parse(JSON.stringify(exprSnapshot));
       const task = buildExpressionBase(exprBaseCacheKey, snapshot)
@@ -884,21 +1001,50 @@ async function compositeFrame(state) {
         });
       exprBaseInFlight.set(exprBaseCacheKey, task);
     }
+  }
 
-    if (lastExprBaseBuffer) {
-      exprBaseBuffer = lastExprBaseBuffer;
-      usedFallbackBase = true;
-    } else {
-      exprBaseBuffer = await exprBaseInFlight.get(exprBaseCacheKey);
+  // Decide which base to render with.
+  // When speaking: ALWAYS use the committed base so frames don't alternate between
+  // old-committed and new-but-not-yet-committed expression states (twitching).
+  // When idle: use L1 hit directly for responsive expressions, and update committed.
+  if (currentSpeakingCharacter && committedExprBaseBuffer) {
+    // During speech — locked to committed base (smooth progression, no twitching)
+    exprBaseRaw = committedExprBaseBuffer;
+    effectiveExprBaseKey = committedExprBaseKey;
+  } else if (l1Hit) {
+    // Idle with L1 hit — use directly and update committed
+    exprBaseRaw = l1Hit;
+    effectiveExprBaseKey = exprBaseCacheKey;
+    committedExprBaseKey = exprBaseCacheKey;
+    committedExprBaseBuffer = l1Hit;
+  } else if (committedExprBaseBuffer) {
+    exprBaseRaw = committedExprBaseBuffer;
+    effectiveExprBaseKey = committedExprBaseKey;
+  } else if (lastExprBaseBuffer) {
+    exprBaseRaw = lastExprBaseBuffer;
+    effectiveExprBaseKey = lastExprBaseKey || exprBaseCacheKey;
+  } else {
+    // First frame ever — must await
+    const result = await exprBaseInFlight.get(exprBaseCacheKey);
+    if (result) {
+      exprBaseRaw = result;
+      effectiveExprBaseKey = exprBaseCacheKey;
     }
   }
-  if (usedFallbackBase && lastExprBaseKey) {
-    outputKey = `${outputKey}-fb${lastExprBaseKey}`;
+
+  // If all fallbacks failed (shouldn't happen), bail with null
+  if (!exprBaseRaw) return lastOutputBuffer || null;
+
+  // Build output key using the EFFECTIVE base key (not requested expression offsets)
+  // so the fast path correctly reflects what was actually rendered
+  let outputKey = `${effectiveExprBaseKey}-lv${lightingVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvFrameIndex}-c${captionKey}`;
+
+  // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
+  if (outputKey === lastOutputKey && lastOutputBuffer) {
+    return lastOutputBuffer;
   }
 
-  // Level 2: character frame (expression base + mouth + blink + emission + lights)
-  const effectiveExprBaseKey = usedFallbackBase && lastExprBaseKey ? lastExprBaseKey : exprBaseCacheKey;
-  const charCacheKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  const charCacheKey = `${effectiveExprBaseKey}-lv${lightingVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
   let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
@@ -960,8 +1106,10 @@ async function compositeFrame(state) {
       });
     }
 
-    // Composite Level 2: expression base + mouth/blink/emission/lights → JPEG
-    charBuffer = await sharp(exprBaseBuffer)
+    // Composite Level 2: expression base (raw RGBA) + mouth/blink/emission/lights → JPEG
+    charBuffer = await sharp(exprBaseRaw.data, {
+      raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
+    })
       .composite(charOps)
       .jpeg({ quality: JPEG_QUALITY })
       .toBuffer();
@@ -1014,14 +1162,12 @@ async function compositeFrame(state) {
         .composite(overlayOps)
         .jpeg({ quality: JPEG_QUALITY })
         .toBuffer();
-      // Cache unless TV is active (TV frames change constantly)
-      if (!hasTv) {
-        const outKeys = Object.keys(outputCache);
-        if (outKeys.length >= OUTPUT_CACHE_MAX) {
-          for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
-        }
-        outputCache[outputKey] = result;
+      // Cache output (tvFrameIndex in key ensures TV frames are distinct)
+      const outKeys = Object.keys(outputCache);
+      if (outKeys.length >= OUTPUT_CACHE_MAX) {
+        for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
       }
+      outputCache[outputKey] = result;
     }
   } else {
     // No TV, no caption — cached JPEG includes everything (0 pipelines)
@@ -1043,6 +1189,10 @@ function clearCache() {
   outputCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
+  committedExprBaseKey = null;
+  committedExprBaseBuffer = null;
+  lastExprBaseKey = null;
+  lastExprBaseBuffer = null;
 }
 
 function getManifestDimensions() {
@@ -1085,6 +1235,10 @@ async function setEmissionOpacity(value) {
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
+  committedExprBaseKey = null;
+  committedExprBaseBuffer = null;
+  lastExprBaseKey = null;
+  lastExprBaseBuffer = null;
   emissionOpacity = nextOpacity;
   if (foregroundEmissionLayerId && updatedScaled[foregroundEmissionLayerId]) {
     foregroundEmissionBuffer = updatedScaled[foregroundEmissionLayerId];
@@ -1117,6 +1271,10 @@ async function setEmissionLayerBlend(name, blend) {
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
+  committedExprBaseKey = null;
+  committedExprBaseBuffer = null;
+  lastExprBaseKey = null;
+  lastExprBaseBuffer = null;
   return emissionLayerBlend;
 }
 
@@ -1208,7 +1366,10 @@ async function setLightingHue(hue) {
   foregroundEmissionBuffer = updatedForegroundBuffer;
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
-  frameCache = {};
+  lightingVersion++;
+  // No cache nukes: stale L1 entries miss via new staticBaseVersion,
+  // stale L2 entries miss via new lightingVersion in charCacheKey.
+  // Only reset output fast-path so next frame re-evaluates.
   lastOutputKey = null;
   lastOutputBuffer = null;
   lightingHue = nextHue;
@@ -1462,5 +1623,6 @@ module.exports = {
   getExpressionLimits,
   saveExpressionLimits,
   setEyebrowRotationLimits,
-  setEyebrowAsymmetry
+  setEyebrowAsymmetry,
+  setSpeakingCharacter
 };
