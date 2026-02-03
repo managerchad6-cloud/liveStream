@@ -4,6 +4,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const { FFMPEG_PATH } = require('./platform');
 const { analyzeLipSync } = require('./lipsync');

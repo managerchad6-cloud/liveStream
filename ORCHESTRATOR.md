@@ -1223,10 +1223,22 @@ Local issue:
 - Windows `spawn EPERM` when starting FFmpeg in `ContinuousStreamManager.startFFmpeg` (server exits before binding).
 - Added `FFMPEG_PATH` override support in `animation-server/platform.js` (commit `23a859d`).
 
+Update (2026-02-03):
+- `FFMPEG_PATH` set permanently on Windows to WinGet FFmpeg path (path contained spaces).
+- Verified `& $env:FFMPEG_PATH -version` succeeds in a new PowerShell session.
+- Port 3003 conflict resolved; animation server starts with full permissions.
+- Live stream FFmpeg spawns cleanly (no EPERM).
+- `/render` succeeds with a valid MP3 (HTTP 200; no spawn errors).
+- Conclusion: EPERM was due to sandbox; resolved by running server outside Cursor with `FFMPEG_PATH`.
+
+Update (2026-02-03):
+- Phase 2–3 verification failed with `Script generator not initialized` on `/api/orchestrator/expand` and `/regenerate`.
+- `/api/orchestrator/render/:id` returned `Segment has no script` because segments had `script: null`.
+- Root cause: `OPENAI_API_KEY` not loaded in animation server (no `.env` load in `animation-server/server.js`).
+- Fix applied: load root `.env` in `animation-server/server.js` via `dotenv.config({ path: path.join(__dirname, '..', '.env') })`.
+
 Last commit pushed:
 - `23a859d` — Allow `FFMPEG_PATH` override (after `c97f563` for phases 3–7).
 
 Next steps:
-- Verify server boots locally with `FFMPEG_PATH`.
-- Run API sanity checks + `/director` UI.
-- If FFmpeg still blocked, move binary to `C:\ffmpeg\bin\ffmpeg.exe` or adjust AV/permissions.
+- Rerun Phase 2–6 verification flow (expand/regenerate/render/play + `/director` UI) with `OPENAI_API_KEY` loaded.
