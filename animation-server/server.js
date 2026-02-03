@@ -42,6 +42,9 @@ const TVContentService = require('./tv-content');
 const { buildExpressionPlan, augmentExpressionPlan, normalizePlanTiming } = require('./expression-timeline');
 const ExpressionEvaluator = require('./expression-evaluator');
 const OpenAI = require('openai');
+const MediaLibrary = require('./media-library');
+const PipelineStore = require('./orchestrator/pipeline-store');
+const TVLayerManager = require('./orchestrator/tv-layer-manager');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
@@ -408,6 +411,9 @@ const blinkControllers = {
 let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
 let frameCount = 0;
 let tvService = null;  // TV content service (initialized after preloadLayers)
+let mediaLibrary = null;
+let pipelineStore = null;
+let tvLayerManager = null;
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
@@ -1087,6 +1093,14 @@ const tvUpload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }  // 100MB limit for videos
 });
 
+// Configure multer for media library uploads
+const MEDIA_ORIGINALS_DIR = path.join(ROOT_DIR, 'media-library', 'originals');
+fs.mkdirSync(MEDIA_ORIGINALS_DIR, { recursive: true });
+const mediaUpload = multer({
+  dest: MEDIA_ORIGINALS_DIR,
+  limits: { fileSize: 200 * 1024 * 1024 }  // 200MB limit
+});
+
 // Add item to TV playlist
 app.post('/tv/playlist/add', async (req, res) => {
   if (!tvService) {
@@ -1288,6 +1302,232 @@ app.get('/tv/audio/:filename', (req, res) => {
 
 // ============== End TV Content API ==============
 
+// ============== Media Library API ==============
+
+app.get('/api/media', (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  const { type, limit, offset } = req.query;
+  const result = mediaLibrary.list({ type, limit, offset });
+  res.json(result);
+});
+
+app.post('/api/media/upload', mediaUpload.single('file'), async (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  if (!req.file) return res.status(400).json({ error: 'No file provided' });
+
+  try {
+    const item = await mediaLibrary.addFile(
+      req.file.path,
+      req.file.originalname,
+      req.file.mimetype
+    );
+    // Clean up multer temp file (addFile copies it)
+    try { fs.unlinkSync(req.file.path); } catch (e) {}
+    res.json(item);
+  } catch (err) {
+    try { fs.unlinkSync(req.file.path); } catch (e) {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/url', async (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  const { url, filename } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'Missing url' });
+
+  try {
+    const item = await mediaLibrary.addFromUrl(url, filename);
+    res.json(item);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/media/:id', (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  const item = mediaLibrary.get(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  res.json(item);
+});
+
+app.delete('/api/media/:id', async (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  try {
+    const removed = await mediaLibrary.remove(req.params.id);
+    if (!removed) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/media/:id/original', (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  const filePath = mediaLibrary.getOriginalPath(req.params.id);
+  if (!filePath) return res.status(404).json({ error: 'Not found' });
+  res.sendFile(filePath);
+});
+
+app.get('/api/media/:id/thumbnail', (req, res) => {
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+  const filePath = mediaLibrary.getThumbnailPath(req.params.id);
+  if (!filePath) return res.status(404).json({ error: 'Not found' });
+  res.sendFile(filePath);
+});
+
+// ============== End Media Library API ==============
+
+// ============== Pipeline API ==============
+
+app.get('/api/pipeline', (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  res.json({
+    segments: pipelineStore.getAllSegments(),
+    bufferHealth: pipelineStore.getBufferHealth()
+  });
+});
+
+app.get('/api/pipeline/:id', (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  const segment = pipelineStore.getSegment(req.params.id);
+  if (!segment) return res.status(404).json({ error: 'Segment not found' });
+  res.json(segment);
+});
+
+app.post('/api/pipeline', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  try {
+    const segment = await pipelineStore.createSegment(req.body || {});
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/pipeline/:id', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  try {
+    const segment = await pipelineStore.updateSegment(req.params.id, req.body || {});
+    res.json(segment);
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/pipeline/:id/status', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  const { status } = req.body || {};
+  if (!status) return res.status(400).json({ error: 'Missing status' });
+
+  try {
+    const segment = await pipelineStore.transitionStatus(req.params.id, status);
+    res.json(segment);
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    if (err.message.includes('Invalid transition')) return res.status(400).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/pipeline/reorder', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  const { order } = req.body || {};
+  if (!Array.isArray(order)) return res.status(400).json({ error: 'Missing order array' });
+
+  try {
+    const segments = await pipelineStore.reorder(order);
+    res.json({ segments });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/pipeline/:id', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  try {
+    await pipelineStore.removeSegment(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    if (err.message.includes('Can only remove')) return res.status(400).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============== End Pipeline API ==============
+
+// ============== TV Layer API ==============
+
+app.get('/api/tv-layer', (req, res) => {
+  if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
+  res.json(tvLayerManager.getState());
+});
+
+app.post('/api/tv-layer/default', async (req, res) => {
+  if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
+  const { mediaId } = req.body || {};
+  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId' });
+
+  try {
+    await tvLayerManager.setDefault(mediaId);
+    res.json(tvLayerManager.getState());
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/tv-layer/override', async (req, res) => {
+  if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
+  const { mediaId } = req.body || {};
+  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId' });
+
+  try {
+    await tvLayerManager.pushOverride(mediaId);
+    res.json(tvLayerManager.getState());
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/tv-layer/manual', async (req, res) => {
+  if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
+  const { mediaId } = req.body || {};
+  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId' });
+
+  try {
+    await tvLayerManager.pushManualOverride(mediaId);
+    res.json(tvLayerManager.getState());
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/tv-layer/release', async (req, res) => {
+  if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
+  try {
+    await tvLayerManager.releaseOverride();
+    res.json(tvLayerManager.getState());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/tv-layer/clear-manual', async (req, res) => {
+  if (!tvLayerManager) return res.status(503).json({ error: 'TV layer manager not initialized' });
+  try {
+    await tvLayerManager.clearManualOverride();
+    res.json(tvLayerManager.getState());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============== End TV Layer API ==============
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -1319,6 +1559,20 @@ async function start() {
     console.log(`[TV] Service initialized with viewport ${viewport.width}x${viewport.height}`);
   } else {
     console.warn('[TV] Service disabled - no viewport defined');
+  }
+
+  // Initialize media library
+  mediaLibrary = new MediaLibrary(ROOT_DIR);
+  await mediaLibrary.init();
+
+  // Initialize pipeline store
+  pipelineStore = new PipelineStore(path.join(ROOT_DIR, 'data'));
+  await pipelineStore.init();
+
+  // Initialize TV layer manager
+  if (tvService) {
+    tvLayerManager = new TVLayerManager(tvService, mediaLibrary);
+    console.log('[TVLayer] Manager initialized');
   }
 
   // Start live stream

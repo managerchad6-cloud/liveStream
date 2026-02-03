@@ -40,13 +40,14 @@ class TVContentService {
    * @param {string} [options.audioPath] - Path to extracted audio file (for videos)
    * @returns {Promise<Object>} - Added item
    */
-  async addItem({ type, source, duration, audioPath }) {
+  async addItem({ type, source, duration, audioPath, mediaId }) {
     const id = uuidv4();
     const item = {
       id,
       type,
       source,
       audioPath: audioPath || null,
+      mediaId: mediaId || null,
       duration: duration || (type === 'image' ? 10 : null),
       frames: null,
       frameCount: 0,
@@ -63,7 +64,7 @@ class TVContentService {
     });
 
     console.log(`[TVContent] Added ${type} item: ${id} (source: ${source}${audioPath ? ', with audio' : ''})`);
-    return { id, type, source, duration: item.duration, audioPath: item.audioPath };
+    return { id, type, source, duration: item.duration, audioPath: item.audioPath, mediaId: item.mediaId };
   }
 
   /**
@@ -178,6 +179,7 @@ class TVContentService {
       type: item.type,
       source: item.source,
       audioPath: item.audioPath,
+      mediaId: item.mediaId || null,
       duration: item.duration,
       frameCount: item.frameCount,
       loaded: item.loaded,
@@ -359,6 +361,7 @@ class TVContentService {
         type: currentItem.type,
         source: currentItem.source,
         audioPath: currentItem.audioPath,
+        mediaId: currentItem.mediaId || null,
         duration: currentItem.duration,
         frameCount: currentItem.frameCount,
         loaded: currentItem.loaded
