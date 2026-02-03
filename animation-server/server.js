@@ -422,6 +422,9 @@ let captionUntil = 0;
 let captionTimeout = null;
 let isAudioActive = false;
 const renderQueue = [];
+let lastFrameBuffer = null;
+let skipCompositingFrames = 0;
+const FRAME_BUDGET_MS = 33;
 
 function setCaption(text, durationSeconds) {
   if (!text) return;
@@ -454,6 +457,7 @@ function handleAudioComplete() {
   isAudioActive = false;
   lipSyncAccumulatorMs = 0;
   lastLipSyncResult = { phoneme: 'A', character: null, done: true };
+  skipCompositingFrames = 0;
   expressionEvaluator.clear();
   resetExpressionOffsets();
   lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
@@ -823,8 +827,14 @@ async function renderFrame(frame, audioProgress = null) {
     console.log(`[Frame ${frame}] [${mode}] ${stateStr} | chad:${chadPhoneme}${chadBlinking?'(blink)':''} virgin:${virginPhoneme}${virginBlinking?'(blink)':''} | TV:${tvState}`);
   }
 
+  if (skipCompositingFrames > 0 && lastFrameBuffer) {
+    skipCompositingFrames -= 1;
+    return lastFrameBuffer;
+  }
+
   try {
     // Composite frame with both characters' state
+    const start = Date.now();
     const buffer = await compositeFrame({
       chadPhoneme,
       virginPhoneme,
@@ -832,6 +842,11 @@ async function renderFrame(frame, audioProgress = null) {
       virginBlinking,
       caption
     });
+    const elapsed = Date.now() - start;
+    if (elapsed > FRAME_BUDGET_MS * 1.2) {
+      skipCompositingFrames = Math.max(skipCompositingFrames, 1);
+    }
+    lastFrameBuffer = buffer;
     return buffer;
   } catch (err) {
     console.error('[Render] Frame error:', err.message);
