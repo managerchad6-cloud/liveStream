@@ -47,6 +47,24 @@ function findRhubarb() {
 
 // Find FFmpeg executable
 function findFFmpeg() {
+  if (process.env.FFMPEG_PATH) {
+    const envPath = process.env.FFMPEG_PATH;
+    try {
+      if (fs.existsSync(envPath)) {
+        return envPath;
+      }
+    } catch (e) {}
+  }
+
+  // Try to find in PATH first
+  try {
+    const cmd = isWindows ? 'where ffmpeg' : 'which ffmpeg';
+    const result = execSync(cmd, { encoding: 'utf8' }).trim().split('\n')[0];
+    if (result && fs.existsSync(result)) {
+      return result;
+    }
+  } catch (e) {}
+
   const possiblePaths = isWindows
     ? [
         path.join(process.env.LOCALAPPDATA || '', 'ffmpeg', 'bin', 'ffmpeg.exe'),
