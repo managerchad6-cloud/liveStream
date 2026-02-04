@@ -38,6 +38,7 @@ class Orchestrator {
       segmentRenderer: this.segmentRenderer,
       eventEmitter
     });
+    this.chatIntake.queueSegmentWithBridge = (segmentId) => this.queueSegmentWithBridge(segmentId);
     this.chatIntakeEnabled = config?.chatIntake?.enabled !== false;
 
     if (config?.chatIntake?.ratePerMinute) {
@@ -75,14 +76,17 @@ class Orchestrator {
       let precedingExitContext = null;
       let precedingId = null;
       let lastSpeaker = null;
+      let precedingType = null;
 
       // Walk backwards to find the most recent segment with exitContext
       for (let i = segIndex - 1; i >= 0; i--) {
-        if (allSegments[i].exitContext) {
-          precedingExitContext = allSegments[i].exitContext;
-          precedingId = allSegments[i].id;
+        const prev = allSegments[i];
+        if (prev && prev.exitContext) {
+          precedingExitContext = prev.exitContext;
+          precedingId = prev.id;
+          precedingType = prev.type || null;
           // Get last speaker from the preceding segment's script
-          const script = allSegments[i].script;
+          const script = prev.script;
           if (Array.isArray(script) && script.length > 0) {
             lastSpeaker = script[script.length - 1].speaker;
           }
@@ -90,7 +94,8 @@ class Orchestrator {
         }
       }
 
-      if (precedingExitContext && segment.seed) {
+      const typeChanged = precedingType && precedingType !== segment.type;
+      if (typeChanged && precedingExitContext && segment.seed) {
         try {
           const bridge = await this.bridgeGenerator.generateBridge(
             precedingExitContext,

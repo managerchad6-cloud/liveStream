@@ -946,6 +946,9 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   const messageText = typeof req.body.message === 'string' ? req.body.message.trim() : '';
   const mode = req.body.mode || 'direct';
   const segmentId = req.body.segmentId || null;  // Track which pipeline segment this audio belongs to
+  const segmentType = req.body.segmentType || null;
+  const priorityRaw = String(req.body.priority || '').toLowerCase();
+  const isPriority = priorityRaw === 'high' || priorityRaw === 'true' || priorityRaw === '1';
   const shouldQueue = mode === 'router';
 
   if (!req.file) {
@@ -984,12 +987,14 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         duration: audioDuration,
         samples,
         sampleRate,
-        segmentId  // Track which pipeline segment this belongs to
+        segmentId,  // Track which pipeline segment this belongs to
+        segmentType,
+        priority: isPriority
       };
 
       const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
       if (queued) {
-        renderQueue.push(queueItem);
+        enqueueRenderItem(queueItem);
         response.queued = true;
         response.queuePosition = renderQueue.length;
       } else {
@@ -1024,12 +1029,14 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         audioMp3Path,
         duration: audioDuration,
         lipSyncCues,
-        segmentId  // Track which pipeline segment this belongs to
+        segmentId,  // Track which pipeline segment this belongs to
+        segmentType,
+        priority: isPriority
       };
 
       const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
       if (queued) {
-        renderQueue.push(queueItem);
+        enqueueRenderItem(queueItem);
         response.queued = true;
         response.queuePosition = renderQueue.length;
       } else {
@@ -1676,23 +1683,13 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
   }
 
   try {
-    const transitions = [
-      "Alright, let's check the chat.",
-      "Let's see what the chat says.",
-      'Quick chat check.',
-      'Okay, chat time.'
-    ];
-    const transitionText = transitions[Math.floor(Math.random() * transitions.length)];
-    const transitionLine = { speaker: speaker.toLowerCase(), text: transitionText };
-
     // Create segment with a single-line script (no LLM expansion needed)
-    const script = [transitionLine, { speaker: speaker.toLowerCase(), text }];
-    const totalText = script.map(line => line.text).join(' ');
+    const script = [{ speaker: speaker.toLowerCase(), text }];
     const segment = await pipelineStore.createSegment({
       type: 'chat-response',
       seed: seed || text.substring(0, 50),
       script,
-      estimatedDuration: Math.max(1, Math.ceil(totalText.split(/\s+/).length / 150 * 60))
+      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
     });
 
     try {
@@ -1723,7 +1720,10 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
     broadcastPipelineUpdate();
 
     // Immediately queue for rendering (TTS + /render pipeline)
-    segmentRenderer.queueRender(segment.id).catch(err => {
+    const queueFn = orchestrator?.queueSegmentWithBridge
+      ? (id => orchestrator.queueSegmentWithBridge(id))
+      : (id => segmentRenderer.queueRender(id));
+    Promise.resolve(queueFn(segment.id)).catch(err => {
       console.error(`[Orchestrator] Render failed for ${segment.id}: ${err.message}`);
     });
 
@@ -1807,7 +1807,11 @@ app.post('/api/orchestrator/render/:id', async (req, res) => {
   // Accept immediately, render in background
   res.json({ id: segmentId, status: 'rendering', message: 'Render queued' });
 
-  segmentRenderer.queueRender(segmentId).then(() => {
+  const queueFn = orchestrator?.queueSegmentWithBridge
+    ? (id => orchestrator.queueSegmentWithBridge(id))
+    : (id => segmentRenderer.queueRender(id));
+
+  Promise.resolve(queueFn(segmentId)).then(() => {
     broadcastPipelineUpdate();
   }).catch(err => {
     console.error(`[Render] Background render failed for ${segmentId}: ${err.message}`);
@@ -2058,3 +2062,16 @@ async function start() {
 }
 
 start();
+function enqueueRenderItem(queueItem) {
+  if (!queueItem || !queueItem.priority) {
+    renderQueue.push(queueItem);
+    return;
+  }
+
+  // Priority items go ahead of non-priority, preserving FIFO within priority
+  let insertIndex = 0;
+  while (insertIndex < renderQueue.length && renderQueue[insertIndex].priority) {
+    insertIndex += 1;
+  }
+  renderQueue.splice(insertIndex, 0, queueItem);
+}

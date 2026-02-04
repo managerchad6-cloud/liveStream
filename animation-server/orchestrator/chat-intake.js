@@ -9,12 +9,7 @@ class ChatIntakeAgent {
 
     this.inbox = [];
     this.autoApprove = false;
-    this.chatTransitions = [
-      'Alright, let\'s check the chat.',
-      'Let\'s see what the chat says.',
-      'Quick chat check.',
-      'Okay, chat time.'
-    ];
+    this.queueSegmentWithBridge = null;
   }
 
   start() {}
@@ -59,17 +54,12 @@ class ChatIntakeAgent {
 
     if (card.response) {
       // Pre-written response from router — create single-line segment directly
-      const transition = this._pickChatTransition(card.response.speaker);
-      const script = [
-        transition,
-        { speaker: card.response.speaker, text: card.response.text }
-      ].filter(Boolean);
-      const totalText = script.map(line => line.text).join(' ');
+      const script = [{ speaker: card.response.speaker, text: card.response.text }];
       segment = await this.pipelineStore.createSegment({
         type: 'chat-response',
         seed: card.text.substring(0, 50),
         script,
-        estimatedDuration: Math.max(1, Math.ceil(totalText.split(/\s+/).length / 150 * 60))
+        estimatedDuration: Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60))
       });
     } else if (this.scriptGenerator) {
       // No pre-written response — expand via LLM
@@ -115,20 +105,15 @@ class ChatIntakeAgent {
       });
     }
 
-    if (this.segmentRenderer) {
-      this.segmentRenderer.queueRender(segment.id).catch(err => {
+    const queueFn = this.queueSegmentWithBridge
+      ? this.queueSegmentWithBridge
+      : (id => this.segmentRenderer?.queueRender(id));
+
+    if (queueFn) {
+      Promise.resolve(queueFn(segment.id)).catch(err => {
         console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
       });
     }
-  }
-
-  _pickChatTransition(speaker) {
-    const text = this.chatTransitions[Math.floor(Math.random() * this.chatTransitions.length)];
-    if (!text) return null;
-    return {
-      speaker: String(speaker || 'chad').toLowerCase(),
-      text
-    };
   }
 
   getInbox() {

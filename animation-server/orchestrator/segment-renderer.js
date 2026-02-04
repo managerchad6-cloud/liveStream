@@ -187,6 +187,10 @@ class SegmentRenderer {
    * Phase 2: Push audio items to animation server /render endpoint
    */
   async _pushAudioItems(segmentId, audioItems, renderDurations) {
+    const segment = this.pipelineStore.getSegment(segmentId);
+    const segmentType = segment?.type || 'auto-convo';
+    const isPriority = segment && (segment.type === 'chat-response' || segment.metadata?.priority === 'high');
+
     // Transition to 'ready' BEFORE pushing audio
     await this.pipelineStore.transitionStatus(segmentId, 'ready');
     if (this.eventEmitter) {
@@ -208,6 +212,8 @@ class SegmentRenderer {
       form.append('message', item.text);
       form.append('mode', 'router');
       form.append('segmentId', segmentId);
+      form.append('segmentType', segmentType);
+      form.append('priority', isPriority ? 'high' : 'normal');
 
       const renderResult = await axios.post(
         `${this.animationServerUrl}/render`,
