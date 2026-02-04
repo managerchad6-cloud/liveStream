@@ -2062,16 +2062,50 @@ async function start() {
 }
 
 start();
+function getPipelineOrderIndex(segmentId) {
+  if (!pipelineStore || !segmentId) return Number.POSITIVE_INFINITY;
+  const ready = pipelineStore.getReadyQueue();
+  const index = ready.findIndex(s => s.id === segmentId);
+  return index === -1 ? Number.POSITIVE_INFINITY : index;
+}
+
 function enqueueRenderItem(queueItem) {
-  if (!queueItem || !queueItem.priority) {
-    renderQueue.push(queueItem);
+  if (!queueItem) return;
+
+  const segmentId = queueItem.segmentId || null;
+  const orderIndex = getPipelineOrderIndex(segmentId);
+
+  // Keep items from the same segment contiguous
+  if (segmentId) {
+    for (let i = renderQueue.length - 1; i >= 0; i--) {
+      if (renderQueue[i]?.segmentId === segmentId) {
+        renderQueue.splice(i + 1, 0, queueItem);
+        return;
+      }
+    }
+  }
+
+  // Insert by pipeline order (older ready segments first)
+  if (Number.isFinite(orderIndex)) {
+    let insertIndex = 0;
+    while (insertIndex < renderQueue.length) {
+      const nextOrder = getPipelineOrderIndex(renderQueue[insertIndex]?.segmentId || null);
+      if (nextOrder > orderIndex) break;
+      insertIndex += 1;
+    }
+    renderQueue.splice(insertIndex, 0, queueItem);
     return;
   }
 
-  // Priority items go ahead of non-priority, preserving FIFO within priority
-  let insertIndex = 0;
-  while (insertIndex < renderQueue.length && renderQueue[insertIndex].priority) {
-    insertIndex += 1;
+  // Unknown order: append, but keep priority items ahead of unknown non-priority
+  if (queueItem.priority) {
+    let insertIndex = 0;
+    while (insertIndex < renderQueue.length && renderQueue[insertIndex]?.priority) {
+      insertIndex += 1;
+    }
+    renderQueue.splice(insertIndex, 0, queueItem);
+    return;
   }
-  renderQueue.splice(insertIndex, 0, queueItem);
+
+  renderQueue.push(queueItem);
 }
