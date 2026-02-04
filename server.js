@@ -12,7 +12,7 @@ const app = express();
 const port = process.env.PORT || 3002;
 const routerModel = process.env.ROUTER_MODEL || process.env.MODEL || 'gpt-4o-mini';
 const autoModel = process.env.AUTO_MODEL || process.env.MODEL || 'gpt-4o-mini';
-const autoTtsModel = process.env.AUTO_TTS_MODEL || 'eleven_turbo_v2';
+const autoTtsModel = process.env.AUTO_TTS_MODEL || 'eleven_v3';
 const routerMaxPerSecond = parseInt(process.env.ROUTER_MAX_PER_SECOND || '3', 10);
 const routerMaxPerMinute = parseInt(process.env.ROUTER_MAX_PER_MINUTE || '30', 10);
 const routerTimestamps = [];
@@ -72,7 +72,7 @@ app.get('/api/voices', (req, res) => {
   res.json(voiceList);
 });
 
-// API: Auto conversation (pre-generated)
+// API: Auto conversation (pre-generated) - now uses orchestrator pipeline
 app.post('/api/auto', async (req, res) => {
   try {
     const {
@@ -94,17 +94,51 @@ app.post('/api/auto', async (req, res) => {
     const script = await generateAutoScript(seed, turnCount, model, temperature);
     autoConversation.history.push(`System: Auto seed: ${seed}`);
 
-    res.json({ ok: true, turns: script.length, script });
+    // Format script for pipeline (add cues array to each line)
+    const pipelineScript = script.map(line => ({
+      speaker: String(line.speaker || '').toLowerCase(),
+      text: String(line.text || '').trim(),
+      cues: []
+    }));
 
-    const currentAutoId = autoConversation.id;
-    console.log('[Auto] Playback starting ' + script.length + ' turns, animationServerUrl=' + animationServerUrl);
-    setImmediate(() => {
-      playAutoScript(script, currentAutoId).catch(err => {
-        console.error('[Auto] Playback failed:', err.message);
-      });
+    // Estimate duration (150 words per minute)
+    const totalWords = pipelineScript.reduce((sum, line) => {
+      return sum + (line.text.split(/\s+/).length || 0);
+    }, 0);
+    const estimatedDuration = Math.max(1, Math.ceil(totalWords / 150 * 60));
+
+    // Create segment in pipeline
+    console.log('[Auto] Creating pipeline segment for ' + script.length + ' turns');
+    const segmentResponse = await axios.post(`${animationServerUrl}/api/pipeline`, {
+      type: 'auto-convo',
+      seed: seed.slice(0, 100),
+      mediaRefs: [],
+      script: pipelineScript,
+      estimatedDuration
+    });
+
+    const segmentId = segmentResponse.data.id;
+    console.log('[Auto] Created segment ' + segmentId + ', queuing for render');
+
+    // Return immediately - rendering happens in background
+    res.json({
+      ok: true,
+      turns: script.length,
+      script,
+      segmentId,
+      message: 'Segment queued to pipeline'
+    });
+
+    // Fire-and-forget: queue segment for rendering (TTS + animation)
+    // Progress is tracked via WebSocket broadcasts to the director console
+    axios.post(`${animationServerUrl}/api/orchestrator/render/${segmentId}`, {}).catch(err => {
+      console.error('[Auto] Render failed for segment ' + segmentId + ':', err.message);
     });
   } catch (error) {
     console.error('[Auto] Error:', error.message);
+    if (error.response) {
+      console.error('[Auto] Response:', error.response.status, error.response.data);
+    }
     res.status(500).json({ error: 'Failed to generate auto conversation' });
   }
 });
@@ -137,7 +171,7 @@ app.get('/api/auto/diagnostic', async (req, res) => {
   });
 });
 
-// API: Chat endpoint - returns audio
+// API: Chat endpoint - routes message, generates response, queues to pipeline
 app.post('/api/chat', async (req, res) => {
   try {
     const {
@@ -162,6 +196,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
+    // Router mode: LLM picks which character responds
     const normalizedMode = mode === 'router' ? 'router' : 'direct';
     const routingDecision = normalizedMode === 'router'
       ? await routeMessageToVoice(message)
@@ -181,10 +216,10 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
 
+    // Generate character response via OpenAI
     const memory = memoryStore[selectedVoice] || '';
     const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
 
-    // Call OpenAI
     const completion = await openai.chat.completions.create({
       model: process.env.MODEL || 'gpt-4o-mini',
       messages: [
@@ -199,36 +234,24 @@ app.post('/api/chat', async (req, res) => {
     console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
     console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
 
-    // Call ElevenLabs
-    const elevenLabsResponse = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
-      {
-        text: replyText,
-        model_id: model,
-        voice_settings: voiceConfig.voiceSettings
-      },
-      {
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': process.env.ELEVENLABS_API_KEY
-        },
-        responseType: 'arraybuffer'
+    // Send to director inbox with pre-written response attached
+    // Director manually queues to pipeline via UI
+    await axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, {
+      username: 'chat',
+      text: message,
+      response: {
+        speaker: selectedVoice,
+        text: replyText
       }
-    );
+    });
 
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('X-Selected-Voice', selectedVoice);
-    res.send(elevenLabsResponse.data);
-
+    // Update conversation history and memory
     appendConversationTurn(message, replyText, selectedVoice);
     enqueueMemoryUpdate(selectedVoice, message, replyText);
+
+    res.json({ queued: true, message: 'Sent to director inbox', voice: selectedVoice });
   } catch (error) {
     console.error('Error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
-    if (error.response) {
-      const errorText = Buffer.from(error.response.data).toString();
-      return res.status(500).json({ error: `ElevenLabs API error: ${errorText}` });
-    }
     res.status(500).json({ error: 'Failed to generate response' });
   }
 });

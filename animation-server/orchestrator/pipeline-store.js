@@ -2,12 +2,12 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// Simplified: forming → ready (pipeline queue) → aired (archive)
+// The rightmost 'ready' segment is currently on-air
 const VALID_TRANSITIONS = {
-  'draft': ['forming', 'deleted'],
-  'forming': ['ready', 'draft'],
-  'ready': ['pre-air', 'draft'],
-  'pre-air': ['on-air', 'ready'],
-  'on-air': ['aired']
+  'forming': ['ready', 'deleted'],
+  'ready': ['aired', 'deleted'],
+  'aired': ['deleted']
 };
 
 class PipelineStore {
@@ -31,6 +31,17 @@ class PipelineStore {
       this.segments = [];
     }
 
+    // Mark stale 'forming' segments from previous sessions (they'll never render)
+    const staleForming = this.segments.filter(s => s.status === 'forming');
+    if (staleForming.length > 0) {
+      for (const seg of staleForming) {
+        seg.renderProgress = -1;
+        seg.metadata = { ...seg.metadata, renderError: 'Server restarted during render', renderFailedAt: Date.now() };
+      }
+      await this._persist();
+      console.log(`[PipelineStore] Marked ${staleForming.length} stale forming segments as failed`);
+    }
+
     console.log(`[PipelineStore] Initialized with ${this.segments.length} segments`);
   }
 
@@ -41,21 +52,17 @@ class PipelineStore {
     await fs.promises.rename(tmpPath, this.filePath);
   }
 
-  async createSegment({ type, seed, mediaRefs, script, estimatedDuration, tvCues, lightingCues } = {}) {
+  async createSegment({ type, seed, script, estimatedDuration } = {}) {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
     const segment = {
       id,
-      status: 'draft',
+      status: 'forming',
       type: type || 'auto-convo',
       seed: seed || null,
-      mediaRefs: mediaRefs || [],
       script: script || null,
       estimatedDuration: estimatedDuration || 0,
-      tvCues: tvCues || [],
-      lightingCues: lightingCues || [],
-      tvDefaultAfter: null,
       renderProgress: 0,
       exitContext: null,
       metadata: {},
@@ -84,9 +91,10 @@ class PipelineStore {
       throw new Error(`Segment not found: ${id}`);
     }
 
-    const allowed = VALID_TRANSITIONS[segment.status];
+    const oldStatus = segment.status;
+    const allowed = VALID_TRANSITIONS[oldStatus];
     if (!allowed || !allowed.includes(newStatus)) {
-      throw new Error(`Invalid transition: ${segment.status} → ${newStatus}`);
+      throw new Error(`Invalid transition: ${oldStatus} → ${newStatus}`);
     }
 
     segment.status = newStatus;
@@ -99,7 +107,7 @@ class PipelineStore {
 
     await this._persist();
 
-    console.log(`[PipelineStore] Segment ${id}: ${segment.status} → ${newStatus}`);
+    console.log(`[PipelineStore] Segment ${id}: ${oldStatus} → ${newStatus}`);
     return segment;
   }
 
@@ -110,9 +118,8 @@ class PipelineStore {
     }
 
     const allowedFields = [
-      'seed', 'mediaRefs', 'script', 'estimatedDuration',
-      'tvCues', 'lightingCues', 'tvDefaultAfter',
-      'renderProgress', 'exitContext', 'metadata'
+      'seed', 'script', 'estimatedDuration',
+      'renderProgress', 'renderDurations', 'exitContext', 'metadata'
     ];
 
     for (const key of allowedFields) {
@@ -171,10 +178,6 @@ class PipelineStore {
       throw new Error(`Segment not found: ${id}`);
     }
 
-    if (segment.status !== 'draft' && segment.status !== 'aired') {
-      throw new Error(`Can only remove draft or aired segments (current: ${segment.status})`);
-    }
-
     const index = this.segments.indexOf(segment);
     if (index !== -1) this.segments.splice(index, 1);
 
@@ -187,27 +190,36 @@ class PipelineStore {
   getBufferHealth() {
     let totalSeconds = 0;
     let readyCount = 0;
-    let preAirCount = 0;
 
     for (const s of this.segments) {
       if (s.status === 'ready') {
         readyCount++;
         totalSeconds += s.estimatedDuration || 0;
-      } else if (s.status === 'pre-air') {
-        preAirCount++;
-        totalSeconds += s.estimatedDuration || 0;
       }
     }
 
-    return { totalSeconds, readyCount, preAirCount };
+    return { totalSeconds, readyCount };
   }
 
+  // The "on-air" segment is the OLDEST ready segment (first in array = rightmost in UI)
+  // This is the one currently playing
   getOnAirSegment() {
-    return this.segments.find(s => s.status === 'on-air') || null;
+    const ready = this.segments.filter(s => s.status === 'ready');
+    return ready.length > 0 ? ready[0] : null;
+  }
+
+  // Get ready segments in queue order (oldest first = rightmost in UI)
+  getReadyQueue() {
+    return this.segments.filter(s => s.status === 'ready');
+  }
+
+  // Get forming segments
+  getFormingSegments() {
+    return this.segments.filter(s => s.status === 'forming');
   }
 
   getQueue() {
-    return this.segments.filter(s => s.status === 'ready' || s.status === 'pre-air');
+    return this.segments.filter(s => s.status === 'ready');
   }
 }
 

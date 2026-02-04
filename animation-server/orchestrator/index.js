@@ -8,20 +8,19 @@ const ChatIntakeAgent = require('./chat-intake');
 
 class Orchestrator {
   constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config }) {
-    this.scriptGenerator = openai ? new ScriptGenerator({ openai, pipelineStore, mediaLibrary }) : null;
+    this.pipelineStore = pipelineStore;
+
+    this.scriptGenerator = openai ? new ScriptGenerator({ openai, pipelineStore }) : null;
     this.bridgeGenerator = openai ? new BridgeGenerator({ openai, pipelineStore }) : null;
     this.fillerGenerator = openai ? new FillerGenerator({ openai, pipelineStore }) : null;
     this.segmentRenderer = new SegmentRenderer({
       pipelineStore,
       animationServerUrl,
       eventEmitter,
-      maxConcurrent: config?.rendering?.maxConcurrentForming || 2
+      maxConcurrent: config?.rendering?.maxConcurrentForming || 3
     });
     this.playbackController = new PlaybackController({
       pipelineStore,
-      tvLayerManager,
-      segmentRenderer: this.segmentRenderer,
-      animationServerUrl,
       eventEmitter
     });
 
@@ -34,7 +33,6 @@ class Orchestrator {
     });
 
     this.chatIntake = new ChatIntakeAgent({
-      openai,
       scriptGenerator: this.scriptGenerator,
       pipelineStore,
       segmentRenderer: this.segmentRenderer,
@@ -45,16 +43,88 @@ class Orchestrator {
     if (config?.chatIntake?.ratePerMinute) {
       this.chatIntake.setIntakeRate(config.chatIntake.ratePerMinute);
     }
-    if (typeof config?.chatIntake?.autoApprove !== 'undefined') {
+    if (config?.chatIntake?.autoApprove) {
       this.chatIntake.setAutoApprove(config.chatIntake.autoApprove);
     }
   }
 
   init() {
+    this.playbackController.start();
+    console.log('[Orchestrator] Playback controller auto-started');
     this.bufferMonitor.start();
     if (this.chatIntake && (this.chatIntakeEnabled !== false)) {
       this.chatIntake.start();
     }
+  }
+
+  /**
+   * Queue a segment for rendering, generating a bridge before it if needed.
+   * Bridge is not generated for fillers, transitions, or when no preceding exitContext.
+   */
+  async queueSegmentWithBridge(segmentId) {
+    const segment = this.pipelineStore.getSegment(segmentId);
+    if (!segment) throw new Error(`Segment not found: ${segmentId}`);
+
+    const skipBridgeTypes = ['filler', 'transition'];
+    const needsBridge = !skipBridgeTypes.includes(segment.type) && this.bridgeGenerator;
+
+    if (needsBridge) {
+      // Find the preceding segment with exitContext
+      const allSegments = this.pipelineStore.getAllSegments();
+      const segIndex = allSegments.findIndex(s => s.id === segmentId);
+      let precedingExitContext = null;
+      let precedingId = null;
+      let lastSpeaker = null;
+
+      // Walk backwards to find the most recent segment with exitContext
+      for (let i = segIndex - 1; i >= 0; i--) {
+        if (allSegments[i].exitContext) {
+          precedingExitContext = allSegments[i].exitContext;
+          precedingId = allSegments[i].id;
+          // Get last speaker from the preceding segment's script
+          const script = allSegments[i].script;
+          if (Array.isArray(script) && script.length > 0) {
+            lastSpeaker = script[script.length - 1].speaker;
+          }
+          break;
+        }
+      }
+
+      if (precedingExitContext && segment.seed) {
+        try {
+          const bridge = await this.bridgeGenerator.generateBridge(
+            precedingExitContext,
+            segment.seed,
+            lastSpeaker || 'chad',
+            { bridgeFor: segmentId, bridgeAfter: precedingId }
+          );
+
+          // Insert bridge just before the target segment
+          const targetIndex = this.pipelineStore.getAllSegments().findIndex(s => s.id === segmentId);
+          if (targetIndex > 0) {
+            await this.pipelineStore.insertAt(bridge.id, targetIndex);
+          }
+
+          // Render bridge with gating — bridge must push audio before target
+          this.segmentRenderer.renderAndPushBridge(bridge.id, segmentId).catch(err => {
+            console.warn(`[Orchestrator] Bridge render failed: ${err.message}`);
+          });
+        } catch (err) {
+          console.warn(`[Orchestrator] Bridge generation failed, proceeding without: ${err.message}`);
+        }
+      }
+    }
+
+    // Queue the target segment for rendering
+    return this.segmentRenderer.queueRender(segmentId);
+  }
+
+  setFillerEnabled(enabled) {
+    this.bufferMonitor.fillerEnabled = Boolean(enabled);
+  }
+
+  getFillerEnabled() {
+    return this.bufferMonitor.fillerEnabled;
   }
 }
 

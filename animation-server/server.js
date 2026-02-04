@@ -83,9 +83,9 @@ app.use(express.json());
 
 const DEFAULT_ORCHESTRATOR_CONFIG = {
   buffer: { warningThresholdSeconds: 15, criticalThresholdSeconds: 5 },
-  filler: { enabled: true, maxConsecutive: 3, style: 'callback' },
+  filler: { enabled: false, maxConsecutive: 3, style: 'callback' },
   chatIntake: { enabled: true, ratePerMinute: 1, autoApprove: false },
-  rendering: { maxConcurrentForming: 2, ttsModel: 'eleven_turbo_v2', retryAttempts: 3 },
+  rendering: { maxConcurrentForming: 3, ttsModel: 'eleven_v3', retryAttempts: 3 },
   scriptGeneration: { model: 'gpt-4o', defaultExchanges: 8, maxExchanges: 30, wordsPerMinute: 150 }
 };
 
@@ -478,6 +478,7 @@ let currentCaption = null;
 let captionUntil = 0;
 let captionTimeout = null;
 let isAudioActive = false;
+let currentPlayingSegmentId = null;  // Track which pipeline segment is currently playing
 const renderQueue = [];
 let lastFrameBuffer = null;
 let skipCompositingFrames = 0;
@@ -504,9 +505,11 @@ function scheduleAudioCleanup(audioMp3Path, durationSeconds) {
 }
 
 function handleAudioComplete() {
+  const completedSegId = currentPlayingSegmentId;
   currentSpeaker = null;
   currentCaption = null;
   captionUntil = 0;
+  currentPlayingSegmentId = null;
   if (captionTimeout) {
     clearTimeout(captionTimeout);
     captionTimeout = null;
@@ -520,6 +523,16 @@ function handleAudioComplete() {
   lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
   lastExprState.virgin = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
   processQueue();
+
+  // After processQueue: currentPlayingSegmentId is set to the next item's segment (sync),
+  // or stays null if the queue was empty. If it changed, the previous segment is done.
+  if (completedSegId && completedSegId !== currentPlayingSegmentId) {
+    if (playbackController) {
+      playbackController.segmentDone(completedSegId).catch(err => {
+        console.warn('[Server] segmentDone error:', err.message);
+      });
+    }
+  }
 }
 
 
@@ -666,8 +679,14 @@ function tickLipSyncByTime() {
 async function startPlayback(item) {
   isAudioActive = true;
   currentSpeaker = item.character;
+  currentPlayingSegmentId = item.segmentId || null;
   playbackStartFrame = frameCount;
   expressionEvaluator.clear();
+
+  // Notify playback controller when a new segment starts playing
+  if (currentPlayingSegmentId && playbackController) {
+    playbackController.setOnAir(currentPlayingSegmentId);
+  }
 
   if (LIPSYNC_MODE === 'realtime') {
     syncedPlayback.loadSamples(item.samples, item.duration, item.character);
@@ -926,6 +945,7 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   const character = req.body.character || 'chad';
   const messageText = typeof req.body.message === 'string' ? req.body.message.trim() : '';
   const mode = req.body.mode || 'direct';
+  const segmentId = req.body.segmentId || null;  // Track which pipeline segment this audio belongs to
   const shouldQueue = mode === 'router';
 
   if (!req.file) {
@@ -963,7 +983,8 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         audioMp3Path,
         duration: audioDuration,
         samples,
-        sampleRate
+        sampleRate,
+        segmentId  // Track which pipeline segment this belongs to
       };
 
       const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
@@ -977,7 +998,7 @@ app.post('/render', upload.single('audio'), async (req, res) => {
       }
 
       const totalTime = Date.now() - renderStart;
-      console.log(`[Render] ${character} | move:${moveTime}ms decode:${decodeTime}ms total:${totalTime}ms | ${audioDuration.toFixed(1)}s audio`);
+      console.log(`[Render] ${character} seg:${segmentId || 'none'} | move:${moveTime}ms decode:${decodeTime}ms total:${totalTime}ms | ${audioDuration.toFixed(1)}s audio`);
 
     } else {
       // LEGACY: Rhubarb mode - analyze entire file upfront
@@ -1002,7 +1023,8 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         messageText,
         audioMp3Path,
         duration: audioDuration,
-        lipSyncCues
+        lipSyncCues,
+        segmentId  // Track which pipeline segment this belongs to
       };
 
       const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
@@ -1072,7 +1094,12 @@ app.get('/stream-info', (req, res) => {
 
   res.json({
     streamUrl: streamManager ? streamManager.getStreamUrl() : null,
-    state,
+    state: {
+      ...state,
+      isPlaying: state.isPlaying || isAudioActive,
+      queueLength: renderQueue.length,
+      currentSegmentId: currentPlayingSegmentId  // Which pipeline segment is currently playing
+    },
     frameCount,
     lipsyncMode: LIPSYNC_MODE
   });
@@ -1498,6 +1525,20 @@ app.post('/api/pipeline/reorder', async (req, res) => {
   }
 });
 
+app.delete('/api/pipeline/clear-aired', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
+  try {
+    const aired = pipelineStore.getAllSegments().filter(s => s.status === 'aired');
+    for (const seg of aired) {
+      await pipelineStore.removeSegment(seg.id);
+    }
+    broadcastPipelineUpdate();
+    res.json({ success: true, removed: aired.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/pipeline/:id', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline store not initialized' });
   try {
@@ -1597,10 +1638,10 @@ app.post('/api/tv-layer/clear-manual', async (req, res) => {
 // ============== Orchestrator Script API ==============
 app.post('/api/orchestrator/expand', async (req, res) => {
   if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
-  const { seed, mediaRefs, showContext } = req.body || {};
+  const { seed } = req.body || {};
   if (!seed) return res.status(400).json({ error: 'Missing seed' });
   try {
-    const segment = await scriptGenerator.expandDirectorNote(seed, mediaRefs || [], showContext || {});
+    const segment = await scriptGenerator.expandDirectorNote(seed);
     if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
     broadcastPipelineUpdate();
     res.json(segment);
@@ -1611,14 +1652,50 @@ app.post('/api/orchestrator/expand', async (req, res) => {
 
 app.post('/api/orchestrator/expand-chat', async (req, res) => {
   if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
-  const { message, showContext } = req.body || {};
+  const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'Missing message' });
   try {
-    const segment = await scriptGenerator.expandChatMessage(message, showContext || {});
+    const segment = await scriptGenerator.expandChatMessage(message);
     if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
     broadcastPipelineUpdate();
     res.json(segment);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Queue a pre-written single-line response directly to the pipeline
+// Used by /api/chat after router + OpenAI generate the response text
+app.post('/api/orchestrator/queue-response', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
+  if (!segmentRenderer) return res.status(503).json({ error: 'Segment renderer not initialized' });
+
+  const { speaker, text, seed } = req.body || {};
+  if (!speaker || !text) {
+    return res.status(400).json({ error: 'Missing speaker or text' });
+  }
+
+  try {
+    // Create segment with a single-line script (no LLM expansion needed)
+    const script = [{ speaker: speaker.toLowerCase(), text }];
+    const segment = await pipelineStore.createSegment({
+      type: 'chat-response',
+      seed: seed || text.substring(0, 50),
+      script,
+      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
+    });
+
+    console.log(`[Orchestrator] Queued response segment ${segment.id} (${speaker})`);
+    broadcastPipelineUpdate();
+
+    // Immediately queue for rendering (TTS + /render pipeline)
+    segmentRenderer.queueRender(segment.id).catch(err => {
+      console.error(`[Orchestrator] Render failed for ${segment.id}: ${err.message}`);
+    });
+
+    res.json({ queued: true, segmentId: segment.id });
+  } catch (err) {
+    console.error('[Orchestrator] queue-response error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1667,7 +1744,7 @@ app.post('/api/orchestrator/bridge', async (req, res) => {
   }
 });
 
-app.post('/api/orchestrator/filler', async (req, res) => {
+app.post('/api/orchestrator/filler/generate', async (req, res) => {
   if (!fillerGenerator) return res.status(503).json({ error: 'Filler generator not initialized' });
   const { recentContexts } = req.body || {};
   try {
@@ -1682,14 +1759,25 @@ app.post('/api/orchestrator/filler', async (req, res) => {
 app.post('/api/orchestrator/render/:id', async (req, res) => {
   if (!segmentRenderer) return res.status(503).json({ error: 'Segment renderer not initialized' });
   const segmentId = req.params.id;
-  try {
-    const segment = await segmentRenderer.queueRender(segmentId);
-    broadcastPipelineUpdate();
-    res.json(segment);
-  } catch (err) {
-    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
-    res.status(500).json({ error: err.message });
+
+  // Validate segment exists and is renderable before accepting
+  const segment = pipelineStore.getSegment(segmentId);
+  if (!segment) return res.status(404).json({ error: `Segment not found: ${segmentId}` });
+  if (segment.status !== 'forming') {
+    return res.status(400).json({ error: `Segment must be forming to render (current: ${segment.status})` });
   }
+  if (!Array.isArray(segment.script) || segment.script.length === 0) {
+    return res.status(400).json({ error: 'Segment has no script' });
+  }
+
+  // Accept immediately, render in background
+  res.json({ id: segmentId, status: 'rendering', message: 'Render queued' });
+
+  segmentRenderer.queueRender(segmentId).then(() => {
+    broadcastPipelineUpdate();
+  }).catch(err => {
+    console.error(`[Render] Background render failed for ${segmentId}: ${err.message}`);
+  });
 });
 
 app.get('/api/orchestrator/render/:id', (req, res) => {
@@ -1709,6 +1797,16 @@ app.post('/api/orchestrator/play', async (req, res) => {
   }
 });
 
+app.post('/api/orchestrator/pause', async (req, res) => {
+  if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
+  try {
+    const status = await playbackController.pause();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/orchestrator/stop', async (req, res) => {
   if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
   try {
@@ -1721,21 +1819,43 @@ app.post('/api/orchestrator/stop', async (req, res) => {
 
 app.get('/api/orchestrator/status', (req, res) => {
   if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
-  res.json(playbackController.getStatus());
+  res.json({
+    ...playbackController.getStatus(),
+    fillerEnabled: orchestrator ? orchestrator.getFillerEnabled() : false
+  });
+});
+
+app.post('/api/orchestrator/filler', (req, res) => {
+  if (!orchestrator) return res.status(503).json({ error: 'Orchestrator not initialized' });
+  const { enabled } = req.body || {};
+  orchestrator.setFillerEnabled(enabled);
+  res.json({ fillerEnabled: orchestrator.getFillerEnabled() });
 });
 
 // ============== Orchestrator Chat Intake API ==============
 app.post('/api/orchestrator/chat/message', async (req, res) => {
   if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
-  const { username, text } = req.body || {};
+  const { username, text, response } = req.body || {};
   if (!text) return res.status(400).json({ error: 'Missing text' });
-  chatIntake.addMessage(username || 'anonymous', text, Date.now());
+  chatIntake.addMessage(username || 'anonymous', text, response || null);
   res.json({ success: true });
 });
 
 app.get('/api/orchestrator/chat/inbox', (req, res) => {
   if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
   res.json({ inbox: chatIntake.getInbox() });
+});
+
+app.delete('/api/orchestrator/chat/inbox', (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  chatIntake.clearInbox();
+  res.json({ success: true });
+});
+
+app.delete('/api/orchestrator/chat/inbox/:id', (req, res) => {
+  if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
+  chatIntake.removeCard(req.params.id);
+  res.json({ success: true });
 });
 
 app.post('/api/orchestrator/chat/intake-rate', (req, res) => {
@@ -1799,7 +1919,7 @@ app.post('/api/orchestrator/config', async (req, res) => {
       }
       if (orchestrator.bufferMonitor && config.buffer) {
         orchestrator.bufferMonitor.config = config.buffer;
-        orchestrator.bufferMonitor.fillerEnabled = config.filler?.enabled ?? true;
+        orchestrator.bufferMonitor.fillerEnabled = config.filler?.enabled ?? false;
       }
     }
     res.json(config);

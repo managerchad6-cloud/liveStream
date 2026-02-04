@@ -5,675 +5,619 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Director Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
     :root {
       --bg: #0f1014;
       --panel: #1b1f2a;
-      --panel-2: #232838;
       --text: #f0f2f8;
       --muted: #9aa4bf;
       --accent: #ffb347;
-      --accent-2: #5cc8ff;
+      --on-air: #f5d565;
       --danger: #ff6b6b;
       --good: #6ee7b7;
-      --warning: #f5d565;
-      --shadow: rgba(0,0,0,0.3);
     }
 
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: 'Space Grotesk', sans-serif;
-      background: radial-gradient(1200px 800px at 20% -10%, #1b2a3a 0%, #0f1014 50%, #0a0b0f 100%);
+      background: var(--bg);
       color: var(--text);
-    }
-
-    #app {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
       padding: 20px;
+      padding-bottom: 60px;
     }
 
     header {
-      display: grid;
-      grid-template-columns: 1.2fr 1fr 1fr;
-      gap: 16px;
+      display: flex;
+      justify-content: space-between;
       align-items: center;
+      margin-bottom: 20px;
+    }
+
+    h1 { margin: 0; font-size: 1.5rem; }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 500;
+    }
+
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-small { padding: 4px 10px; font-size: 0.85rem; }
+
+    label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.9rem;
+      color: var(--muted);
     }
 
     .panel {
       background: var(--panel);
-      border-radius: 16px;
+      border-radius: 12px;
       padding: 16px;
-      box-shadow: 0 10px 30px var(--shadow);
+      margin-bottom: 16px;
     }
 
-    #stream-preview video {
-      width: 100%;
-      height: 160px;
-      border-radius: 12px;
-      background: #000;
-      object-fit: cover;
+    .panel h2 {
+      margin: 0 0 12px 0;
+      font-size: 0.9rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
     }
 
-    #buffer-health {
+    /* Rendering section */
+    #rendering-section {
       display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .health-bar {
-      width: 100%;
-      height: 10px;
-      border-radius: 999px;
-      background: #2a3142;
-      overflow: hidden;
-    }
-
-    .health-fill {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, var(--danger), var(--warning), var(--good));
-      transition: width 0.4s ease;
-    }
-
-    .muted { color: var(--muted); }
-
-    main {
-      display: grid;
-      grid-template-columns: 1.1fr 1.2fr;
-      gap: 16px;
-    }
-
-    #ammunition {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-    }
-
-    .ammo-column {
-      min-height: 280px;
-    }
-
-    .card-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin-top: 12px;
-      max-height: 280px;
-      overflow: auto;
-    }
-
-    .card {
-      background: var(--panel-2);
-      border-radius: 12px;
-      padding: 12px;
-      border: 1px solid rgba(255,255,255,0.05);
-    }
-
-    .card small { color: var(--muted); }
-
-    #draft-preview {
-      display: flex;
-      flex-direction: column;
       gap: 12px;
-      min-height: 280px;
+      flex-wrap: wrap;
+      min-height: 50px;
+      align-items: flex-start;
     }
 
-    #draft-preview.hidden { display: none; }
-
-    #script-lines {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 380px;
-      overflow: auto;
-    }
-
-    .script-line {
-      padding: 10px;
-      background: #1a2030;
-      border-radius: 10px;
-      border-left: 3px solid var(--accent);
-    }
-
-    #director-input {
-      grid-column: 1 / -1;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    textarea {
-      width: 100%;
-      min-height: 90px;
-      border-radius: 12px;
-      background: #0f1422;
-      color: var(--text);
-      border: 1px solid #2a3142;
-      padding: 12px;
-      font-family: inherit;
-    }
-
-    button {
-      background: var(--accent);
-      color: #111;
-      border: none;
+    .rendering-card {
+      background: #232838;
       padding: 10px 14px;
-      border-radius: 10px;
-      font-weight: 600;
-      cursor: pointer;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      min-width: 150px;
     }
 
-    button.secondary { background: #2a3142; color: var(--text); }
-    button.danger { background: var(--danger); color: #111; }
+    .rendering-card .type { font-weight: 600; }
+    .rendering-card .seed { color: var(--muted); font-size: 0.8rem; margin: 4px 0; }
+    .rendering-card.failed { border: 1px solid #c44; opacity: 0.7; }
 
-    #pipeline {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+    .progress-bar {
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 6px;
     }
 
-    .pipeline-row {
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.3s;
+    }
+
+    /* Pipeline section - horizontal row, rightmost = on-air */
+    #pipeline-section {
       display: flex;
+      flex-direction: row;
       gap: 12px;
       overflow-x: auto;
-      padding-bottom: 8px;
+      padding: 8px 0;
+      min-height: 100px;
+      align-items: stretch;
     }
 
     .pipeline-card {
-      min-width: 220px;
-      background: #1b2131;
-      padding: 12px;
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.05);
-      cursor: grab;
-    }
-
-    .status-badge {
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 999px;
-      font-size: 12px;
-      background: #2f364a;
-      color: var(--muted);
-    }
-
-    .status-draft { background: #2a3142; color: var(--muted); }
-    .status-forming { background: #3a2d52; color: #f0b3ff; }
-    .status-ready { background: #1f3a2b; color: #7bf2b9; }
-    .status-pre-air { background: #42321c; color: #f5d565; }
-    .status-on-air { background: #3a1f1f; color: #ff9090; }
-    .status-aired { background: #20252f; color: #7c879f; }
-
-    .pipeline-slot {
-      padding: 10px 14px;
-      border: 1px dashed #3a4257;
+      background: #232838;
+      padding: 12px 16px;
       border-radius: 10px;
-      color: var(--muted);
-      font-size: 12px;
-      letter-spacing: 1px;
+      min-width: 160px;
+      max-width: 200px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: all 0.3s;
+      border: 2px solid transparent;
+    }
+
+    .pipeline-card.on-air {
+      background: linear-gradient(135deg, rgba(245,213,101,0.3), rgba(35,40,56,0.95));
+      border: 2px solid var(--on-air);
+      box-shadow: 0 0 25px rgba(245,213,101,0.4);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 25px rgba(245,213,101,0.4); }
+      50% { box-shadow: 0 0 35px rgba(245,213,101,0.6); }
+    }
+
+    .pipeline-card .type { font-weight: 600; font-size: 0.9rem; }
+    .pipeline-card .seed { color: var(--muted); font-size: 0.8rem; }
+    .pipeline-card .duration { color: var(--muted); font-size: 0.75rem; }
+
+    .on-air-badge {
+      background: var(--on-air);
+      color: #000;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      align-self: flex-start;
       text-transform: uppercase;
-      min-width: 220px;
+      letter-spacing: 1px;
+    }
+
+    /* Chat inbox */
+    #chat-inbox {
       display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .slot-label {
-      font-size: 11px;
-      letter-spacing: 2px;
-      color: var(--muted);
-    }
-
-    .slot-body {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .slot-empty {
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: none;
-      letter-spacing: 0.5px;
-    }
-
-    .slot-card {
-      cursor: pointer;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: #1b2131;
-    }
-
-    .on-air-highlight {
-      border: 1px solid var(--danger);
-      box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.2);
-      background: linear-gradient(135deg, rgba(255,107,107,0.18), rgba(27,33,49,0.9));
-    }
-
-    #media-attachments {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .media-pill {
-      background: #1f2737;
-      padding: 6px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .media-pill button {
-      padding: 2px 6px;
-      font-size: 12px;
-      background: #2a3142;
-      color: var(--text);
-    }
-
-    #media-modal {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.6);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
-    }
-
-    #media-modal .panel {
-      width: min(900px, 90vw);
-      max-height: 80vh;
-      overflow: auto;
-    }
-
-    .media-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
       gap: 12px;
-      margin-top: 12px;
+      flex-wrap: wrap;
+      min-height: 50px;
     }
 
-    .media-item {
-      background: #151a26;
-      border-radius: 10px;
-      padding: 8px;
-      border: 1px solid rgba(255,255,255,0.05);
-      cursor: pointer;
+    .chat-card {
+      background: #232838;
+      padding: 12px;
+      border-radius: 8px;
+      max-width: 280px;
     }
 
-    .media-item img {
-      width: 100%;
-      height: 80px;
-      object-fit: cover;
-      border-radius: 6px;
+    .chat-card .username { font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
+    .chat-card .text { font-size: 0.85rem; margin-bottom: 6px; }
+    .chat-card .response-preview {
+      font-size: 0.8rem;
+      color: var(--muted);
+      border-left: 2px solid var(--accent);
+      padding-left: 8px;
+      margin-bottom: 8px;
+    }
+    .chat-card .actions { display: flex; gap: 8px; }
+
+    /* Archive */
+    #archive-section {
+      max-height: 150px;
+      overflow-y: auto;
     }
 
-    @media (max-width: 900px) {
-      header {
-        grid-template-columns: 1fr;
-      }
-      main {
-        grid-template-columns: 1fr;
-      }
-      #ammunition {
-        grid-template-columns: 1fr;
-      }
+    .archive-item {
+      padding: 6px 0;
+      border-bottom: 1px solid #2a3040;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    /* Director input */
+    #director-input {
+      display: flex;
+      gap: 10px;
+    }
+
+    #director-input textarea {
+      flex: 1;
+      background: #232838;
+      border: 1px solid #3a4050;
+      border-radius: 8px;
+      color: var(--text);
+      padding: 10px;
+      font-family: inherit;
+      resize: none;
+      height: 50px;
+    }
+
+    .empty-state {
+      color: var(--muted);
+      font-style: italic;
+      padding: 16px;
+    }
+
+    #status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--panel);
+      padding: 10px 20px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--muted);
+      border-top: 1px solid #2a3040;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--good);
+    }
+
+    .status-dot.playing { background: var(--on-air); animation: blink 1s infinite; }
+    .status-dot.paused { background: var(--accent); }
+    .status-dot.stopped { background: var(--muted); }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
     }
   </style>
 </head>
 <body>
-  <div id="app">
-    <header>
-      <div class="panel" id="stream-preview">
-        <div class="muted">Stream Preview</div>
-        <video id="preview-player" muted playsinline></video>
-      </div>
-      <div class="panel" id="buffer-health">
-        <div class="muted">Buffer Health</div>
-        <div class="health-bar"><div class="health-fill" id="health-fill"></div></div>
-        <div class="muted" id="health-text">0s ready</div>
-      </div>
-      <div class="panel" id="on-air-info">
-        <div class="muted">On-Air</div>
-        <div id="on-air-status">Idle</div>
-      </div>
-    </header>
-
-    <main>
-      <div id="ammunition">
-        <div class="panel ammo-column" id="chat-inbox">
-          <div>Chat Inbox</div>
-          <div class="card-list" id="chat-cards"></div>
-        </div>
-        <div class="panel ammo-column" id="auto-ideas">
-          <div>Ideas</div>
-          <textarea id="idea-input" placeholder="Quick seed..."></textarea>
-          <button id="create-idea">Create</button>
-          <div class="card-list" id="idea-cards"></div>
-        </div>
-      </div>
-
-      <div class="panel" id="draft-preview">
-        <div>Draft Preview</div>
-        <div id="script-lines"></div>
-        <div id="draft-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button id="approve-draft">Approve</button>
-          <button id="regen-draft" class="secondary">Regenerate</button>
-          <button id="discard-draft" class="danger">Discard</button>
-        </div>
-      </div>
-
-      <div class="panel" id="director-input">
-        <div id="media-attachments"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button id="attach-file" class="secondary">Upload</button>
-          <button id="attach-library" class="secondary">Library</button>
-          <input type="file" id="file-input" hidden accept="image/*,video/*">
-        </div>
-        <textarea id="director-note" placeholder="Director's note..."></textarea>
-        <button id="create-draft">Create Draft</button>
-      </div>
-    </main>
-
-    <div class="panel" id="pipeline">
-      <div>Pipeline</div>
-      <div id="pipeline-cards" class="pipeline-row"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <div id="pre-air-slot" class="pipeline-slot">
-          <div class="slot-label">PRE-AIR</div>
-          <div id="pre-air-card" class="slot-body"></div>
-        </div>
-        <div id="on-air-slot" class="pipeline-slot">
-          <div class="slot-label">ON-AIR</div>
-          <div id="on-air-card" class="slot-body"></div>
-        </div>
-      </div>
+  <header>
+    <h1>Director Console</h1>
+    <div class="controls">
+      <label>
+        <input type="checkbox" id="filler-toggle">
+        Filler
+      </label>
+      <button class="btn-primary" id="play-btn">Play</button>
+      <button class="btn-danger" id="pause-btn">Pause</button>
     </div>
+  </header>
 
-    <details class="panel" id="aired-archive">
-      <summary>Aired Archive</summary>
-      <div id="aired-list"></div>
-    </details>
+  <div class="panel">
+    <h2>Rendering</h2>
+    <div id="rendering-section">
+      <span class="empty-state">No segments rendering</span>
+    </div>
   </div>
 
-  <div id="media-modal">
-    <div class="panel">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div>Media Library</div>
-        <button id="close-media" class="secondary">Close</button>
-      </div>
-      <div class="media-grid" id="media-grid"></div>
+  <div class="panel">
+    <h2>Pipeline <span style="font-weight:normal;font-size:0.8rem;">(rightmost = on air)</span></h2>
+    <div id="pipeline-section">
+      <span class="empty-state">Pipeline empty</span>
     </div>
+  </div>
+
+  <div class="panel">
+    <h2 style="display:flex;justify-content:space-between;align-items:center;">
+      Chat Inbox
+      <label style="font-size:0.8rem;text-transform:none;letter-spacing:0;">
+        <input type="checkbox" id="auto-approve-toggle">
+        Auto-approve
+      </label>
+    </h2>
+    <div id="chat-inbox">
+      <span class="empty-state">No messages</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Create Segment</h2>
+    <div id="director-input">
+      <textarea id="seed-input" placeholder="Enter a topic or question..."></textarea>
+      <button class="btn-primary" id="create-btn">Create</button>
+    </div>
+  </div>
+
+  <details class="panel">
+    <summary style="cursor:pointer;color:var(--muted);">Archive</summary>
+    <div id="archive-section"></div>
+    <button class="btn-small btn-danger" id="clear-archive" style="margin-top:10px;">Clear</button>
+  </details>
+
+  <div id="status-bar">
+    <div class="status-indicator">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="playback-status">Connecting...</span>
+    </div>
+    <span id="buffer-info">Buffer: 0s</span>
   </div>
 
   <script>
     const API_BASE = window.location.origin;
-    let currentDraft = null;
-    let attachedMedia = [];
+    let ws = null;
+    let currentSegmentId = null;
 
     async function apiGet(path) {
-      const res = await fetch(`${API_BASE}${path}`);
+      const res = await fetch(API_BASE + path);
       return res.json();
     }
 
-    async function apiPost(path, body) {
-      const res = await fetch(`${API_BASE}${path}`, {
+    async function apiPost(path, data) {
+      const res = await fetch(API_BASE + path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(data)
       });
       return res.json();
     }
 
-    function renderBuffer(health) {
-      const total = health?.totalSeconds || 0;
-      const percent = Math.min(100, Math.round((total / 30) * 100));
-      document.getElementById('health-fill').style.width = `${percent}%`;
-      document.getElementById('health-text').textContent = `${Math.round(total)}s ready`;
-    }
+    function renderRendering(segments) {
+      const forming = segments.filter(s => s.status === 'forming');
+      const container = document.getElementById('rendering-section');
 
-    function renderPipelineCards(segments) {
-      const container = document.getElementById('pipeline-cards');
-      container.innerHTML = '';
-      const onAir = segments.find(s => s.status === 'on-air') || null;
-      const preAir = segments.find(s => s.status === 'pre-air') || null;
-      const pipelineList = segments.filter(s => !['aired', 'on-air', 'pre-air'].includes(s.status));
-
-      pipelineList.forEach(seg => {
-        const card = document.createElement('div');
-        card.className = 'pipeline-card';
-        card.dataset.id = seg.id;
-        card.innerHTML = `
-          <div><strong>${seg.type}</strong></div>
-          <div class="muted">${(seg.seed || '').slice(0, 40)}</div>
-          <div class="status-badge status-${seg.status}">${seg.status}${seg.status === 'forming' ? ` ${Math.round((seg.renderProgress || 0) * 100)}%` : ''}</div>
-          <div class="muted">${seg.estimatedDuration || 0}s</div>
-        `;
-        card.addEventListener('click', () => showDraft(seg.id));
-        container.appendChild(card);
-      });
-
-      renderSlot('pre-air-card', preAir, false);
-      renderSlot('on-air-card', onAir, true);
-
-      const aired = segments.filter(s => s.status === 'aired');
-      const airedList = document.getElementById('aired-list');
-      airedList.innerHTML = aired.map(seg => `<div class="card">${seg.type}: ${(seg.seed || '').slice(0, 60)}</div>`).join('');
-    }
-
-    function renderSlot(containerId, seg, highlight) {
-      const container = document.getElementById(containerId);
-      if (!container) return;
-      container.innerHTML = '';
-      if (!seg) {
-        container.innerHTML = `<div class="slot-empty">Empty</div>`;
+      if (forming.length === 0) {
+        container.innerHTML = '<span class="empty-state">No segments rendering</span>';
         return;
       }
-      const card = document.createElement('div');
-      card.className = `pipeline-card slot-card${highlight ? ' on-air-highlight' : ''}`;
-      card.dataset.id = seg.id;
-      card.innerHTML = `
-        <div><strong>${seg.type}</strong></div>
-        <div class="muted">${(seg.seed || '').slice(0, 40)}</div>
-        <div class="status-badge status-${seg.status}">${seg.status}</div>
-        <div class="muted">${seg.estimatedDuration || 0}s</div>
-      `;
-      card.addEventListener('click', () => showDraft(seg.id));
-      container.appendChild(card);
-    }
 
-    async function refreshPipeline() {
-      const data = await apiGet('/api/pipeline');
-      renderPipelineCards(data.segments || []);
-      renderBuffer(data.bufferHealth || {});
-    }
+      container.innerHTML = forming.map(seg => {
+        const failed = seg.renderProgress === -1;
+        const pct = failed ? 0 : Math.round((seg.renderProgress || 0) * 100);
+        const errorMsg = seg.metadata?.renderError || 'Failed';
+        return `
+          <div class="rendering-card${failed ? ' failed' : ''}" data-id="${seg.id}">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="type">${seg.type}</div>
+              <button class="btn-small btn-danger delete-rendering" style="padding:2px 6px;font-size:0.7rem;">X</button>
+            </div>
+            <div class="seed">${(seg.seed || 'filler').slice(0, 25)}${(seg.seed || '').length > 25 ? '...' : ''}</div>
+            ${failed
+              ? `<div style="font-size:0.75rem;color:#c44;margin-top:4px;">${errorMsg}</div>`
+              : `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+                 <div style="font-size:0.75rem;color:var(--muted);margin-top:4px;">${pct}%</div>`
+            }
+          </div>
+        `;
+      }).join('');
 
-    async function refreshChatInbox() {
-      const data = await apiGet('/api/orchestrator/chat/inbox');
-      const container = document.getElementById('chat-cards');
-      container.innerHTML = (data.inbox || []).map(card => `
-        <div class="card">
-          <div><strong>${card.username}</strong></div>
-          <div>${card.text}</div>
-          <small>${card.reason || ''}</small>
-        </div>
-      `).join('');
-    }
-
-    async function showDraft(id) {
-      const seg = await apiGet(`/api/pipeline/${id}`);
-      if (!seg || !seg.script) return;
-      currentDraft = seg;
-      document.getElementById('draft-preview').classList.remove('hidden');
-      document.getElementById('script-lines').innerHTML = seg.script.map(line => `
-        <div class="script-line"><strong>${line.speaker}:</strong> ${line.text}</div>
-      `).join('');
-    }
-
-    async function createDraft() {
-      const seed = document.getElementById('director-note').value.trim();
-      if (!seed) return;
-      const result = await apiPost('/api/orchestrator/expand', { seed, mediaRefs: attachedMedia });
-      if (result.error) return alert(result.error);
-      attachedMedia = [];
-      renderAttachments();
-      document.getElementById('director-note').value = '';
-      await refreshPipeline();
-      await showDraft(result.id);
-    }
-
-    async function approveDraft() {
-      if (!currentDraft) return;
-      await apiPost(`/api/pipeline/${currentDraft.id}/status`, { status: 'forming' });
-      await apiPost(`/api/orchestrator/render/${currentDraft.id}`, {});
-      await refreshPipeline();
-    }
-
-    async function regenDraft() {
-      if (!currentDraft) return;
-      const feedback = prompt('Regenerate feedback?');
-      const result = await apiPost('/api/orchestrator/regenerate', { segmentId: currentDraft.id, feedback });
-      if (!result.error) {
-        await showDraft(currentDraft.id);
-        await refreshPipeline();
-      }
-    }
-
-    async function discardDraft() {
-      if (!currentDraft) return;
-      await apiPost(`/api/pipeline/${currentDraft.id}/status`, { status: 'deleted' });
-      currentDraft = null;
-      document.getElementById('draft-preview').classList.add('hidden');
-      await refreshPipeline();
-    }
-
-    function renderAttachments() {
-      const container = document.getElementById('media-attachments');
-      container.innerHTML = attachedMedia.map(id => `
-        <div class="media-pill">${id}<button data-id="${id}">x</button></div>
-      `).join('');
-      container.querySelectorAll('button').forEach(btn => {
-        btn.addEventListener('click', () => {
-          attachedMedia = attachedMedia.filter(item => item !== btn.dataset.id);
-          renderAttachments();
+      // Attach delete handlers
+      container.querySelectorAll('.delete-rendering').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const card = btn.closest('.rendering-card');
+          const id = card.dataset.id;
+          await fetch(`${API_BASE}/api/pipeline/${id}`, { method: 'DELETE' });
+          refreshAll();
         });
       });
     }
 
-    async function uploadFile(file) {
-      const form = new FormData();
-      form.append('file', file);
-      const res = await fetch(`${API_BASE}/api/media/upload`, { method: 'POST', body: form });
-      const data = await res.json();
-      if (data.id) {
-        attachedMedia.push(data.id);
-        renderAttachments();
-      } else {
-        alert(data.error || 'Upload failed');
+    function renderPipeline(segments, onAirId) {
+      // Get only ready segments, oldest first (index 0 = oldest = rightmost in UI)
+      const ready = segments.filter(s => s.status === 'ready');
+      const container = document.getElementById('pipeline-section');
+
+      if (ready.length === 0) {
+        container.innerHTML = '<span class="empty-state">Pipeline empty</span>';
+        return;
       }
+
+      // Reverse for display: newest on left, oldest (on-air) on right
+      const displayOrder = [...ready].reverse();
+
+      container.innerHTML = displayOrder.map((seg, index) => {
+        // The last one in display (rightmost) is the on-air one (index 0 in original array)
+        const isOnAir = index === displayOrder.length - 1 && onAirId === seg.id;
+        return `
+          <div class="pipeline-card${isOnAir ? ' on-air' : ''}">
+            ${isOnAir ? '<div class="on-air-badge">On Air</div>' : ''}
+            <div class="type">${seg.type}</div>
+            <div class="seed">${(seg.seed || 'filler').slice(0, 30)}${(seg.seed || '').length > 30 ? '...' : ''}</div>
+            <div class="duration">${seg.estimatedDuration || 0}s</div>
+          </div>
+        `;
+      }).join('');
     }
 
-    async function openMediaLibrary() {
-      const data = await apiGet('/api/media');
-      const grid = document.getElementById('media-grid');
-      grid.innerHTML = (data.items || []).map(item => `
-        <div class="media-item" data-id="${item.id}">
-          <img src="/api/media/${item.id}/thumbnail" alt="thumb">
-          <div class="muted">${item.originalName}</div>
+    function renderArchive(segments) {
+      const aired = segments.filter(s => s.status === 'aired');
+      const container = document.getElementById('archive-section');
+
+      if (aired.length === 0) {
+        container.innerHTML = '<span class="empty-state">No archived segments</span>';
+        return;
+      }
+
+      // Show most recent first
+      container.innerHTML = aired.slice().reverse().map(seg => `
+        <div class="archive-item">
+          <strong>${seg.type}</strong>: ${(seg.seed || 'filler').slice(0, 50)}
         </div>
       `).join('');
-      document.querySelectorAll('.media-item').forEach(el => {
-        el.addEventListener('click', () => {
-          const id = el.dataset.id;
-          if (!attachedMedia.includes(id)) {
-            attachedMedia.push(id);
-            renderAttachments();
+    }
+
+    function renderChatInbox(inbox) {
+      const container = document.getElementById('chat-inbox');
+
+      if (!inbox || inbox.length === 0) {
+        container.innerHTML = '<span class="empty-state">No messages</span>';
+        return;
+      }
+
+      container.innerHTML = inbox.map(card => {
+        const responsePreview = card.response
+          ? `<div class="response-preview">${card.response.speaker}: ${card.response.text.slice(0, 50)}...</div>`
+          : '';
+        return `
+          <div class="chat-card" data-id="${card.id}">
+            <div class="username">${card.username}</div>
+            <div class="text">${card.text}</div>
+            ${responsePreview}
+            <div class="actions">
+              <button class="btn-small btn-primary queue-btn">Queue</button>
+              <button class="btn-small btn-danger dismiss-btn">Dismiss</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Attach handlers
+      container.querySelectorAll('.chat-card').forEach(el => {
+        const cardId = el.dataset.id;
+        const card = inbox.find(c => c.id === cardId);
+
+        el.querySelector('.queue-btn').addEventListener('click', async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Queuing...';
+          try {
+            if (card.response) {
+              await apiPost('/api/orchestrator/queue-response', {
+                speaker: card.response.speaker,
+                text: card.response.text,
+                seed: card.text
+              });
+            } else {
+              const result = await apiPost('/api/orchestrator/expand-chat', { message: card.text });
+              if (!result.error) {
+                await apiPost(`/api/orchestrator/render/${result.id}`, {});
+              }
+            }
+            await fetch(`${API_BASE}/api/orchestrator/chat/inbox/${cardId}`, { method: 'DELETE' });
+            refreshAll();
+          } catch (err) {
+            alert(err.message);
           }
         });
+
+        el.querySelector('.dismiss-btn').addEventListener('click', async () => {
+          await fetch(`${API_BASE}/api/orchestrator/chat/inbox/${cardId}`, { method: 'DELETE' });
+          refreshAll();
+        });
       });
-      document.getElementById('media-modal').style.display = 'flex';
     }
 
-    function setupSortable() {
-      const container = document.getElementById('pipeline-cards');
-      new Sortable(container, {
-        animation: 150,
-        onEnd: async () => {
-          const order = Array.from(container.children).map(el => el.dataset.id);
-          await apiPost('/api/pipeline/reorder', { order });
+    function updateStatus(status, bufferHealth) {
+      const statusEl = document.getElementById('playback-status');
+      const bufferEl = document.getElementById('buffer-info');
+      const dot = document.getElementById('status-dot');
+
+      dot.className = 'status-dot';
+
+      if (status.isPaused) {
+        statusEl.textContent = 'Paused';
+        dot.classList.add('paused');
+      } else if (status.isPlaying) {
+        if (status.currentSegmentId) {
+          statusEl.textContent = 'Playing';
+          dot.classList.add('playing');
+        } else {
+          statusEl.textContent = 'Waiting...';
         }
-      });
+      } else {
+        statusEl.textContent = 'Stopped';
+        dot.classList.add('stopped');
+      }
+
+      currentSegmentId = status.currentSegmentId;
+      bufferEl.textContent = `Buffer: ${bufferHealth?.totalSeconds || 0}s (${bufferHealth?.readyCount || 0})`;
     }
 
-    function initPreview() {
-      const video = document.getElementById('preview-player');
-      if (Hls.isSupported()) {
-        const hls = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 6 });
-        hls.loadSource(`${API_BASE}/streams/live/stream.m3u8`);
-        hls.attachMedia(video);
-        video.play().catch(() => {});
-      } else {
-        video.src = `${API_BASE}/streams/live/stream.m3u8`;
-        video.play().catch(() => {});
+    async function refreshAll() {
+      try {
+        const [pipeline, status, inbox, chatConfig] = await Promise.all([
+          apiGet('/api/pipeline'),
+          apiGet('/api/orchestrator/status'),
+          apiGet('/api/orchestrator/chat/inbox'),
+          apiGet('/api/orchestrator/chat/config')
+        ]);
+
+        renderRendering(pipeline.segments || []);
+        renderPipeline(pipeline.segments || [], status.currentSegmentId);
+        renderArchive(pipeline.segments || []);
+        renderChatInbox(inbox.inbox || []);
+        updateStatus(status, pipeline.bufferHealth);
+
+        document.getElementById('filler-toggle').checked = status.fillerEnabled || false;
+        document.getElementById('auto-approve-toggle').checked = chatConfig.autoApprove || false;
+      } catch (err) {
+        console.error('Refresh failed:', err);
       }
     }
 
     function connectWebSocket() {
-      const ws = new WebSocket(`ws://${window.location.host}/ws/orchestrator`);
+      ws = new WebSocket(`ws://${window.location.host}/ws/orchestrator`);
+
+      ws.onopen = () => {
+        document.getElementById('playback-status').textContent = 'Connected';
+        refreshAll();
+      };
+
       ws.onmessage = (event) => {
         const payload = JSON.parse(event.data);
         if (payload.event === 'pipeline:update') {
-          renderPipelineCards(payload.data.segments || []);
-          renderBuffer(payload.data.bufferHealth || {});
-        }
-        if (payload.event === 'segment:progress') {
-          refreshPipeline();
+          const data = payload.data;
+          renderRendering(data.segments || []);
+          renderPipeline(data.segments || [], data.currentSegmentId);
+          renderArchive(data.segments || []);
+          updateStatus(data.playbackStatus || {}, data.bufferHealth);
         }
         if (payload.event === 'chat:new-card') {
-          refreshChatInbox();
+          refreshAll();
         }
       };
-      ws.onclose = () => setTimeout(connectWebSocket, 3000);
+
+      ws.onclose = () => {
+        document.getElementById('playback-status').textContent = 'Reconnecting...';
+        setTimeout(connectWebSocket, 2000);
+      };
     }
 
-    document.getElementById('create-draft').addEventListener('click', createDraft);
-    document.getElementById('approve-draft').addEventListener('click', approveDraft);
-    document.getElementById('regen-draft').addEventListener('click', regenDraft);
-    document.getElementById('discard-draft').addEventListener('click', discardDraft);
-    document.getElementById('create-idea').addEventListener('click', async () => {
-      const seed = document.getElementById('idea-input').value.trim();
+    // Event handlers
+    document.getElementById('play-btn').addEventListener('click', async () => {
+      await apiPost('/api/orchestrator/play', {});
+      refreshAll();
+    });
+
+    document.getElementById('pause-btn').addEventListener('click', async () => {
+      await apiPost('/api/orchestrator/pause', {});
+      refreshAll();
+    });
+
+    document.getElementById('filler-toggle').addEventListener('change', async (e) => {
+      await apiPost('/api/orchestrator/filler', { enabled: e.target.checked });
+    });
+
+    document.getElementById('auto-approve-toggle').addEventListener('change', async (e) => {
+      await apiPost('/api/orchestrator/chat/auto-approve', { enabled: e.target.checked });
+    });
+
+    document.getElementById('create-btn').addEventListener('click', async () => {
+      const seed = document.getElementById('seed-input').value.trim();
       if (!seed) return;
-      await apiPost('/api/orchestrator/expand', { seed });
-      document.getElementById('idea-input').value = '';
-      refreshPipeline();
+
+      const btn = document.getElementById('create-btn');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+
+      try {
+        const result = await apiPost('/api/orchestrator/expand', { seed, mediaRefs: [] });
+        if (result.error) {
+          alert(result.error);
+        } else {
+          await apiPost(`/api/orchestrator/render/${result.id}`, {});
+          document.getElementById('seed-input').value = '';
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+
+      btn.disabled = false;
+      btn.textContent = 'Create';
+      refreshAll();
     });
 
-    document.getElementById('attach-file').addEventListener('click', () => {
-      document.getElementById('file-input').click();
-    });
-    document.getElementById('file-input').addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (file) uploadFile(file);
-      e.target.value = '';
-    });
-    document.getElementById('attach-library').addEventListener('click', openMediaLibrary);
-    document.getElementById('close-media').addEventListener('click', () => {
-      document.getElementById('media-modal').style.display = 'none';
+    document.getElementById('clear-archive').addEventListener('click', async () => {
+      await fetch(`${API_BASE}/api/pipeline/clear-aired`, { method: 'DELETE' });
+      refreshAll();
     });
 
-    setupSortable();
-    initPreview();
-    refreshPipeline();
-    refreshChatInbox();
+    // Initialize
     connectWebSocket();
   </script>
 </body>

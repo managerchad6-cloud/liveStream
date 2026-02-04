@@ -1,173 +1,140 @@
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function estimateLineDurationMs(text) {
-  const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
-  const minutes = words / 150;
-  return Math.max(500, Math.round(minutes * 60 * 1000));
-}
-
+/**
+ * PlaybackController - Event-driven segment lifecycle manager
+ *
+ * No polling. The animation server calls setOnAir() and segmentDone()
+ * directly when audio starts/finishes for each segment.
+ */
 class PlaybackController {
-  constructor({ pipelineStore, tvLayerManager, segmentRenderer, animationServerUrl, eventEmitter }) {
+  constructor({ pipelineStore, eventEmitter }) {
     this.pipelineStore = pipelineStore;
-    this.tvLayerManager = tvLayerManager;
-    this.segmentRenderer = segmentRenderer;
-    this.animationServerUrl = animationServerUrl || `http://127.0.0.1:${process.env.ANIMATION_PORT || 3003}`;
     this.eventEmitter = eventEmitter;
 
     this.isPlaying = false;
+    this.isPaused = false;
     this.currentSegmentId = null;
-    this.currentLineIndex = 0;
-    this.waitingForRender = false;
-    this.pendingTimeouts = [];
+    this.broadcastInterval = null;
+    // Segments whose audio finished before they became 'ready' (edge case)
+    this.pendingDone = new Set();
   }
 
-  async start() {
+  start() {
+    this.isPaused = false;
     if (this.isPlaying) return this.getStatus();
     this.isPlaying = true;
-    this._loop();
+    this._startPeriodicBroadcast();
+    console.log('[PlaybackController] Started');
     return this.getStatus();
   }
 
-  async stop() {
+  pause() {
+    this.isPaused = true;
+    return this.getStatus();
+  }
+
+  stop() {
     this.isPlaying = false;
+    this.isPaused = false;
     this.currentSegmentId = null;
-    this.currentLineIndex = 0;
-    this.waitingForRender = false;
-    this._clearScheduledCues();
+    this.pendingDone.clear();
+    this._stopPeriodicBroadcast();
     return this.getStatus();
   }
 
   getStatus() {
     return {
       isPlaying: this.isPlaying,
-      currentSegmentId: this.currentSegmentId,
-      currentLineIndex: this.currentLineIndex,
-      waitingForRender: this.waitingForRender
+      isPaused: this.isPaused,
+      currentSegmentId: this.currentSegmentId
     };
   }
 
-  async _loop() {
-    while (this.isPlaying) {
-      const played = await this.playNextSegment();
-      if (!played) {
-        await sleep(1000);
+  /**
+   * Called by the animation server when a segment's audio starts playing.
+   * This is the authoritative signal - no guessing or polling.
+   */
+  setOnAir(segmentId) {
+    if (this.currentSegmentId !== segmentId) {
+      this.currentSegmentId = segmentId;
+      console.log(`[PlaybackController] On-air: ${segmentId}`);
+      this._broadcastUpdate();
+    }
+  }
+
+  /**
+   * Called by the animation server when ALL audio for a segment has finished.
+   * Transitions the segment to 'aired' and clears the on-air state.
+   */
+  async segmentDone(segmentId) {
+    console.log(`[PlaybackController] Audio complete: ${segmentId}`);
+
+    // Transition to aired
+    try {
+      const segment = this.pipelineStore.getSegment(segmentId);
+      if (segment && segment.status === 'ready') {
+        await this.pipelineStore.transitionStatus(segmentId, 'aired');
+        console.log(`[PlaybackController] ${segmentId} → aired`);
+      } else if (segment && segment.status === 'forming') {
+        // Audio finished before rendering complete - defer transition
+        console.log(`[PlaybackController] ${segmentId} still forming, deferring transition`);
+        this.pendingDone.add(segmentId);
+      }
+    } catch (err) {
+      console.warn(`[PlaybackController] Failed to archive ${segmentId}: ${err.message}`);
+    }
+
+    // Clear on-air if this was the current segment
+    if (this.currentSegmentId === segmentId) {
+      this.currentSegmentId = null;
+    }
+
+    this._broadcastUpdate();
+  }
+
+  /**
+   * Check if any deferred segments have become 'ready' and can now be transitioned.
+   */
+  _checkPendingDone() {
+    if (this.pendingDone.size === 0) return;
+
+    for (const segId of this.pendingDone) {
+      const seg = this.pipelineStore.getSegment(segId);
+      if (!seg || seg.status === 'aired' || seg.status === 'deleted') {
+        this.pendingDone.delete(segId);
+      } else if (seg.status === 'ready') {
+        this.pendingDone.delete(segId);
+        this.pipelineStore.transitionStatus(segId, 'aired').then(() => {
+          console.log(`[PlaybackController] ${segId} → aired (deferred)`);
+          this._broadcastUpdate();
+        }).catch(err => {
+          console.warn(`[PlaybackController] Deferred archive failed: ${err.message}`);
+        });
       }
     }
   }
 
-  async playNextSegment() {
-    const segments = this.pipelineStore.getAllSegments();
-    let segment = segments.find(s => s.status === 'pre-air');
-    if (!segment) {
-      segment = segments.find(s => s.status === 'ready');
-      if (segment) {
-        await this.pipelineStore.transitionStatus(segment.id, 'pre-air');
-      }
+  _startPeriodicBroadcast() {
+    if (this.broadcastInterval) return;
+    this.broadcastInterval = setInterval(() => {
+      this._checkPendingDone();
+      this._broadcastUpdate();
+    }, 500);
+  }
+
+  _stopPeriodicBroadcast() {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
     }
+  }
 
-    if (!segment) return false;
-
-    await this.pipelineStore.transitionStatus(segment.id, 'on-air');
+  _broadcastUpdate() {
     if (this.eventEmitter) {
       this.eventEmitter.broadcast('pipeline:update', {
         segments: this.pipelineStore.getAllSegments(),
-        bufferHealth: this.pipelineStore.getBufferHealth()
+        bufferHealth: this.pipelineStore.getBufferHealth(),
+        currentSegmentId: this.currentSegmentId,
+        playbackStatus: this.getStatus()
       });
-    }
-    this.currentSegmentId = segment.id;
-    this.currentLineIndex = 0;
-
-    this._scheduleCues(segment);
-    if (this.segmentRenderer && this.segmentRenderer.estimateSegmentDurationMs) {
-      await sleep(this.segmentRenderer.estimateSegmentDurationMs(segment));
-    } else {
-      await this._waitForPlaybackIdle();
-    }
-
-    await this.pipelineStore.transitionStatus(segment.id, 'aired');
-    if (this.eventEmitter) {
-      this.eventEmitter.broadcast('pipeline:update', {
-        segments: this.pipelineStore.getAllSegments(),
-        bufferHealth: this.pipelineStore.getBufferHealth()
-      });
-    }
-
-    this.currentSegmentId = null;
-    this.currentLineIndex = 0;
-    this._clearScheduledCues();
-
-    return true;
-  }
-
-  _scheduleCues(segment) {
-    this._clearScheduledCues();
-    if (!segment || !Array.isArray(segment.script)) return;
-
-    let cumulativeMs = 0;
-    segment.script.forEach((line, index) => {
-      const cues = Array.isArray(line.cues) ? line.cues : [];
-      if (cues.length > 0) {
-        const timeoutId = setTimeout(() => {
-          this.currentLineIndex = index;
-          this._fireCues(cues).catch(err => {
-            console.warn(`[PlaybackController] Cue error: ${err.message}`);
-          });
-        }, cumulativeMs);
-        this.pendingTimeouts.push(timeoutId);
-      }
-      cumulativeMs += estimateLineDurationMs(line.text || '');
-    });
-  }
-
-  _clearScheduledCues() {
-    for (const timeoutId of this.pendingTimeouts) {
-      clearTimeout(timeoutId);
-    }
-    this.pendingTimeouts = [];
-  }
-
-  async _fireCues(cues) {
-    for (const cue of cues) {
-      if (!cue || !cue.type) continue;
-
-      if (cue.type === 'tv:show') {
-        if (this.tvLayerManager && cue.target) {
-          await this.tvLayerManager.pushOverride(cue.target);
-        }
-      } else if (cue.type === 'tv:release') {
-        if (this.tvLayerManager) {
-          await this.tvLayerManager.releaseOverride();
-        }
-      } else if (cue.type === 'lighting:hue') {
-        const hue = Number(cue.target);
-        if (Number.isFinite(hue)) {
-          await fetch(`${this.animationServerUrl}/lighting/hue`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ hue })
-          });
-        }
-      }
-    }
-  }
-
-  async _waitForPlaybackIdle() {
-    while (this.isPlaying) {
-      try {
-        const res = await fetch(`${this.animationServerUrl}/stream-info`);
-        if (!res.ok) {
-          await sleep(500);
-          continue;
-        }
-        const data = await res.json();
-        const isPlaying = Boolean(data?.state?.isPlaying);
-        if (!isPlaying) return;
-      } catch (err) {
-        console.warn(`[PlaybackController] stream-info failed: ${err.message}`);
-      }
-      await sleep(500);
     }
   }
 }

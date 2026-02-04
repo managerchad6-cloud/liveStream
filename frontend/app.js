@@ -245,7 +245,9 @@ async function sendMessage() {
       }
 
       const autoData = await autoResponse.json();
-      statusMsg.textContent = `Auto conversation started (${autoData.turns || 0} turns)...`;
+      statusMsg.textContent = autoData.segmentId
+        ? `Segment queued to pipeline (${autoData.turns || 0} turns)`
+        : `Auto conversation started (${autoData.turns || 0} turns)...`;
     } catch (error) {
       console.error('Error:', error);
       removeStatus(statusMsg);
@@ -257,7 +259,7 @@ async function sendMessage() {
   }
 
   try {
-    // Step 1: Get audio from chat API
+    // Send message to orchestrator pipeline via chat API
     const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/chat` : '/api/chat';
 
     const chatResponse = await fetch(apiUrl, {
@@ -265,9 +267,6 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message,
-        voice: voiceSelect.value,
-        model: modelSelect.value,
-        temperature: parseFloat(tempSlider.value),
         mode: modeSelect.value
       }),
     });
@@ -277,73 +276,21 @@ async function sendMessage() {
       throw new Error(errorData.error || `HTTP ${chatResponse.status}`);
     }
 
-    const contentType = chatResponse.headers.get('Content-Type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await chatResponse.json();
-      if (data.filtered) {
-        removeStatus(statusMsg);
-        addMessage(data.reason || 'Router skipped this message due to high volume.', 'status');
-        return;
-      }
-    }
-
-    const audioBlob = await chatResponse.blob();
-    statusMsg.textContent = 'Starting animation...';
-    const selectedVoice = chatResponse.headers.get('X-Selected-Voice') || voiceSelect.value;
-
-    // Step 2: Send audio to animation server
-    const formData = new FormData();
-    formData.append('audio', audioBlob, 'audio.mp3');
-    formData.append('character', selectedVoice);
-    formData.append('message', message);
-    formData.append('mode', modeSelect.value);
-
-    const animUrl = CONFIG.ANIMATION_SERVER_URL ? `${CONFIG.ANIMATION_SERVER_URL}/render` : '/render';
-
-    const renderResponse = await fetch(animUrl, {
-      method: 'POST',
-      body: formData
-    });
-
-    if (!renderResponse.ok) {
-      const errorData = await renderResponse.json().catch(() => ({ error: 'Render failed' }));
-      throw new Error(errorData.error || 'Animation render failed');
-    }
-
-    const renderData = await renderResponse.json();
-    const { audioUrl, duration, streamMode, queued, queuePosition } = renderData;
-    if (queued) {
-      statusMsg.textContent = `Queued ${selectedVoice} response (#${queuePosition})...`;
-    } else {
+    const data = await chatResponse.json();
+    if (data.filtered) {
       removeStatus(statusMsg);
+      addMessage(data.reason || 'Message skipped.', 'status');
+      return;
     }
-
-    // Step 3: Play audio
-    if (streamMode === 'synced' || !audioUrl) {
-      // SYNCED MODE: Audio is embedded in the HLS video stream
-      // Just make sure video is unmuted
-      characterStream.muted = false;
-      characterStream.volume = 1.0;
-      if (!queued) {
-        addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
-      }
-    } else {
-      // SEPARATE MODE: Play audio file separately
-      const fullAudioUrl = CONFIG.ANIMATION_SERVER_URL
-        ? `${CONFIG.ANIMATION_SERVER_URL}${audioUrl}`
-        : audioUrl;
-      playAudio(fullAudioUrl);
-      if (!queued) {
-        addMessage(`Playing ${selectedVoice} response (${duration.toFixed(1)}s)...`);
-      }
+    if (data.queued) {
+      removeStatus(statusMsg);
+      const voiceLabel = data.voice ? ` (${data.voice})` : '';
+      addMessage(`Response queued${voiceLabel}`, 'status');
+      chatbox.disabled = false;
+      submitBtn.disabled = false;
+      chatbox.focus();
+      return;
     }
-
-    // Remove status after audio ends
-    setTimeout(() => {
-      if (!queued) {
-        removeStatus(statusMsg);
-      }
-    }, duration * 1000 + 500);
 
   } catch (error) {
     console.error('Error:', error);

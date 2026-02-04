@@ -11,6 +11,7 @@
     "extract-expression-bounds": "node tools/extract-expression-bounds.js",
     "visualize-expression-bounds": "node tools/visualize-expression-bounds.js",
     "animation": "cd animation-server && node server.js",
+    "restart-servers": "powershell -ExecutionPolicy Bypass -File ./restart-servers.ps1",
     "dev": "node server.js & cd animation-server && node server.js",
     "commit": "git add . && git commit -m",
     "push": "git push origin master"

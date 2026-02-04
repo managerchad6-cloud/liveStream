@@ -1,18 +1,7 @@
 const voices = require('../../voices');
+const { parseJson } = require('./utils');
 
-const DEFAULT_MODEL = process.env.SCRIPT_MODEL || process.env.EXPRESSION_MODEL || 'gpt-4o-mini';
-
-function parseJson(content) {
-  if (!content) return null;
-  const clean = String(content).replace(/```json|```/gi, '').trim();
-  try { return JSON.parse(clean); } catch (e) {}
-  const start = clean.indexOf('{');
-  const end = clean.lastIndexOf('}');
-  if (start !== -1 && end !== -1 && end > start) {
-    try { return JSON.parse(clean.slice(start, end + 1)); } catch (e) {}
-  }
-  return null;
-}
+const DEFAULT_MODEL = process.env.SCRIPT_MODEL || 'gpt-4o';
 
 class FillerGenerator {
   constructor({ openai, pipelineStore }) {
@@ -23,11 +12,17 @@ class FillerGenerator {
   async generateFiller(recentExitContexts = []) {
     if (!this.openai) throw new Error('OpenAI not configured');
 
-    const prompt = `Generate a short filler dialogue (3-5 exchanges) for Chad and Virgin.
-They should riff on recent topics or do generic banter.
-Recent topics: ${recentExitContexts.join(' | ') || 'none'}
+    const hasContext = recentExitContexts.length > 0;
+    const contextBlock = hasContext
+      ? `Continue the ongoing conversation naturally. Pick up where they left off or riff on something already mentioned.\n\nRecent conversation history:\n${recentExitContexts.map((c, i) => `${i + 1}. ${c}`).join('\n')}`
+      : `Start a casual conversation. Chad and Virgin are hanging out on a livestream with nothing specific planned.`;
 
-Output JSON: { "script": [{ "speaker": "chad|virgin", "text": "...", "cues": [] }], "exitContext": "..." }
+    const prompt = `Generate a short dialogue (3-5 exchanges) for Chad and Virgin.
+${contextBlock}
+
+The dialogue should feel like a natural continuation, NOT a topic switch. Don't announce the topic or force a segue — just keep talking as if the conversation never stopped.
+
+Output JSON: { "script": [{ "speaker": "chad|virgin", "text": "..." }], "exitContext": "..." }
 
 CHARACTER PROFILES:
 CHAD: ${voices.chad.basePrompt}
@@ -36,7 +31,7 @@ VIRGIN: ${voices.virgin.basePrompt}`;
     const completion = await this.openai.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
-        { role: 'system', content: 'You generate short filler dialogue and return only JSON.' },
+        { role: 'system', content: 'You generate natural continuation dialogue and return only JSON.' },
         { role: 'user', content: prompt }
       ],
       temperature: 0.7
@@ -50,17 +45,14 @@ VIRGIN: ${voices.virgin.basePrompt}`;
 
     const script = parsed.script.map(line => ({
       speaker: String(line.speaker || '').toLowerCase(),
-      text: String(line.text || '').trim(),
-      cues: Array.isArray(line.cues) ? line.cues : []
+      text: String(line.text || '').trim()
     })).filter(line => line.speaker && line.text);
 
     const segment = await this.pipelineStore.createSegment({
       type: 'filler',
       seed: null,
       script,
-      estimatedDuration: Math.max(10, script.length * 6),
-      tvCues: [],
-      lightingCues: []
+      estimatedDuration: Math.max(10, script.length * 6)
     });
 
     await this.pipelineStore.updateSegment(segment.id, {
