@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Command Leaderboard</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body {
+      background: #0b0b0b;
+      color: #f5f5f5;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      height: auto;
+      overflow: auto;
+    }
+    .leaderboard-container {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 24px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 16px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    }
+    .leaderboard-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .leaderboard-header h1 {
+      font-size: 28px;
+      margin: 0;
+    }
+    .leaderboard-meta {
+      font-size: 12px;
+      color: #b8b8b8;
+    }
+    .leaderboard-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .leaderboard-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.35);
+      border-radius: 12px;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+    .leaderboard-rank {
+      width: 32px;
+      font-weight: 700;
+      color: #f3c969;
+    }
+    .leaderboard-command {
+      flex: 1;
+      margin-left: 8px;
+      font-family: "Courier New", Courier, monospace;
+    }
+    .leaderboard-count {
+      font-weight: 600;
+      color: #7bd3ff;
+    }
+    .leaderboard-empty {
+      text-align: center;
+      color: #b8b8b8;
+      padding: 24px 0;
+    }
+    .leaderboard-footer {
+      margin-top: 18px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #9a9a9a;
+    }
+    a.leaderboard-link {
+      color: #7bd3ff;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="leaderboard-container">
+    <div class="leaderboard-header">
+      <h1>Command Leaderboard</h1>
+      <div class="leaderboard-meta" id="totalVotes">Total votes: 0</div>
+    </div>
+    <ul class="leaderboard-list" id="leaderboardList"></ul>
+    <div class="leaderboard-empty" id="leaderboardEmpty" style="display: none;">No commands yet. Be the first to vote.</div>
+    <div class="leaderboard-footer">
+      <div id="updatedAt">Last updated: --</div>
+      <a class="leaderboard-link" href="/">Back to chat</a>
+    </div>
+  </div>
+
+  <script>
+    const listEl = document.getElementById('leaderboardList');
+    const emptyEl = document.getElementById('leaderboardEmpty');
+    const totalEl = document.getElementById('totalVotes');
+    const updatedEl = document.getElementById('updatedAt');
+
+    async function fetchLeaderboard() {
+      try {
+        const response = await fetch('/api/leaderboard?limit=20');
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to load leaderboard');
+        }
+
+        totalEl.textContent = `Total votes: ${data.total || 0}`;
+        updatedEl.textContent = data.updatedAt ? `Last updated: ${new Date(data.updatedAt).toLocaleString()}` : 'Last updated: --';
+
+        listEl.innerHTML = '';
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        if (!entries.length) {
+          emptyEl.style.display = '';
+          return;
+        }
+
+        emptyEl.style.display = 'none';
+        entries.forEach((entry, index) => {
+          const item = document.createElement('li');
+          item.className = 'leaderboard-item';
+          item.innerHTML = `
+            <span class="leaderboard-rank">#${index + 1}</span>
+            <span class="leaderboard-command">${entry.command}</span>
+            <span class="leaderboard-count">${entry.count}</span>
+          `;
+          listEl.appendChild(item);
+        });
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    fetchLeaderboard();
+    setInterval(fetchLeaderboard, 5000);
+  </script>
+</body>
+</html>

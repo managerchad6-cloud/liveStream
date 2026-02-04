@@ -85,6 +85,44 @@ class PipelineStore {
     return this.segments.slice();
   }
 
+  getSegmentIndex(id) {
+    return this.segments.findIndex(s => s.id === id);
+  }
+
+  _findPriorityInsertIndex({ afterOnAir = true, avoidTransitionSplit = true } = {}) {
+    let insertIndex = 0;
+
+    if (afterOnAir) {
+      const onAir = this.getOnAirSegment();
+      if (onAir) {
+        const onAirIndex = this.getSegmentIndex(onAir.id);
+        if (onAirIndex !== -1) {
+          insertIndex = onAirIndex + 1;
+        }
+      }
+    }
+
+    if (!avoidTransitionSplit) return Math.min(insertIndex, this.segments.length);
+
+    // Avoid inserting between a transition and its target (keep them adjacent)
+    while (insertIndex > 0 && insertIndex < this.segments.length) {
+      const prev = this.segments[insertIndex - 1];
+      const next = this.segments[insertIndex];
+      if (prev && prev.type === 'transition' && prev.metadata?.bridgeFor === next?.id) {
+        insertIndex += 1;
+        continue;
+      }
+      break;
+    }
+
+    return Math.min(insertIndex, this.segments.length);
+  }
+
+  async prioritizeSegment(id, options = {}) {
+    const index = this._findPriorityInsertIndex(options);
+    return this.insertAt(id, index);
+  }
+
   async transitionStatus(id, newStatus) {
     const segment = this.getSegment(id);
     if (!segment) {

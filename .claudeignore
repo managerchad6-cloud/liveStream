@@ -1,0 +1,32 @@
+# Runtime generated content
+streams/
+streams/**/*.ts
+streams/**/*.m3u8
+
+# Dependencies (both root and animation-server)
+node_modules/
+animation-server/node_modules/
+
+# Build outputs and caches
+dist/
+build/
+.cache/
+*.log
+
+# Large binary files
+*.psd
+*.mp4
+*.mp3
+*.wav
+
+# Git history
+.git/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db

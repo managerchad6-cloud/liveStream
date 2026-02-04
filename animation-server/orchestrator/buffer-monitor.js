@@ -7,12 +7,14 @@ class BufferMonitor {
 
     // Config with new defaults
     this.config = {
-      minSegments: 3,           // Bare minimum segments
-      targetSegments: 6,        // Healthy target
-      minDurationSeconds: 30,   // Minimum buffer duration
-      targetDurationSeconds: 90, // Healthy buffer duration (1.5 min)
+      minSegments: 2,            // Bare minimum segments
+      targetSegments: 4,         // Healthy target
+      minDurationSeconds: 20,    // Minimum buffer duration
+      targetDurationSeconds: 60, // Healthy buffer duration (1 min)
       warningThresholdSeconds: 15,
       criticalThresholdSeconds: 5,
+      maxFillersPerBatch: 2,
+      maxFillersWhenPriority: 1,
       ...config
     };
 
@@ -59,8 +61,10 @@ class BufferMonitor {
     // Content type breakdown
     const contentSegments = active.filter(s => s.type !== 'filler' && s.type !== 'transition');
     const fillerSegments = active.filter(s => s.type === 'filler');
+    const prioritySegments = active.filter(s => s.type === 'chat-response' || s.metadata?.priority === 'high');
 
     const hasActiveContent = contentSegments.length > 0;
+    const hasPriorityPending = prioritySegments.length > 0;
 
     return {
       readyCount: ready.length,
@@ -71,7 +75,8 @@ class BufferMonitor {
       totalDuration,
       contentCount: contentSegments.length,
       fillerCount: fillerSegments.length,
-      hasActiveContent
+      hasActiveContent,
+      hasPriorityPending
     };
   }
 
@@ -79,8 +84,15 @@ class BufferMonitor {
    * Calculate how many fillers we need to reach healthy state
    */
   _calculateFillersNeeded(health) {
-    const { totalCount, totalDuration, hasActiveContent } = health;
-    const { minSegments, targetSegments, minDurationSeconds, targetDurationSeconds } = this.config;
+    const { totalCount, totalDuration, hasActiveContent, hasPriorityPending } = health;
+    const {
+      minSegments,
+      targetSegments,
+      minDurationSeconds,
+      targetDurationSeconds,
+      maxFillersPerBatch,
+      maxFillersWhenPriority
+    } = this.config;
 
     // Don't generate if no user content exists
     if (!hasActiveContent) return 0;
@@ -94,15 +106,26 @@ class BufferMonitor {
     const durationDeficit = Math.max(0, Math.ceil((minDurationSeconds - totalDuration) / avgFillerDuration));
     const durationTarget = Math.max(0, Math.ceil((targetDurationSeconds - totalDuration) / avgFillerDuration));
 
+    const priorityCap = Math.max(0, maxFillersWhenPriority || 0);
+    const normalCap = Math.max(0, maxFillersPerBatch || 0);
+
+    // If chat is pending, only refill to minimum and keep batches small
+    if (hasPriorityPending) {
+      if (totalCount < minSegments || totalDuration < minDurationSeconds) {
+        return Math.min(Math.max(countDeficit, durationDeficit), priorityCap);
+      }
+      return 0;
+    }
+
     // If we're below minimum, generate enough to reach target (not just minimum)
     if (totalCount < minSegments || totalDuration < minDurationSeconds) {
       // Generate enough to reach target, capped at reasonable batch size
-      return Math.min(Math.max(countTarget, durationTarget), 5);
+      return Math.min(Math.max(countTarget, durationTarget), normalCap);
     }
 
     // If we're between min and target, generate 1-2 to keep buffer healthy
     if (totalCount < targetSegments || totalDuration < targetDurationSeconds) {
-      return Math.min(Math.max(countTarget, durationTarget), 2);
+      return Math.min(Math.max(countTarget, durationTarget), Math.min(2, normalCap));
     }
 
     return 0;

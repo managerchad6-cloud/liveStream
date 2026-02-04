@@ -22,6 +22,7 @@ class SegmentRenderer {
     this.eventEmitter = eventEmitter;
     this.activeRenders = 0;
     this.renderQueue = [];
+    this.inFlight = new Set();
     // Ensures Phase 2 (audio push) happens in the order segments were queued,
     // even when Phase 1 (TTS) runs in parallel across multiple segments
     this.pushChain = Promise.resolve();
@@ -43,9 +44,20 @@ class SegmentRenderer {
   }
 
   async queueRender(segmentId) {
+    const segment = this.pipelineStore.getSegment(segmentId);
+    const isPriority = segment && (segment.type === 'chat-response' || segment.metadata?.priority === 'high');
+
     if (this.activeRenders >= this.maxConcurrent) {
       return new Promise(resolve => {
-        this.renderQueue.push(() => resolve(this.renderSegment(segmentId)));
+        const item = {
+          segmentId,
+          run: () => resolve(this.renderSegment(segmentId))
+        };
+        if (isPriority) {
+          this.renderQueue.unshift(item);
+        } else {
+          this.renderQueue.push(item);
+        }
       });
     }
     return this.renderSegment(segmentId);
@@ -55,7 +67,30 @@ class SegmentRenderer {
     if (this.renderQueue.length === 0) return;
     if (this.activeRenders >= this.maxConcurrent) return;
     const next = this.renderQueue.shift();
-    if (next) next();
+    if (next && next.run) next.run();
+  }
+
+  cancelQueuedSegmentsByType(type, { keep = 0 } = {}) {
+    let kept = 0;
+    const remaining = [];
+    const cancelled = [];
+
+    for (const item of this.renderQueue) {
+      const seg = this.pipelineStore.getSegment(item.segmentId);
+      if (seg && seg.type === type) {
+        if (kept < keep) {
+          remaining.push(item);
+          kept += 1;
+        } else {
+          cancelled.push(item.segmentId);
+        }
+      } else if (seg) {
+        remaining.push(item);
+      }
+    }
+
+    this.renderQueue = remaining;
+    return cancelled;
   }
 
   /**
@@ -215,6 +250,7 @@ class SegmentRenderer {
     });
 
     this.activeRenders += 1;
+    this.inFlight.add(segmentId);
 
     try {
       // Phase 1: TTS all lines
@@ -269,6 +305,7 @@ class SegmentRenderer {
       throw err;
     } finally {
       this.activeRenders = Math.max(0, this.activeRenders - 1);
+      this.inFlight.delete(segmentId);
       this._dequeue();
     }
 

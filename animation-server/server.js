@@ -1676,14 +1676,48 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
   }
 
   try {
+    const transitions = [
+      "Alright, let's check the chat.",
+      "Let's see what the chat says.",
+      'Quick chat check.',
+      'Okay, chat time.'
+    ];
+    const transitionText = transitions[Math.floor(Math.random() * transitions.length)];
+    const transitionLine = { speaker: speaker.toLowerCase(), text: transitionText };
+
     // Create segment with a single-line script (no LLM expansion needed)
-    const script = [{ speaker: speaker.toLowerCase(), text }];
+    const script = [transitionLine, { speaker: speaker.toLowerCase(), text }];
+    const totalText = script.map(line => line.text).join(' ');
     const segment = await pipelineStore.createSegment({
       type: 'chat-response',
       seed: seed || text.substring(0, 50),
       script,
-      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
+      estimatedDuration: Math.max(1, Math.ceil(totalText.split(/\s+/).length / 150 * 60))
     });
+
+    try {
+      await pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), priority: 'high', source: 'chat' }
+      });
+    } catch (_) {}
+
+    if (pipelineStore.prioritizeSegment) {
+      try {
+        await pipelineStore.prioritizeSegment(segment.id, {
+          afterOnAir: true,
+          avoidTransitionSplit: true
+        });
+      } catch (_) {}
+    }
+
+    if (segmentRenderer.cancelQueuedSegmentsByType) {
+      const cancelled = segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });
+      for (const id of cancelled) {
+        try {
+          await pipelineStore.removeSegment(id);
+        } catch (_) {}
+      }
+    }
 
     console.log(`[Orchestrator] Queued response segment ${segment.id} (${speaker})`);
     broadcastPipelineUpdate();

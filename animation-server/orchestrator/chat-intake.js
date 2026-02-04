@@ -9,6 +9,12 @@ class ChatIntakeAgent {
 
     this.inbox = [];
     this.autoApprove = false;
+    this.chatTransitions = [
+      'Alright, let\'s check the chat.',
+      'Let\'s see what the chat says.',
+      'Quick chat check.',
+      'Okay, chat time.'
+    ];
   }
 
   start() {}
@@ -53,12 +59,17 @@ class ChatIntakeAgent {
 
     if (card.response) {
       // Pre-written response from router — create single-line segment directly
-      const script = [{ speaker: card.response.speaker, text: card.response.text }];
+      const transition = this._pickChatTransition(card.response.speaker);
+      const script = [
+        transition,
+        { speaker: card.response.speaker, text: card.response.text }
+      ].filter(Boolean);
+      const totalText = script.map(line => line.text).join(' ');
       segment = await this.pipelineStore.createSegment({
         type: 'chat-response',
         seed: card.text.substring(0, 50),
         script,
-        estimatedDuration: Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60))
+        estimatedDuration: Math.max(1, Math.ceil(totalText.split(/\s+/).length / 150 * 60))
       });
     } else if (this.scriptGenerator) {
       // No pre-written response — expand via LLM
@@ -66,6 +77,33 @@ class ChatIntakeAgent {
     }
 
     if (!segment) return;
+
+    // Mark as high priority
+    try {
+      await this.pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), priority: 'high', source: 'chat' }
+      });
+    } catch (_) {}
+
+    // Move chat responses right after the on-air segment (without splitting transitions)
+    if (this.pipelineStore.prioritizeSegment) {
+      try {
+        await this.pipelineStore.prioritizeSegment(segment.id, {
+          afterOnAir: true,
+          avoidTransitionSplit: true
+        });
+      } catch (_) {}
+    }
+
+    // Cancel queued filler renders beyond 1 to avoid wasting credits
+    if (this.segmentRenderer?.cancelQueuedSegmentsByType) {
+      const cancelled = this.segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });
+      for (const id of cancelled) {
+        try {
+          await this.pipelineStore.removeSegment(id);
+        } catch (_) {}
+      }
+    }
 
     // Remove from inbox since it's been auto-queued
     this.removeCard(card.id);
@@ -82,6 +120,15 @@ class ChatIntakeAgent {
         console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
       });
     }
+  }
+
+  _pickChatTransition(speaker) {
+    const text = this.chatTransitions[Math.floor(Math.random() * this.chatTransitions.length)];
+    if (!text) return null;
+    return {
+      speaker: String(speaker || 'chad').toLowerCase(),
+      text
+    };
   }
 
   getInbox() {

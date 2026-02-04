@@ -189,7 +189,13 @@ Rules:
     if (!chatMessage) throw new Error('Missing chat message');
 
     const recentExitContexts = this._recentExitContexts(3);
-    const systemPrompt = `Generate a 1-3 exchange response to this chat message. Type: chat-response.\nContext: ${recentExitContexts.join(' | ') || 'none'}.\nReturn ONLY valid JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "..." }`;
+    const systemPrompt = `Generate a 2-4 line response to this chat message. Type: chat-response.\n` +
+      `Requirements:\n` +
+      `- First line is a short chat transition (e.g., "Let's check the chat.")\n` +
+      `- Next 1-2 lines answer the message naturally\n` +
+      `- Optional final line that hands back to the ongoing convo (short)\n` +
+      `Context: ${recentExitContexts.join(' | ') || 'none'}.\n` +
+      `Return ONLY valid JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "..." }`;
     const userPrompt = `Chat message: "${chatMessage}"`;
 
     const completion = await this.openai.chat.completions.create({
