@@ -21,7 +21,9 @@ class Orchestrator {
     });
     this.playbackController = new PlaybackController({
       pipelineStore,
-      eventEmitter
+      eventEmitter,
+      scriptGenerator: this.scriptGenerator,
+      segmentRenderer: this.segmentRenderer
     });
 
     this.bufferMonitor = new BufferMonitor({

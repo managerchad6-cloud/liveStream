@@ -19,6 +19,9 @@ class BufferMonitor {
     };
 
     this.fillerEnabled = config?.enabled ?? false;
+    // Continuity generation is now driven by ON-AIR events (see PlaybackController)
+    // BufferMonitor should not generate filler/expand on ticks.
+    this.continuityDisabled = true;
     this.timer = null;
     this.lastLevel = null;
     this.isGenerating = false; // Prevent concurrent generation batches
@@ -160,7 +163,10 @@ class BufferMonitor {
     }
 
     // Generate fillers if enabled and needed
-    if (this.fillerEnabled && this.fillerGenerator && !this.isGenerating) {
+    if (!this.continuityDisabled &&
+        this.fillerEnabled &&
+        this.fillerGenerator &&
+        !this.isGenerating) {
       const fillersNeeded = this._calculateFillersNeeded(health);
 
       if (fillersNeeded > 0 && hasActiveContent) {

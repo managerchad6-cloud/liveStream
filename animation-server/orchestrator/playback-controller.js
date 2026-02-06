@@ -5,9 +5,11 @@
  * directly when audio starts/finishes for each segment.
  */
 class PlaybackController {
-  constructor({ pipelineStore, eventEmitter }) {
+  constructor({ pipelineStore, eventEmitter, scriptGenerator, segmentRenderer }) {
     this.pipelineStore = pipelineStore;
     this.eventEmitter = eventEmitter;
+    this.scriptGenerator = scriptGenerator;
+    this.segmentRenderer = segmentRenderer;
 
     this.isPlaying = false;
     this.isPaused = false;
@@ -15,6 +17,8 @@ class PlaybackController {
     this.broadcastInterval = null;
     // Segments whose audio finished before they became 'ready' (edge case)
     this.pendingDone = new Set();
+    // Prevent duplicate expand generation per on-air segment
+    this.pendingExpand = new Set();
   }
 
   start() {
@@ -57,6 +61,9 @@ class PlaybackController {
       this.currentSegmentId = segmentId;
       console.log(`[PlaybackController] On-air: ${segmentId}`);
       this._broadcastUpdate();
+      this._maybeGenerateExpand(segmentId).catch(err => {
+        console.warn(`[PlaybackController] On-air expand failed: ${err.message}`);
+      });
     }
   }
 
@@ -135,6 +142,67 @@ class PlaybackController {
         currentSegmentId: this.currentSegmentId,
         playbackStatus: this.getStatus()
       });
+    }
+  }
+
+  _isExpandSegment(segment) {
+    return Boolean(segment && segment.metadata && segment.metadata.continuity === 'expand');
+  }
+
+  _pipelineHasOnlyOnAir(segmentId) {
+    const active = this.pipelineStore.getAllSegments()
+      .filter(s => s.status === 'forming' || s.status === 'ready');
+    return active.length === 1 && active[0].id === segmentId;
+  }
+
+  _hasRealRendering() {
+    if (!this.pipelineStore.getFormingSegments) return false;
+    const forming = this.pipelineStore.getFormingSegments();
+    return forming.some(seg => !this._isExpandSegment(seg));
+  }
+
+  _hasExpandFor(segmentId) {
+    return this.pipelineStore.getAllSegments().some(seg =>
+      this._isExpandSegment(seg) && seg.metadata?.expandFrom === segmentId
+    );
+  }
+
+  async _maybeGenerateExpand(segmentId) {
+    if (!this.pipelineStore || !this.scriptGenerator || !this.segmentRenderer) return;
+    if (this.pendingExpand.has(segmentId)) return;
+
+    const onAir = this.pipelineStore.getSegment(segmentId);
+    if (!onAir) return;
+
+    // Continuity decisions are strictly ON-AIR-driven and only when pipeline is empty.
+    if (!this._pipelineHasOnlyOnAir(segmentId)) return;
+    if (this._hasRealRendering()) return;
+    if (this._hasExpandFor(segmentId)) return;
+
+    const seed = onAir.exitContext || onAir.seed;
+    if (!seed) return;
+
+    this.pendingExpand.add(segmentId);
+    try {
+      const segment = await this.scriptGenerator.expandDirectorNote(seed);
+      await this.pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), continuity: 'expand', expandFrom: segmentId }
+      });
+
+      if (this.pipelineStore.prioritizeSegment) {
+        await this.pipelineStore.prioritizeSegment(segment.id, {
+          afterOnAir: true,
+          avoidTransitionSplit: true
+        });
+      }
+
+      this.segmentRenderer.queueRender(segment.id).catch(err => {
+        console.warn(`[PlaybackController] Expand render failed: ${err.message}`);
+      });
+
+      this._broadcastUpdate();
+    } finally {
+      this.pendingExpand.delete(segmentId);
     }
   }
 }
