@@ -4,10 +4,9 @@ const { parseJson, estimateDurationSeconds } = require('./utils');
 const DEFAULT_MODEL = process.env.SCRIPT_MODEL || 'gpt-4o';
 
 class ScriptGenerator {
-  constructor({ openai, pipelineStore, config }) {
+  constructor({ openai, pipelineStore }) {
     this.openai = openai;
     this.pipelineStore = pipelineStore;
-    this.defaultExchanges = Number(config?.scriptGeneration?.defaultExchanges || 4);
   }
 
   _recentExitContexts(limit = 5) {
@@ -49,8 +48,8 @@ Rules:
 - Audio tags for ElevenLabs v3: [laughs], [chuckles], [sighs], [nervous laugh], [clears throat], etc.`;
   }
 
-  _buildUserContent(seed, targetExchanges = this.defaultExchanges) {
-    return `Director note: ${seed}\n\nHard requirement: Generate exactly ${targetExchanges} dialogue turns (lines total), unless the director note explicitly requests a different turn count.`;
+  _buildUserContent(seed) {
+    return `Director note: ${seed}`;
   }
 
   _normalizeScript(lines) {
@@ -58,27 +57,13 @@ Rules:
       speaker: String(line.speaker || '').toLowerCase(),
       text: String(line.text || '').trim()
     })).filter(line => line.speaker && line.text);
-  }
-
-  _extractRequestedTurnCount(seed) {
-    const text = String(seed || '').toLowerCase();
-    const m = text.match(/(\d+)\s*[- ]?turn/);
-    if (m && m[1]) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n >= 1 && n <= 30) return n;
-    }
-    return null;
-  }
-
-  async _generateScript(seed) {
+  }\n\n  async _generateScript(seed) {
     if (!this.openai) throw new Error('OpenAI not configured');
     if (!seed) throw new Error('Missing seed');
 
     const recentExitContexts = this._recentExitContexts(5);
     const systemPrompt = this._buildSystemPrompt({ recentExitContexts });
-    const requestedTurns = this._extractRequestedTurnCount(seed);
-    const targetExchanges = requestedTurns || this.defaultExchanges;
-    const userContent = this._buildUserContent(seed, targetExchanges);
+    const userContent = this._buildUserContent(seed);
 
     const completion = await this.openai.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -95,7 +80,7 @@ Rules:
       throw new Error('Failed to parse script JSON');
     }
 
-    const script = this._normalizeScript(parsed.script).slice(0, targetExchanges);
+    const script = this._normalizeScript(parsed.script);
     const estimatedDuration = estimateDurationSeconds(script);
 
     return {
