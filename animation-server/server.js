@@ -1671,6 +1671,61 @@ app.post('/api/orchestrator/expand-chat', async (req, res) => {
   }
 });
 
+// Create a segment from a custom JSON script (no LLM expansion)
+app.post('/api/orchestrator/custom-script', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
+
+  const {
+    seed,
+    type = 'custom-script',
+    script,
+    exitContext = null,
+    estimatedDuration = null,
+    metadata = {}
+  } = req.body || {};
+
+  if (!Array.isArray(script) || script.length === 0) {
+    return res.status(400).json({ error: 'Missing script array' });
+  }
+
+  const normalized = script.map((line) => ({
+    speaker: String(line?.speaker || '').toLowerCase().trim(),
+    text: String(line?.text || '').trim()
+  })).filter((line) => line.speaker && line.text);
+
+  if (normalized.length === 0) {
+    return res.status(400).json({ error: 'Script must contain at least one valid line with speaker and text' });
+  }
+
+  try {
+    const autoDuration = Math.max(1, Math.ceil(normalized.reduce((sum, line) => {
+      const words = line.text.split(/\s+/).filter(Boolean).length;
+      return sum + words;
+    }, 0) / 150 * 60));
+
+    const segment = await pipelineStore.createSegment({
+      type,
+      seed: seed || 'custom-script',
+      script: normalized,
+      estimatedDuration: (estimatedDuration !== null && estimatedDuration !== undefined && Number.isFinite(Number(estimatedDuration)))
+        ? Number(estimatedDuration)
+        : autoDuration
+    });
+
+    await pipelineStore.updateSegment(segment.id, {
+      exitContext,
+      metadata: { ...(segment.metadata || {}), ...(metadata || {}), source: 'custom-script' }
+    });
+
+    const created = pipelineStore.getSegment(segment.id);
+    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', created);
+    broadcastPipelineUpdate();
+    res.json(created);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Queue a pre-written single-line response directly to the pipeline
 // Used by /api/chat after router + OpenAI generate the response text
 app.post('/api/orchestrator/queue-response', async (req, res) => {

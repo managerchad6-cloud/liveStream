@@ -10,7 +10,11 @@ class Orchestrator {
   constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config }) {
     this.pipelineStore = pipelineStore;
 
-    this.scriptGenerator = openai ? new ScriptGenerator({ openai, pipelineStore }) : null;
+    this.scriptGenerator = openai ? new ScriptGenerator({
+      openai,
+      pipelineStore,
+      config
+    }) : null;
     this.bridgeGenerator = openai ? new BridgeGenerator({ openai, pipelineStore }) : null;
     this.fillerGenerator = openai ? new FillerGenerator({ openai, pipelineStore }) : null;
     this.segmentRenderer = new SegmentRenderer({
