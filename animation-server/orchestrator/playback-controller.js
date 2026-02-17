@@ -19,6 +19,8 @@ class PlaybackController {
     this.pendingDone = new Set();
     // Prevent duplicate expand generation per on-air segment
     this.pendingExpand = new Set();
+    // Expand chain tracking: { rootSegmentId, maxExpands, airedCount }
+    this.expandChain = null;
   }
 
   start() {
@@ -217,6 +219,42 @@ class PlaybackController {
       return;
     }
 
+    // Track expand chain: human-input segments start a new chain, expands continue it
+    const humanInputTypes = ['chat-response', 'auto-convo', 'custom-script'];
+    const isHumanInput = humanInputTypes.includes(sourceSegment.type);
+    const isExpand = this._isExpandSegment(sourceSegment);
+
+    if (isHumanInput) {
+      // New human input resets the chain — first expand will determine maxExpands
+      this.expandChain = { rootSegmentId: segmentId, maxExpands: null, airedCount: 0 };
+      console.log(`[PlaybackController] New expand chain started from ${sourceSegment.type} ${segmentId.slice(0,8)}`);
+    } else if (isExpand && this.expandChain) {
+      // Count this aired expand
+      this.expandChain.airedCount += 1;
+
+      // First expand in chain — read maxExpands from its metadata (set by LLM)
+      if (this.expandChain.maxExpands === null && typeof sourceSegment.metadata?.maxExpands === 'number') {
+        this.expandChain.maxExpands = sourceSegment.metadata.maxExpands;
+        console.log(`[PlaybackController] Chain maxExpands set to ${this.expandChain.maxExpands} (from LLM)`);
+      }
+
+      // Check if chain is exhausted
+      if (this.expandChain.maxExpands !== null && this.expandChain.airedCount >= this.expandChain.maxExpands) {
+        console.log(`[PlaybackController] Expand chain exhausted (${this.expandChain.airedCount}/${this.expandChain.maxExpands}) — going silent`);
+        this.expandChain = null;
+        return;
+      }
+
+      console.log(`[PlaybackController] Expand ${this.expandChain.airedCount}/${this.expandChain.maxExpands ?? '?'} aired`);
+    } else if (isExpand && !this.expandChain) {
+      // Orphaned expand (chain was reset by new human input) — don't continue
+      console.log(`[PlaybackController] Orphaned expand ${segmentId.slice(0,8)} — no active chain`);
+      return;
+    } else if (!isExpand && !isHumanInput) {
+      // Non-human, non-expand segment (bridge, filler, transition) — don't expand
+      return;
+    }
+
     // Continuity decisions are strictly ON-AIR-driven and only when pipeline is empty.
     // Generate expand when this segment starts playing AND nothing else is in pipeline.
     // This ensures the next expand is ready by the time this segment finishes (no silence gaps).
@@ -243,28 +281,49 @@ class PlaybackController {
     console.log(`[PlaybackController] Already has expand for ${segmentId}? ${hasExpand}`);
     if (hasExpand) return;
 
-    console.log(`[PlaybackController] All checks passed - generating expand for ${segmentId}`);
+    // Determine expand options
+    const isFirstExpand = isHumanInput; // first expand comes right after human input
+    let wrapUp = false;
+    if (this.expandChain && this.expandChain.maxExpands !== null) {
+      // Next expand will be airedCount+1 (the one we're about to generate)
+      wrapUp = (this.expandChain.airedCount + 1) >= this.expandChain.maxExpands;
+    }
+
+    console.log(`[PlaybackController] Generating expand for ${segmentId.slice(0,8)} (first=${isFirstExpand}, wrapUp=${wrapUp})`);
     this.pendingExpand.add(segmentId);
     try {
-      const segment = await this.scriptGenerator.expandConversation();
+      const segment = await this.scriptGenerator.expandConversation({ isFirstExpand, wrapUp });
       if (!segment) {
         console.log(`[PlaybackController] Expand generation returned null`);
         this.pendingExpand.delete(segmentId);
         return;
       }
 
-      console.log(`[PlaybackController] Expand generated: ${segment.id}`);
-      await this.pipelineStore.updateSegment(segment.id, {
-        metadata: { ...(segment.metadata || {}), continuity: 'expand', expandFrom: segmentId }
-      });
+      console.log(`[PlaybackController] Expand generated: ${segment.id}${segment.metadata?.maxExpands != null ? ` (maxExpands=${segment.metadata.maxExpands})` : ''}`);
 
-      // Expands queue in natural order (generated when pipeline is empty, so just append)
+      // If first expand and LLM says maxExpands=0, discard it — topic doesn't deserve follow-ups
+      if (isFirstExpand && segment.metadata?.maxExpands === 0) {
+        console.log(`[PlaybackController] maxExpands=0 — discarding expand and going silent`);
+        try { await this.pipelineStore.removeSegment(segment.id); } catch (_) {}
+        this.expandChain = null;
+        return;
+      }
+
+      // Store maxExpands on chain if this is the first expand
+      if (isFirstExpand && typeof segment.metadata?.maxExpands === 'number') {
+        this.expandChain.maxExpands = segment.metadata.maxExpands;
+        console.log(`[PlaybackController] Chain maxExpands set to ${this.expandChain.maxExpands} (from LLM)`);
+      }
+
+      await this.pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), continuity: 'expand', expandFrom: segmentId, expandChainRoot: this.expandChain?.rootSegmentId || segmentId }
+      });
 
       this.segmentRenderer.queueRender(segment.id).catch(err => {
         console.warn(`[PlaybackController] Expand render failed: ${err.message}`);
       });
 
-      console.log(`[PlaybackController] Expand ${segment.id} queued for rendering`);
+      console.log(`[PlaybackController] Expand ${segment.id.slice(0,8)} queued for rendering`);
       this._broadcastUpdate();
     } finally {
       this.pendingExpand.delete(segmentId);

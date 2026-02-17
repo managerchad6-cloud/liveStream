@@ -40,7 +40,7 @@ Return ONLY valid JSON:
 }
 
 Rules:
-- Generate exactly 4 dialogue turns (lines) total
+- Generate exactly 1 dialogue turn (line) total
 - Natural conversational flow (not rigid alternation)
 - Chad can interrupt, Virgin can trail off
 - One character can have multiple consecutive lines
@@ -202,13 +202,13 @@ Rules:
 
   /**
    * Continue an ongoing conversation naturally. Collects full dialogue history
-   * from recent aired/ready segments and generates 2 more turns.
+   * from recent aired/ready segments and generates 1 more turn.
    *
    * IMPORTANT: Creates the segment FIRST to reserve its position in the pipeline,
    * then generates the script. This prevents race conditions where chat messages
    * arriving during generation end up earlier in the queue.
    */
-  async expandConversation() {
+  async expandConversation({ isFirstExpand = false, wrapUp = false } = {}) {
     if (!this.openai) throw new Error('OpenAI not configured');
 
     // Collect conversation history from recent segments
@@ -243,9 +243,26 @@ Rules:
       .join('\n');
 
     try {
+      // Build JSON response format — first expand includes maxExpands
+      let jsonFormat = '{ "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "brief topic summary"';
+      if (isFirstExpand) {
+        jsonFormat += ', "maxExpands": <number>';
+      }
+      jsonFormat += ' }';
+
+      let maxExpandsClause = '';
+      if (isFirstExpand) {
+        maxExpandsClause = '\n\n"maxExpands" — how many total follow-up lines this topic deserves (0-5). Most conversations should be SHORT. Greetings like "hi", "what\'s up", "hey guys" = 0. Simple questions or generic comments = 0-1. A topic with mild debate potential = 2. A genuinely heated argument or deep lore discussion = 3-5. Default to 0 or 1 unless the topic is truly compelling. Silence is fine — don\'t force conversation.';
+      }
+
+      let wrapUpClause = '';
+      if (wrapUp) {
+        wrapUpClause = '\n\nIMPORTANT: This is the FINAL line on this topic. Wrap up naturally — make a closing remark, a dismissive sign-off, or a natural conversation-ender. Do NOT open new threads or ask questions.';
+      }
+
       // Build as actual chat messages so the LLM naturally predicts the next lines
       const messages = [
-        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n\nRespond with ONLY JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "brief topic summary" }\nExactly 2 lines. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.` }
+        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n\nRespond with ONLY JSON: ${jsonFormat}\nExactly 1 line. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${maxExpandsClause}${wrapUpClause}` }
       ];
 
       // Feed conversation history as assistant messages so LLM sees it as its own output
@@ -253,12 +270,13 @@ Rules:
         messages.push({ role: 'assistant', content: `${line.speaker}: ${line.text}` });
       }
 
-      messages.push({ role: 'user', content: 'Continue.' });
+      messages.push({ role: 'user', content: wrapUp ? 'Wrap it up.' : 'Continue.' });
 
       let completion = await this.openai.chat.completions.create({
         model: DEFAULT_MODEL,
         messages,
-        temperature: 0.8
+        temperature: 0.8,
+        max_tokens: 250
       });
 
       let content = completion.choices?.[0]?.message?.content || '';
@@ -271,14 +289,15 @@ Rules:
 
         // Retry with a more explicit JSON-focused prompt
         const retryMessages = [
-          { role: 'system', content: `Continue this conversation with exactly 2 lines. Return ONLY valid JSON with this exact structure:\n{\n  "script": [\n    { "speaker": "chad", "text": "..." },\n    { "speaker": "virgin", "text": "..." }\n  ]\n}\n\nNo markdown, no code blocks, no explanation - ONLY the JSON object.` },
+          { role: 'system', content: `Continue this conversation with exactly 1 line. Return ONLY valid JSON with this exact structure:\n{\n  "script": [\n    { "speaker": "chad|virgin", "text": "..." }\n  ]\n}\n\nNo markdown, no code blocks, no explanation - ONLY the JSON object.${wrapUp ? ' This is the FINAL line — wrap up the topic naturally.' : ''}` },
           { role: 'user', content: `Recent conversation:\n${historyText.slice(-500)}\n\nContinue naturally:` }
         ];
 
         completion = await this.openai.chat.completions.create({
           model: DEFAULT_MODEL,
           messages: retryMessages,
-          temperature: 0.7
+          temperature: 0.7,
+          max_tokens: 250
         });
 
         content = completion.choices?.[0]?.message?.content || '';
@@ -295,12 +314,18 @@ Rules:
       const script = this._normalizeScript(parsed.script);
       const estimatedDuration = estimateDurationSeconds(script);
 
-      // Update the segment with the generated script
-      await this.pipelineStore.updateSegment(segment.id, {
+      const updateData = {
         script,
         estimatedDuration,
         exitContext: parsed.exitContext || null
-      });
+      };
+
+      // Store maxExpands from first expand's LLM response
+      if (isFirstExpand && typeof parsed.maxExpands === 'number') {
+        updateData.metadata = { ...(segment.metadata || {}), maxExpands: Math.max(0, Math.min(5, Math.round(parsed.maxExpands))) };
+      }
+
+      await this.pipelineStore.updateSegment(segment.id, updateData);
 
       return this.pipelineStore.getSegment(segment.id);
     } catch (err) {

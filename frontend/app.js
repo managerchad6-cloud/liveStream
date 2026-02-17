@@ -234,7 +234,7 @@ async function sendMessage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           seed: message,
-          turns: 2,
+          turns: 1,
           temperature: parseFloat(tempSlider.value)
         })
       });

@@ -149,7 +149,7 @@ app.post('/api/auto', async (req, res) => {
   try {
     const {
       seed,
-      turns = 2,
+      turns = 1,
       model = autoModel,
       temperature = 0.7
     } = req.body;
@@ -158,7 +158,7 @@ app.post('/api/auto', async (req, res) => {
       return res.status(400).json({ error: 'Seed is required and must be a string' });
     }
 
-    const turnCount = Math.max(2, Math.min(30, parseInt(turns, 10) || 2));
+    const turnCount = Math.max(1, Math.min(30, parseInt(turns, 10) || 1));
     console.log('[Auto] Request seed="' + seed.slice(0, 40) + '...", turns=' + turnCount);
 
     autoConversation.id += 1;
@@ -755,7 +755,7 @@ ${virginProfile}`;
       { role: 'system', content: systemPrompt },
       { role: 'user', content: seed }
     ],
-    max_tokens: 1200,
+    max_tokens: 200,
     temperature
   });
 
