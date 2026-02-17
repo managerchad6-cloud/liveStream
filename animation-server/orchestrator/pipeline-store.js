@@ -11,10 +11,12 @@ const VALID_TRANSITIONS = {
 };
 
 class PipelineStore {
-  constructor(dataDir) {
+  constructor(dataDir, options = {}) {
     this.dataDir = dataDir;
     this.filePath = path.join(dataDir, 'pipeline.json');
     this.segments = [];
+    this.onSegmentActivity = options.onSegmentActivity || null;
+    this._persistChain = Promise.resolve(); // serializes writes
   }
 
   async init() {
@@ -31,25 +33,44 @@ class PipelineStore {
       this.segments = [];
     }
 
-    // Mark stale 'forming' segments from previous sessions (they'll never render)
-    const staleForming = this.segments.filter(s => s.status === 'forming');
-    if (staleForming.length > 0) {
-      for (const seg of staleForming) {
-        seg.renderProgress = -1;
-        seg.metadata = { ...seg.metadata, renderError: 'Server restarted during render', renderFailedAt: Date.now() };
-      }
+    // Clean slate on every server start
+    if (this.segments.length > 0) {
+      console.log(`[PipelineStore] Clearing ${this.segments.length} segments from previous session`);
+      this.segments = [];
       await this._persist();
-      console.log(`[PipelineStore] Marked ${staleForming.length} stale forming segments as failed`);
     }
 
-    console.log(`[PipelineStore] Initialized with ${this.segments.length} segments`);
+    console.log(`[PipelineStore] Initialized (clean slate)`);
   }
 
-  async _persist() {
+  _persist() {
+    // Serialize all writes: each persist waits for the previous one to finish.
+    // This prevents concurrent ENOENT/EPERM races on Windows where multiple
+    // writes to the same tmp/target file step on each other.
+    this._persistChain = this._persistChain.catch(() => {}).then(() => this._doPersist());
+    return this._persistChain;
+  }
+
+  async _doPersist() {
     const payload = JSON.stringify(this.segments, null, 2);
-    const tmpPath = `${this.filePath}.tmp`;
+    const tmpPath = `${this.filePath}.${crypto.randomUUID()}.tmp`;
     await fs.promises.writeFile(tmpPath, payload, 'utf8');
-    await fs.promises.rename(tmpPath, this.filePath);
+
+    // Retry rename up to 3 times — Windows gives transient EPERM when
+    // the target file is briefly locked (antivirus scan, concurrent read, etc.)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await fs.promises.rename(tmpPath, this.filePath);
+        return; // success
+      } catch (err) {
+        if (attempt < 3 && (err.code === 'EPERM' || err.code === 'EACCES')) {
+          await new Promise(r => setTimeout(r, 50 * attempt));
+          continue;
+        }
+        try { await fs.promises.unlink(tmpPath); } catch (_) {}
+        throw err;
+      }
+    }
   }
 
   async createSegment({ type, seed, script, estimatedDuration } = {}) {
@@ -73,6 +94,13 @@ class PipelineStore {
     this.segments.push(segment);
     await this._persist();
 
+    if (this.onSegmentActivity) {
+      try {
+        this.onSegmentActivity(segment, 'created');
+      } catch (err) {
+        console.warn('[PipelineStore] onSegmentActivity error:', err.message);
+      }
+    }
     console.log(`[PipelineStore] Created segment ${id} (${type || 'auto-convo'})`);
     return segment;
   }
@@ -138,6 +166,13 @@ class PipelineStore {
     segment.status = newStatus;
     segment.updatedAt = new Date().toISOString();
 
+    if (newStatus === 'aired' && this.onSegmentActivity) {
+      try {
+        this.onSegmentActivity(segment, 'aired');
+      } catch (err) {
+        console.warn('[PipelineStore] onSegmentActivity error:', err.message);
+      }
+    }
     if (newStatus === 'deleted') {
       const index = this.segments.indexOf(segment);
       if (index !== -1) this.segments.splice(index, 1);

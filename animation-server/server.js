@@ -34,7 +34,13 @@ const {
   saveExpressionLimits,
   setEyebrowRotationLimits,
   setEyebrowAsymmetry,
-  setSpeakingCharacter
+  setSpeakingCharacter,
+  setLeaderboard,
+  getLeaderboard,
+  getLeaderboardVersion,
+  setLeaderboardTimer,
+  getLeaderboardTimer,
+  addChatMessage
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -71,9 +77,13 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 const AUDIO_DIR = path.join(STREAMS_DIR, 'audio');
 const TV_CONTENT_DIR = path.join(__dirname, 'tv-content', 'content');
 const ORCHESTRATOR_CONFIG_PATH = path.join(ROOT_DIR, 'data', 'orchestrator-config.json');
+const LOGS_DIR = path.join(ROOT_DIR, 'logs');
+const LOGS_AUDIO_DIR = path.join(LOGS_DIR, 'audio');
 
 // Ensure directories exist
 fs.mkdirSync(STREAMS_DIR, { recursive: true });
+fs.mkdirSync(LOGS_DIR, { recursive: true });
+fs.mkdirSync(LOGS_AUDIO_DIR, { recursive: true });
 fs.mkdirSync(TEMP_DIR, { recursive: true });
 fs.mkdirSync(AUDIO_DIR, { recursive: true });
 fs.mkdirSync(TV_CONTENT_DIR, { recursive: true });
@@ -703,9 +713,10 @@ async function startPlayback(item) {
     setTimeout(handleAudioComplete, Math.max(0, item.duration) * 1000);
   }
 
-  if (item.messageText) {
-    setCaption(item.messageText, item.duration);
-  }
+  // Captions disabled — chat overlay shows viewer messages instead
+  // if (item.messageText) {
+  //   setCaption(item.messageText, item.duration);
+  // }
 
   // Build expression plan and load into frame-driven evaluator
   if (item.messageText && autoExpressions) {
@@ -761,6 +772,10 @@ async function startPlayback(item) {
 
 function processQueue() {
   if (isAudioActive || renderQueue.length === 0) {
+    return;
+  }
+  if (playbackController && playbackController.isPaused) {
+    console.log('[Queue] Paused — not dequeuing next segment');
     return;
   }
 
@@ -946,6 +961,9 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   const messageText = typeof req.body.message === 'string' ? req.body.message.trim() : '';
   const mode = req.body.mode || 'direct';
   const segmentId = req.body.segmentId || null;  // Track which pipeline segment this audio belongs to
+  const lineIndexRaw = req.body.lineIndex;
+  const lineIndexNum = lineIndexRaw !== undefined && lineIndexRaw !== '' ? parseInt(String(lineIndexRaw), 10) : NaN;
+  const lineIndex = Number.isInteger(lineIndexNum) && lineIndexNum >= 0 ? lineIndexNum : undefined;
   const segmentType = req.body.segmentType || null;
   const priorityRaw = String(req.body.priority || '').toLowerCase();
   const isPriority = priorityRaw === 'high' || priorityRaw === 'true' || priorityRaw === '1';
@@ -963,6 +981,17 @@ app.post('/render', upload.single('audio'), async (req, res) => {
     // Move to audio directory
     fs.renameSync(audioPath, audioMp3Path);
     const moveTime = Date.now() - renderStart;
+
+    // Persist a copy to logs/audio (git-ignored) for replay: segmentId_lineIndex.mp3
+    const logFileName = segmentId && lineIndex !== undefined
+      ? `${segmentId}_${lineIndex}.mp3`
+      : segmentId
+        ? `${segmentId}_${audioId}.mp3`
+        : `unknown_${audioId}.mp3`;
+    const logAudioPath = path.join(LOGS_AUDIO_DIR, logFileName);
+    fs.promises.copyFile(audioMp3Path, logAudioPath).catch(err => {
+      console.warn('[Render] logs/audio copy failed:', err.message);
+    });
 
     let audioDuration;
     const response = {
@@ -1120,6 +1149,30 @@ app.get('/tv', (req, res) => {
 // Serve Director control panel
 app.get('/director', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'director.html'));
+});
+
+// Serve Prompt Editor
+app.get('/prompt-editor', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'prompt-editor.html'));
+});
+
+// Voice prompt API (mirrors chat server endpoints for same-process mutation)
+const voices = require('../voices');
+
+app.get('/api/voices/:id/prompt', (req, res) => {
+  const voice = voices[req.params.id];
+  if (!voice) return res.status(404).json({ error: 'Voice not found' });
+  res.json({ basePrompt: voice.basePrompt, audioTags: voice.audioTags });
+});
+
+app.post('/api/voices/:id/prompt', (req, res) => {
+  const voice = voices[req.params.id];
+  if (!voice) return res.status(404).json({ error: 'Voice not found' });
+  const { basePrompt, audioTags } = req.body;
+  if (typeof basePrompt === 'string') voice.basePrompt = basePrompt;
+  if (typeof audioTags === 'string') voice.audioTags = audioTags;
+  console.log(`[Voices] Updated prompt for ${req.params.id} (animation server)`);
+  res.json({ ok: true });
 });
 
 // ============== TV Content API ==============
@@ -1643,6 +1696,23 @@ app.post('/api/tv-layer/clear-manual', async (req, res) => {
 // ============== End TV Layer API ==============
 
 // ============== Orchestrator Script API ==============
+app.post('/api/orchestrator/seed', async (req, res) => {
+  if (!scriptGenerator || !playbackController || !segmentRenderer) return res.status(503).json({ error: 'Orchestrator not initialized' });
+  const { topic } = req.body || {};
+  if (!topic) return res.status(400).json({ error: 'Missing topic' });
+  try {
+    const segment = await scriptGenerator.expandDirectorNote(topic);
+    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
+    broadcastPipelineUpdate();
+    segmentRenderer.queueRender(segment.id);
+    await playbackController.start();
+    processQueue();
+    res.json({ segment, playing: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/orchestrator/expand', async (req, res) => {
   if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
   const { seed } = req.body || {};
@@ -1663,6 +1733,11 @@ app.post('/api/orchestrator/expand-chat', async (req, res) => {
   if (!message) return res.status(400).json({ error: 'Missing message' });
   try {
     const segment = await scriptGenerator.expandChatMessage(message);
+    // Prepend narrator line to read the viewer's message
+    if (segment && Array.isArray(segment.script)) {
+      segment.script.unshift({ speaker: 'narrator', text: message.substring(0, 120) });
+      await pipelineStore.updateSegment(segment.id, { script: segment.script });
+    }
     if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
     broadcastPipelineUpdate();
     res.json(segment);
@@ -1738,13 +1813,14 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
   }
 
   try {
-    // Create segment with a single-line script (no LLM expansion needed)
-    const script = [{ speaker: speaker.toLowerCase(), text }];
+    // Narrator reads the viewer message, then character responds
+    const narratorLine = { speaker: 'narrator', text: (seed || text).substring(0, 120) };
+    const script = [narratorLine, { speaker: speaker.toLowerCase(), text }];
     const segment = await pipelineStore.createSegment({
       type: 'chat-response',
       seed: seed || text.substring(0, 50),
       script,
-      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
+      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60) + 3)
     });
 
     try {
@@ -1884,6 +1960,7 @@ app.post('/api/orchestrator/play', async (req, res) => {
   if (!playbackController) return res.status(503).json({ error: 'Playback controller not initialized' });
   try {
     const status = await playbackController.start();
+    processQueue();
     res.json(status);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2060,8 +2137,23 @@ async function start() {
   mediaLibrary = new MediaLibrary(ROOT_DIR);
   await mediaLibrary.init();
 
-  // Initialize pipeline store
-  pipelineStore = new PipelineStore(path.join(ROOT_DIR, 'data'));
+  // Initialize pipeline store with dialogue logging to logs/ (git-ignored)
+  const dialogueLogPath = path.join(LOGS_DIR, 'dialogue.jsonl');
+  const onSegmentActivity = (segment, event) => {
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      event,
+      id: segment.id,
+      type: segment.type,
+      seed: segment.seed,
+      script: segment.script,
+      metadata: segment.metadata || {}
+    }) + '\n';
+    fs.promises.appendFile(dialogueLogPath, line, 'utf8').catch(err => {
+      console.warn('[Log] dialogue write failed:', err.message);
+    });
+  };
+  pipelineStore = new PipelineStore(path.join(ROOT_DIR, 'data'), { onSegmentActivity });
   await pipelineStore.init();
 
   // Initialize TV layer manager
@@ -2086,7 +2178,307 @@ async function start() {
   }
   streamManager.start(renderFrame);
 
+  // Start leaderboard polling (every 2 seconds)
+  const CHAT_API_PORT = process.env.PORT || 3002;
+  const CHAT_API_HOST = 'localhost';
+  const LEADERBOARD_UPDATE_MS = 2000;
+
+  async function fetchLeaderboard() {
+    try {
+      const http = require('http');
+      const options = {
+        hostname: CHAT_API_HOST,
+        port: CHAT_API_PORT,
+        path: '/api/leaderboard?limit=3',
+        method: 'GET',
+        timeout: 1000
+      };
+
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            if (res.statusCode === 200) {
+              const parsed = JSON.parse(data);
+              if (Array.isArray(parsed.entries) && parsed.entries.length > 0) {
+                setLeaderboard(parsed.entries);
+              } else {
+                setLeaderboard(null);
+              }
+            }
+          } catch (err) {
+            // Silently fail - leaderboard is optional
+          }
+        });
+      });
+
+      req.on('error', () => {
+        // Silently fail - leaderboard is optional
+      });
+
+      req.end();
+    } catch (err) {
+      // Silently fail - leaderboard is optional
+    }
+  }
+
+  // Initial fetch and start interval
+  fetchLeaderboard();
+  setInterval(fetchLeaderboard, LEADERBOARD_UPDATE_MS);
+  console.log('[Leaderboard] Polling enabled (every 2s)');
+
+  // Start leaderboard timer (10 min voting + 5 min cooldown, aligned to clock)
+  // Cycle: 15 minutes total, starts at :00, :15, :30, :45 of each hour
+  const COUNTDOWN_DURATION_SEC = 600; // 10 minutes
+  const IDLE_DURATION_SEC = 300;      // 5 minutes
+  const CYCLE_DURATION_SEC = COUNTDOWN_DURATION_SEC + IDLE_DURATION_SEC; // 15 minutes
+
+  let timerState = {
+    capturedWinner: null, // Freeze winner name for full idle phase
+    lastPhase: null       // Track phase transitions
+  };
+
+  async function clearLeaderboardVotes() {
+    try {
+      const http = require('http');
+      const options = {
+        hostname: CHAT_API_HOST,
+        port: CHAT_API_PORT,
+        path: '/api/leaderboard/clear',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 1000
+      };
+
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            console.log('[Leaderboard] Votes cleared successfully');
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        console.warn('[Leaderboard] Failed to clear votes:', err.message);
+      });
+
+      req.end();
+    } catch (err) {
+      console.warn('[Leaderboard] Clear request error:', err.message);
+    }
+  }
+
+  /**
+   * Parse winner command to extract virgin/chad subjects
+   * Format: /virgin_X_vs_chad_Y or variations
+   */
+  function parseWinnerCommand(command) {
+    if (!command || typeof command !== 'string') return null;
+
+    // Remove leading slash and convert to lowercase
+    const normalized = command.toLowerCase().replace(/^\/+/, '');
+
+    // Match pattern: virgin_something_vs_chad_something
+    const match = normalized.match(/virgin[_\s]+(.+?)[_\s]+vs[_\s]+chad[_\s]+(.+)/i);
+    if (match) {
+      return {
+        virgin: match[1].replace(/_/g, ' ').trim(),
+        chad: match[2].replace(/_/g, ' ').trim()
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Generate meme via MemeFactory API and display on TV
+   */
+  async function generateAndDisplayMeme(winnerCommand) {
+    if (!winnerCommand || !mediaLibrary || !tvService) {
+      console.log('[Meme] Cannot generate: missing prerequisites');
+      return;
+    }
+
+    const parsed = parseWinnerCommand(winnerCommand);
+    if (!parsed) {
+      console.log(`[Meme] Could not parse winner command: ${winnerCommand}`);
+      return;
+    }
+
+    console.log(`[Meme] Generating meme: virgin="${parsed.virgin}", chad="${parsed.chad}"`);
+
+    try {
+      const http = require('http');
+      const requestBody = JSON.stringify({
+        virgin: parsed.virgin,
+        chad: parsed.chad
+      });
+
+      const options = {
+        hostname: '127.0.0.1',
+        port: 8000,
+        path: '/generate/raw',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(requestBody)
+        },
+        timeout: 180000 // 3 minutes timeout
+      };
+
+      const chunks = [];
+      const req = http.request(options, (res) => {
+        const contentType = res.headers['content-type'] || '';
+
+        res.on('data', (chunk) => {
+          chunks.push(chunk);
+        });
+
+        res.on('end', async () => {
+          const buffer = Buffer.concat(chunks);
+
+          if (res.statusCode === 200 && contentType.includes('image/png')) {
+            // Success - got PNG image
+            console.log(`[Meme] Generated successfully (${buffer.length} bytes)`);
+
+            try {
+              // Save to temporary file
+              const timestamp = Date.now();
+              const tempPath = path.join(TEMP_DIR, `meme_${timestamp}.png`);
+              await fs.promises.writeFile(tempPath, buffer);
+
+              // Add to media library
+              const filename = `winner_${parsed.virgin}_vs_${parsed.chad}_${timestamp}.png`;
+              const item = await mediaLibrary.addFile(tempPath, filename, 'image/png');
+              console.log(`[Meme] Added to media library: ${item.id}`);
+
+              // Get local file path
+              const filePath = mediaLibrary.getOriginalPath(item.id);
+
+              // Clear TV and add new image
+              tvService.clear();
+              await tvService.addItem({
+                type: 'image',
+                source: filePath,
+                duration: 300, // 5 minutes
+                mediaId: item.id
+              });
+              tvService.play();
+
+              console.log(`[Meme] Now displaying on TV: ${filename}`);
+
+              // Clean up temp file
+              try { await fs.promises.unlink(tempPath); } catch (e) {}
+            } catch (err) {
+              console.error('[Meme] Failed to process generated image:', err.message);
+            }
+          } else {
+            // Error response - parse JSON
+            try {
+              const errorData = JSON.parse(buffer.toString());
+              console.error('[Meme] API error:', errorData.detail || errorData);
+            } catch (e) {
+              console.error('[Meme] API error:', res.statusCode, buffer.toString().slice(0, 200));
+            }
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        console.error('[Meme] Request failed:', err.message);
+      });
+
+      req.on('timeout', () => {
+        console.error('[Meme] Request timeout after 3 minutes');
+        req.destroy();
+      });
+
+      req.write(requestBody);
+      req.end();
+    } catch (err) {
+      console.error('[Meme] Generation error:', err.message);
+    }
+  }
+
+  function updateLeaderboardTimer() {
+    const now = Date.now();
+    const currentDate = new Date(now);
+
+    // Get minutes and seconds within current hour
+    const minutesInHour = currentDate.getMinutes();
+    const secondsInMinute = currentDate.getSeconds();
+    const totalSecondsInHour = minutesInHour * 60 + secondsInMinute;
+
+    // Calculate position within 15-minute cycle (0-899 seconds)
+    const positionInCycle = totalSecondsInHour % CYCLE_DURATION_SEC;
+
+    // Determine if we're in voting or idle phase
+    const isIdle = positionInCycle >= COUNTDOWN_DURATION_SEC;
+    const phase = isIdle ? 'idle' : 'countdown';
+
+    // Calculate remaining seconds in current phase
+    let remainingSeconds;
+    if (isIdle) {
+      // In idle phase: show time remaining until next voting starts
+      remainingSeconds = CYCLE_DURATION_SEC - positionInCycle;
+    } else {
+      // In countdown phase: show time remaining until idle starts
+      remainingSeconds = COUNTDOWN_DURATION_SEC - positionInCycle;
+    }
+
+    // Detect phase transitions
+    if (timerState.lastPhase !== phase) {
+      if (phase === 'idle') {
+        // Just transitioned to idle - capture winner and clear votes
+        const leaderboard = getLeaderboard();
+        const winner = (leaderboard && leaderboard.length > 0)
+          ? leaderboard[0].command
+          : null;
+        timerState.capturedWinner = winner;
+        console.log(`[Leaderboard Timer] Idle phase started, winner: ${winner || 'none'}`);
+        clearLeaderboardVotes();
+
+        // Generate and display winning meme on TV
+        if (winner) {
+          generateAndDisplayMeme(winner).catch(err => {
+            console.error('[Meme] Background generation failed:', err.message);
+          });
+        }
+      } else {
+        // Just transitioned to countdown
+        timerState.capturedWinner = null;
+        console.log('[Leaderboard Timer] Countdown phase started');
+      }
+      timerState.lastPhase = phase;
+    }
+
+    // Update timer display
+    if (isIdle) {
+      setLeaderboardTimer(remainingSeconds, true, timerState.capturedWinner);
+    } else {
+      setLeaderboardTimer(remainingSeconds, false, null);
+    }
+  }
+
+  // Initial timer setup - sync with clock immediately
+  updateLeaderboardTimer();
+  // Update timer every second
+  setInterval(updateLeaderboardTimer, 1000);
+
+  const now = new Date();
+  const mins = now.getMinutes();
+  const secs = now.getSeconds();
+  const posInCycle = (mins * 60 + secs) % CYCLE_DURATION_SEC;
+  const nextCycleStart = new Date(now.getTime() + (CYCLE_DURATION_SEC - posInCycle) * 1000);
+  console.log(`[Leaderboard Timer] Started (10min voting + 5min cooldown, clock-aligned)`);
+  console.log(`[Leaderboard Timer] Next cycle starts at ${nextCycleStart.toLocaleTimeString()}`);
+
   const server = app.listen(port, host, () => {
+    const startLine = JSON.stringify({ at: new Date().toISOString(), event: 'server_start', server: 'animation' }) + '\n';
+    fs.promises.appendFile(dialogueLogPath, startLine, 'utf8').catch(err => console.warn('[Log] server_start write failed:', err.message));
     console.log(`Animation server running on http://${host}:${port}`);
     console.log(`Live stream: http://${host}:${port}${streamManager.getStreamUrl()}`);
     console.log(`Platform: ${process.platform}`);
@@ -2103,7 +2495,8 @@ async function start() {
     tvLayerManager,
     animationServerUrl,
     eventEmitter: orchestratorSocket,
-    config: orchestratorConfig
+    config: orchestratorConfig,
+    onChatMessage: addChatMessage
   });
 
   orchestrator.init();

@@ -28,6 +28,11 @@
       padding-bottom: 60px;
     }
 
+    #main {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
     header {
       display: flex;
       justify-content: space-between;
@@ -173,6 +178,7 @@
       gap: 12px;
       flex-wrap: wrap;
       min-height: 50px;
+      overflow-y: auto;
     }
 
     .chat-card {
@@ -180,6 +186,10 @@
       padding: 12px;
       border-radius: 8px;
       max-width: 280px;
+    }
+
+    .create-row-item .chat-card {
+      max-width: 100%;
     }
 
     .chat-card .username { font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
@@ -206,14 +216,47 @@
       color: var(--muted);
     }
 
-    /* Director input */
+    /* 3-piece create row: Chat Inbox | Seed Prompt | Custom Script - independent boxes */
+    .create-row {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .create-row .panel {
+      margin-bottom: 0;
+    }
+
+    .create-row-item {
+      flex: 1;
+      min-width: 0;
+      min-height: 300px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .create-row-item h2 {
+      flex-shrink: 0;
+    }
+
+    .create-row-item > div {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* Director input (seed prompt) */
     #director-input {
       display: flex;
-      gap: 10px;
+      flex-direction: column;
+      gap: 8px;
     }
 
     #director-input textarea {
       flex: 1;
+      min-height: 60px;
       background: #232838;
       border: 1px solid #3a4050;
       border-radius: 8px;
@@ -221,7 +264,42 @@
       padding: 10px;
       font-family: inherit;
       resize: none;
-      height: 50px;
+    }
+
+    #director-input .btn-primary {
+      flex-shrink: 0;
+    }
+
+    .custom-script-input {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .custom-script-input input {
+      flex-shrink: 0;
+      background: #232838;
+      color: var(--text);
+      border: 1px solid #3a4050;
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .custom-script-input textarea {
+      flex: 1;
+      min-height: 80px;
+      background: #232838;
+      border: 1px solid #3a4050;
+      border-radius: 8px;
+      color: var(--text);
+      padding: 10px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      resize: none;
+    }
+
+    .custom-script-input .btn-primary {
+      flex-shrink: 0;
     }
 
     .empty-state {
@@ -268,6 +346,7 @@
   </style>
 </head>
 <body>
+  <div id="main">
   <header>
     <h1>Director Console</h1>
     <div class="controls">
@@ -279,6 +358,36 @@
       <button class="btn-danger" id="pause-btn">Pause</button>
     </div>
   </header>
+
+  <div id="create-row" class="create-row">
+    <div class="panel create-row-item">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
+        Chat Inbox
+        <label style="font-size:0.8rem;text-transform:none;letter-spacing:0;">
+          <input type="checkbox" id="auto-approve-toggle">
+          Auto-approve
+        </label>
+      </h2>
+      <div id="chat-inbox">
+        <span class="empty-state">No messages</span>
+      </div>
+    </div>
+    <div class="panel create-row-item">
+      <h2>Create Segment (Seed Prompt)</h2>
+      <div id="director-input">
+        <textarea id="seed-input" placeholder="Enter a topic or question..."></textarea>
+        <button class="btn-primary" id="create-btn">Create</button>
+      </div>
+    </div>
+    <div class="panel create-row-item">
+      <h2>Create Segment (Custom Script JSON)</h2>
+      <div id="custom-script-input" class="custom-script-input">
+        <input id="custom-seed-input" placeholder="Optional seed/title (e.g. custom opener)" />
+        <textarea id="custom-script-json" placeholder='{"script":[{"speaker":"chad","text":"..."},{"speaker":"virgin","text":"..."}],"exitContext":"..."}'></textarea>
+        <button class="btn-primary" id="create-custom-btn">Create Custom</button>
+      </div>
+    </div>
+  </div>
 
   <div class="panel">
     <h2>Rendering</h2>
@@ -294,41 +403,12 @@
     </div>
   </div>
 
-  <div class="panel">
-    <h2 style="display:flex;justify-content:space-between;align-items:center;">
-      Chat Inbox
-      <label style="font-size:0.8rem;text-transform:none;letter-spacing:0;">
-        <input type="checkbox" id="auto-approve-toggle">
-        Auto-approve
-      </label>
-    </h2>
-    <div id="chat-inbox">
-      <span class="empty-state">No messages</span>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>Create Segment (Seed Prompt)</h2>
-    <div id="director-input">
-      <textarea id="seed-input" placeholder="Enter a topic or question..."></textarea>
-      <button class="btn-primary" id="create-btn">Create</button>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>Create Segment (Custom Script JSON)</h2>
-    <div id="custom-script-input" style="display:flex;flex-direction:column;gap:8px;">
-      <input id="custom-seed-input" placeholder="Optional seed/title (e.g. custom opener)" style="background:var(--bg);color:var(--text);border:1px solid #2a2a2a;border-radius:8px;padding:8px;" />
-      <textarea id="custom-script-json" placeholder='{"script":[{"speaker":"chad","text":"..."},{"speaker":"virgin","text":"..."}],"exitContext":"..."}' style="min-height:120px;"></textarea>
-      <button class="btn-primary" id="create-custom-btn">Create Custom</button>
-    </div>
-  </div>
-
   <details class="panel">
     <summary style="cursor:pointer;color:var(--muted);">Archive</summary>
     <div id="archive-section"></div>
     <button class="btn-small btn-danger" id="clear-archive" style="margin-top:10px;">Clear</button>
   </details>
+  </div>
 
   <div id="status-bar">
     <div class="status-indicator">

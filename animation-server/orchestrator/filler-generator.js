@@ -26,7 +26,14 @@ Output JSON: { "script": [{ "speaker": "chad|virgin", "text": "..." }], "exitCon
 
 CHARACTER PROFILES:
 CHAD: ${voices.chad.basePrompt}
-VIRGIN: ${voices.virgin.basePrompt}`;
+VIRGIN: ${voices.virgin.basePrompt}
+
+CRITICAL RULES:
+- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS, brags about himself, or dismisses what Virgin said entirely.
+- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.
+- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.
+- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.
+- Each line must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.`;
 
     const completion = await this.openai.chat.completions.create({
       model: DEFAULT_MODEL,

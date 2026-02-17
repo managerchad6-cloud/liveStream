@@ -7,7 +7,7 @@ const BufferMonitor = require('./buffer-monitor');
 const ChatIntakeAgent = require('./chat-intake');
 
 class Orchestrator {
-  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config }) {
+  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage }) {
     this.pipelineStore = pipelineStore;
 
     this.scriptGenerator = openai ? new ScriptGenerator({ openai, pipelineStore }) : null;
@@ -38,7 +38,8 @@ class Orchestrator {
       scriptGenerator: this.scriptGenerator,
       pipelineStore,
       segmentRenderer: this.segmentRenderer,
-      eventEmitter
+      eventEmitter,
+      onChatMessage
     });
     this.chatIntake.queueSegmentWithBridge = (segmentId) => this.queueSegmentWithBridge(segmentId);
     this.chatIntakeEnabled = config?.chatIntake?.enabled !== false;
@@ -96,14 +97,35 @@ class Orchestrator {
         }
       }
 
+      // Only generate bridges TO auto-convo or custom-script segments (entry points),
+      // not FROM them (exit points). This prevents double transitions.
+      const targetIsAutoOrScripted = ['auto-convo', 'custom-script'].includes(segment.type);
       const typeChanged = precedingType && precedingType !== segment.type;
-      if (typeChanged && precedingExitContext && segment.seed) {
+      if (targetIsAutoOrScripted && typeChanged && precedingExitContext && segment.seed) {
         try {
+          // Gather recent conversation history for context-aware bridging
+          // Walk backwards from the bridge point and collect the last ~8 dialogue lines
+          const conversationHistory = [];
+          for (let i = segIndex - 1; i >= 0 && conversationHistory.length < 8; i--) {
+            const prev = allSegments[i];
+            if (!prev || !Array.isArray(prev.script)) continue;
+            // Skip narrator lines, collect character dialogue only
+            const charLines = prev.script.filter(l => l.speaker !== 'narrator');
+            for (let j = charLines.length - 1; j >= 0 && conversationHistory.length < 8; j--) {
+              conversationHistory.unshift(charLines[j]);
+            }
+          }
+
+          // Determine who opens the target segment so the bridge uses the opposite speaker
+          const targetFirstSpeaker = Array.isArray(segment.script) && segment.script.length > 0
+            ? segment.script.find(l => l.speaker !== 'narrator')?.speaker || null
+            : null;
+
           const bridge = await this.bridgeGenerator.generateBridge(
             precedingExitContext,
             segment.seed,
             lastSpeaker || 'chad',
-            { bridgeFor: segmentId, bridgeAfter: precedingId }
+            { bridgeFor: segmentId, bridgeAfter: precedingId, conversationHistory, targetFirstSpeaker }
           );
 
           // Insert bridge just before the target segment

@@ -58,5 +58,53 @@
     "fileSize": 1815141,
     "addedAt": "2026-02-03T19:20:14.856Z",
     "metadata": {}
+  },
+  {
+    "id": "83f8367b-278d-4d79-afd3-cc80ac66eacc",
+    "originalName": "winner_book reader_vs_chatgpt conversationalist_1770754268191.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "83f8367b-278d-4d79-afd3-cc80ac66eacc.png",
+    "thumbnailFilename": "83f8367b-278d-4d79-afd3-cc80ac66eacc.jpg",
+    "fileSize": 558035,
+    "addedAt": "2026-02-10T20:11:08.217Z",
+    "metadata": {}
+  },
+  {
+    "id": "2ae02a87-6911-4ef8-8f70-339e393ed0f9",
+    "originalName": "winner_cyclist_vs_monocycle rider_1770756074911.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "2ae02a87-6911-4ef8-8f70-339e393ed0f9.png",
+    "thumbnailFilename": "2ae02a87-6911-4ef8-8f70-339e393ed0f9.jpg",
+    "fileSize": 584463,
+    "addedAt": "2026-02-10T20:41:14.934Z",
+    "metadata": {}
+  },
+  {
+    "id": "724e4ca0-2b52-4e10-ab1a-914578ef31b6",
+    "originalName": "winner_pikachu_vs_raychu_1770811889558.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "724e4ca0-2b52-4e10-ab1a-914578ef31b6.png",
+    "thumbnailFilename": "724e4ca0-2b52-4e10-ab1a-914578ef31b6.jpg",
+    "fileSize": 615191,
+    "addedAt": "2026-02-11T12:11:29.581Z",
+    "metadata": {}
+  },
+  {
+    "id": "4621dd12-7420-4883-b918-d5c55e211d7f",
+    "originalName": "winner_raychu_vs_pikachu_1770813677203.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "4621dd12-7420-4883-b918-d5c55e211d7f.png",
+    "thumbnailFilename": "4621dd12-7420-4883-b918-d5c55e211d7f.jpg",
+    "fileSize": 592786,
+    "addedAt": "2026-02-11T12:41:17.228Z",
+    "metadata": {}
   }
 ]

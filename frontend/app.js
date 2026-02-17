@@ -234,7 +234,7 @@ async function sendMessage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           seed: message,
-          turns: 12,
+          turns: 2,
           temperature: parseFloat(tempSlider.value)
         })
       });
@@ -258,51 +258,21 @@ async function sendMessage() {
     return;
   }
 
-  try {
-    // Send message to orchestrator pipeline via chat API
-    const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/chat` : '/api/chat';
+  // Fire-and-forget: send to director inbox, no confirmation needed
+  const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/chat` : '/api/chat';
+  fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      mode: modeSelect.value
+    }),
+  }).catch(() => {});
 
-    const chatResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message,
-        mode: modeSelect.value
-      }),
-    });
-
-    if (!chatResponse.ok) {
-      const errorData = await chatResponse.json().catch(() => ({ error: 'Request failed' }));
-      throw new Error(errorData.error || `HTTP ${chatResponse.status}`);
-    }
-
-    const data = await chatResponse.json();
-    if (data.filtered) {
-      removeStatus(statusMsg);
-      addMessage(data.reason || 'Message skipped.', 'status');
-      return;
-    }
-    if (data.queued) {
-      removeStatus(statusMsg);
-      const voiceLabel = data.voice ? ` (${data.voice})` : '';
-      addMessage(`Response queued${voiceLabel}`, 'status');
-      chatbox.disabled = false;
-      submitBtn.disabled = false;
-      chatbox.focus();
-      return;
-    }
-
-  } catch (error) {
-    console.error('Error:', error);
-    removeStatus(statusMsg);
-    addMessage(`Error: ${error.message}`, 'error');
-  } finally {
-    if (!isRouterMode) {
-      chatbox.disabled = false;
-      submitBtn.disabled = false;
-    }
-    chatbox.focus();
-  }
+  removeStatus(statusMsg);
+  chatbox.disabled = false;
+  submitBtn.disabled = false;
+  chatbox.focus();
 }
 
 // Event listeners

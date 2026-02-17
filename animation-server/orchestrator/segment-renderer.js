@@ -3,6 +3,8 @@ const FormData = require('form-data');
 const voices = require('../../voices');
 
 const BRIDGE_GATE_TIMEOUT_MS = 15_000;
+const MAX_SEGMENT_RETRIES = 2;
+const RETRY_DELAY_MS = 5_000;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -23,11 +25,26 @@ class SegmentRenderer {
     this.activeRenders = 0;
     this.renderQueue = [];
     this.inFlight = new Set();
-    // Ensures Phase 2 (audio push) happens in the order segments were queued,
+    // Ensures Phase 2 (audio push) happens in pipeline order,
     // even when Phase 1 (TTS) runs in parallel across multiple segments
     this.pushChain = Promise.resolve();
     // Pre-gates: a segment's Phase 2 waits for its gate to resolve before pushing audio
     this.preGates = new Map();
+    // Ordered drain: segments wait here after TTS until it's their turn in pipeline order
+    this.pendingPushes = new Map();   // segmentId → { audioItems, renderDurations, resolve, reject }
+    this.activeTTS = new Set();       // segmentIds currently in Phase 1 (TTS)
+    this._draining = false;
+    // Safety valve: periodically check for stuck render queue items
+    this._dequeueInterval = setInterval(() => {
+      if (this.renderQueue.length > 0 && this.activeRenders < this.maxConcurrent) {
+        console.warn(`[SegmentRenderer] Safety dequeue: ${this.renderQueue.length} queued, ${this.activeRenders} active`);
+        this._dequeue();
+      }
+      // Also try draining if there are pending pushes
+      if (this.pendingPushes.size > 0) {
+        this._drainInPipelineOrder();
+      }
+    }, 5000);
   }
 
   /**
@@ -44,29 +61,44 @@ class SegmentRenderer {
   }
 
   async queueRender(segmentId) {
-    const segment = this.pipelineStore.getSegment(segmentId);
-    const isPriority = segment && (segment.type === 'chat-response' || segment.metadata?.priority === 'high');
-
     if (this.activeRenders >= this.maxConcurrent) {
       return new Promise(resolve => {
-        const item = {
+        this.renderQueue.push({
           segmentId,
           run: () => resolve(this.renderSegment(segmentId))
-        };
-        if (isPriority) {
-          this.renderQueue.unshift(item);
-        } else {
-          this.renderQueue.push(item);
-        }
+        });
       });
     }
     return this.renderSegment(segmentId);
   }
 
+  /**
+   * Dequeue the next segment to render, picking by pipeline position.
+   * The segment closest to needing playback renders first.
+   */
   _dequeue() {
     if (this.renderQueue.length === 0) return;
     if (this.activeRenders >= this.maxConcurrent) return;
-    const next = this.renderQueue.shift();
+
+    // Pick the queued segment that appears earliest in the pipeline
+    const allSegments = this.pipelineStore.getAllSegments();
+    const pipelineIndex = new Map();
+    allSegments.forEach((seg, idx) => pipelineIndex.set(seg.id, idx));
+
+    let bestIdx = -1;
+    let bestPipelinePos = Infinity;
+    for (let i = 0; i < this.renderQueue.length; i++) {
+      const pos = pipelineIndex.get(this.renderQueue[i].segmentId);
+      if (pos !== undefined && pos < bestPipelinePos) {
+        bestPipelinePos = pos;
+        bestIdx = i;
+      }
+    }
+
+    // Fallback: if none found in pipeline (edge case), take first in queue
+    if (bestIdx === -1) bestIdx = 0;
+
+    const [next] = this.renderQueue.splice(bestIdx, 1);
     if (next && next.run) next.run();
   }
 
@@ -127,8 +159,9 @@ class SegmentRenderer {
             `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
             {
               text: line.text,
-              model_id: (process.env.AUTO_TTS_MODEL || 'eleven_v3'),
-              voice_settings: voiceConfig.voiceSettings
+              model_id: voiceConfig.ttsModel || process.env.AUTO_TTS_MODEL || 'eleven_v3',
+              voice_settings: voiceConfig.voiceSettings,
+              ...(voiceConfig.speed != null && { speed: voiceConfig.speed })
             },
             {
               headers: {
@@ -136,7 +169,8 @@ class SegmentRenderer {
                 'Content-Type': 'application/json',
                 'xi-api-key': process.env.ELEVENLABS_API_KEY
               },
-              responseType: 'arraybuffer'
+              responseType: 'arraybuffer',
+              timeout: 30000
             }
           );
 
@@ -212,6 +246,7 @@ class SegmentRenderer {
       form.append('message', item.text);
       form.append('mode', 'router');
       form.append('segmentId', segmentId);
+      form.append('lineIndex', String(i));
       form.append('segmentType', segmentType);
       form.append('priority', isPriority ? 'high' : 'normal');
 
@@ -251,14 +286,15 @@ class SegmentRenderer {
       throw new Error(`Segment must be in forming status to render (current: ${segment.status})`);
     }
 
-    await this.pipelineStore.updateSegment(segmentId, {
-      metadata: this._mergeMetadata(segment, { renderStartedAt: Date.now() })
-    });
-
+    // Increment BEFORE any async work so the finally decrement always pairs correctly
     this.activeRenders += 1;
     this.inFlight.add(segmentId);
+    this.activeTTS.add(segmentId);
 
     try {
+      await this.pipelineStore.updateSegment(segmentId, {
+        metadata: this._mergeMetadata(segment, { renderStartedAt: Date.now() })
+      });
       // Phase 1: TTS all lines
       const { audioItems, renderDurations } = await this._ttsSegment(segmentId);
 
@@ -266,56 +302,147 @@ class SegmentRenderer {
         throw new Error('No audio generated for any line');
       }
 
-      // Phase 2: Wait for push chain + any pre-gate, then push audio
-      const pushResult = { error: null };
-      this.pushChain = this.pushChain.catch(() => {}).then(async () => {
-        try {
-          // Wait for pre-gate if one exists (e.g. bridge must push first)
-          const gate = this.preGates.get(segmentId);
-          if (gate) {
-            this.preGates.delete(segmentId);
-            await gate;
-          }
-
-          await this._pushAudioItems(segmentId, audioItems, renderDurations);
-        } catch (err) {
-          pushResult.error = err;
-        }
+      // Phase 2: Store result and drain in pipeline order
+      await new Promise((resolve, reject) => {
+        this.pendingPushes.set(segmentId, { audioItems, renderDurations, resolve, reject });
+        this.activeTTS.delete(segmentId);
+        this._drainInPipelineOrder();
       });
-      await this.pushChain;
-      if (pushResult.error) throw pushResult.error;
 
       console.log(`[SegmentRenderer] Segment ${segmentId} rendered (${audioItems.length} lines)`);
     } catch (err) {
       console.error(`[SegmentRenderer] Segment ${segmentId} failed: ${err.message}`);
-      try {
-        const seg = this.pipelineStore.getSegment(segmentId);
-        if (seg) {
+      // Clean up pendingPushes if segment failed before drain could process it
+      const pending = this.pendingPushes.get(segmentId);
+      if (pending) {
+        this.pendingPushes.delete(segmentId);
+        pending.reject(err);
+      }
+
+      const seg = this.pipelineStore.getSegment(segmentId);
+      const retryCount = seg?.metadata?.retryCount || 0;
+
+      if (seg && retryCount < MAX_SEGMENT_RETRIES) {
+        // Retry: reset to forming so it can be re-rendered after a delay
+        console.warn(`[SegmentRenderer] Scheduling retry ${retryCount + 1}/${MAX_SEGMENT_RETRIES} for segment ${segmentId}`);
+        try {
           await this.pipelineStore.updateSegment(segmentId, {
-            renderProgress: -1,
+            renderProgress: 0,
             metadata: this._mergeMetadata(seg, {
               renderError: err.message,
-              renderFailedAt: Date.now()
+              retryCount: retryCount + 1,
+              lastRetryAt: Date.now()
             })
           });
-        }
+        } catch (_) {}
+
+        // Schedule retry after delay — don't block current flow
+        setTimeout(() => {
+          const check = this.pipelineStore.getSegment(segmentId);
+          if (check && check.status === 'forming') {
+            console.log(`[SegmentRenderer] Retrying segment ${segmentId} (attempt ${retryCount + 2})`);
+            this.queueRender(segmentId).catch(retryErr => {
+              console.error(`[SegmentRenderer] Retry failed for ${segmentId}: ${retryErr.message}`);
+            });
+          }
+        }, RETRY_DELAY_MS * (retryCount + 1));
+
         if (this.eventEmitter) {
           this.eventEmitter.broadcast('pipeline:update', {
             segments: this.pipelineStore.getAllSegments(),
             bufferHealth: this.pipelineStore.getBufferHealth()
           });
         }
-      } catch (e) {
-        console.warn(`[SegmentRenderer] Could not update failed segment: ${e.message}`);
+      } else if (seg) {
+        // Exhausted retries — mark as permanently failed but keep in pipeline
+        // so the drain can skip it (renderProgress: -1)
+        console.error(`[SegmentRenderer] Segment ${segmentId} failed after ${retryCount + 1} attempts, marking failed`);
+        try {
+          await this.pipelineStore.updateSegment(segmentId, {
+            renderProgress: -1,
+            metadata: this._mergeMetadata(seg, {
+              renderError: err.message,
+              renderFailedAt: Date.now(),
+              retryCount: retryCount + 1
+            })
+          });
+        } catch (_) {}
+        if (this.eventEmitter) {
+          this.eventEmitter.broadcast('pipeline:update', {
+            segments: this.pipelineStore.getAllSegments(),
+            bufferHealth: this.pipelineStore.getBufferHealth()
+          });
+        }
       }
       throw err;
     } finally {
       this.activeRenders = Math.max(0, this.activeRenders - 1);
       this.inFlight.delete(segmentId);
+      this.activeTTS.delete(segmentId);
+      // A failed/finished segment may unblock the next one in pipeline order
+      this._drainInPipelineOrder();
       this._dequeue();
     }
 
     return this.pipelineStore.getSegment(segmentId);
+  }
+
+  /**
+   * Drain pendingPushes in pipeline order. Only pushes the next segment if it's
+   * the earliest one in the pipeline that hasn't pushed yet. Waits if an earlier
+   * segment is still TTS-ing.
+   */
+  _drainInPipelineOrder() {
+    if (this._draining) return;
+    this._draining = true;
+
+    this.pushChain = this.pushChain.catch(() => {}).then(async () => {
+      while (this.pendingPushes.size > 0) {
+        const nextId = this._getNextPipelineSegment();
+        if (!nextId) break; // next-in-order is still TTS-ing, wait
+
+        const { audioItems, renderDurations, resolve, reject } = this.pendingPushes.get(nextId);
+        this.pendingPushes.delete(nextId);
+
+        try {
+          const gate = this.preGates.get(nextId);
+          if (gate) { this.preGates.delete(nextId); await gate; }
+          await this._pushAudioItems(nextId, audioItems, renderDurations);
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      }
+      this._draining = false;
+    });
+  }
+
+  /**
+   * Returns the segmentId that should push next based on pipeline order,
+   * or null if we must wait (an earlier segment hasn't pushed yet).
+   *
+   * Blocks on ANY forming segment that hasn't failed — whether it's in
+   * activeTTS, the renderQueue, or anywhere else.  Only skips forming
+   * segments that already failed (renderProgress === -1).
+   */
+  _getNextPipelineSegment() {
+    const allSegments = this.pipelineStore.getAllSegments();
+
+    for (const seg of allSegments) {
+      // Completed TTS and waiting to push — this is the one
+      if (this.pendingPushes.has(seg.id)) return seg.id;
+
+      // Any forming segment that hasn't failed blocks later pushes.
+      // This covers: renderQueue (waiting for slot), activeTTS (mid-TTS),
+      // and any other forming state we don't explicitly track.
+      if (seg.status === 'forming' && seg.renderProgress !== -1) return null;
+    }
+
+    // Fallback: pending segments not in pipeline (edge case), push first available
+    if (this.pendingPushes.size > 0) {
+      return this.pendingPushes.keys().next().value;
+    }
+    return null;
   }
 
   /**

@@ -14,7 +14,10 @@
     "restart-servers": "powershell -ExecutionPolicy Bypass -File ./restart-servers.ps1",
     "dev": "node server.js & cd animation-server && node server.js",
     "commit": "git add . && git commit -m",
-    "push": "git push origin master"
+    "push": "git push origin master",
+    "audience": "node tools/audience-simulator.js",
+    "director:play": "powershell -ExecutionPolicy Bypass -File ./director-play.ps1",
+    "director:pause": "powershell -ExecutionPolicy Bypass -File ./director-pause.ps1"
   },
   "keywords": [
     "chatbot",

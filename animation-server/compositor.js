@@ -54,12 +54,26 @@ let TV_VIEWPORT = null;
 let currentTVFrame = null; // Current TV frame buffer for compositing
 let tvReflectionBuffer = null; // TV reflection layer (composited above TV content)
 let tvReflectionPos = { x: 0, y: 0 }; // Position of TV reflection layer
+
+// Leaderboard state
+let currentLeaderboard = null; // Array of {command, count} or null
+let leaderboardVersion = 0;     // Incremented when leaderboard changes
+let leaderboardTimer = { remainingSeconds: 180, isIdle: false, winner: null }; // Timer state
+
+// Chat overlay state (Twitch-style message log)
+let chatMessages = [];       // Array of { character, text, addedAt }
+let chatVersion = 0;         // Bumped on add/expire (cache invalidation)
+const CHAT_MAX_MESSAGES = 8;
+const CHAT_EXPIRE_MS = 45000; // 45 seconds
 let foregroundEmissionBuffer = null; // Foreground LED emission (composited above all)
 let foregroundEmissionPos = { x: 0, y: 0 };
 let foregroundEmissionLayerId = null;
 let lightsOnBuffer = null;
+let lightsOnRawData = null; // Raw RGBA data for opacity adjustment
+let lightsOnMeta = null;    // {width, height} for raw data rebuild
 let lightsOnPos = { x: 0, y: 0 };
 let lightsOnOpacity = 1;
+let lightsOnOpacityCache = {}; // quantized opacity → PNG buffer
 let lightsMode = 'on'; // 'on' or 'off'
 let emissionOpacity = 1;
 let emissionBaseBuffers = {};
@@ -314,6 +328,9 @@ async function preloadLayers() {
   foregroundEmissionPos = { x: 0, y: 0 };
   foregroundEmissionLayerId = null;
   lightsOnBuffer = null;
+  lightsOnRawData = null;
+  lightsOnMeta = null;
+  lightsOnOpacityCache = {};
   lightsOnPos = { x: 0, y: 0 };
   emissionBaseBuffers = {};
   emissionLayerMeta = {};
@@ -377,6 +394,8 @@ async function preloadLayers() {
             }
           }
 
+          lightsOnRawData = data;
+          lightsOnMeta = { width: scaledWidth, height: scaledHeight };
           lightsOnBuffer = await sharp(data, {
             raw: {
               width: scaledWidth,
@@ -386,6 +405,7 @@ async function preloadLayers() {
           })
           .png()
           .toBuffer();
+          lightsOnOpacityCache = {}; // Clear opacity cache on reload
           lightsOnPos = {
             x: Math.round(layer.x * OUTPUT_SCALE),
             y: Math.round(layer.y * OUTPUT_SCALE)
@@ -572,6 +592,122 @@ function buildCaptionSvg(text) {
 }
 
 /**
+ * Build timer SVG overlay (top-center, slightly right)
+ * @returns {Buffer|null} - SVG buffer or null
+ */
+function buildTimerSvg() {
+  if (!outputWidth || !outputHeight) {
+    return null;
+  }
+
+  const baseTimerFontSize = 48;
+  const margin = 20;
+  const rightOffset = 60; // Shift right from center
+
+  // Timer display text
+  let timerText = '';
+  let fontSize = baseTimerFontSize;
+
+  if (leaderboardTimer.isIdle && leaderboardTimer.winner) {
+    // During idle minute, show winner name at half size
+    timerText = String(leaderboardTimer.winner).slice(0, 50);
+    fontSize = baseTimerFontSize / 2;
+  } else if (leaderboardTimer.isIdle) {
+    // Idle with no winner (no memes submitted) - show nothing
+    return null;
+  } else {
+    // During countdown, show timer at full size
+    const minutes = Math.floor(leaderboardTimer.remainingSeconds / 60);
+    const seconds = leaderboardTimer.remainingSeconds % 60;
+    timerText = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  // Center positioning with right offset
+  const textWidth = timerText.length * fontSize * 0.55; // Rough approximation
+  const textX = (outputWidth - textWidth) / 2 + rightOffset;
+  const textY = margin + fontSize;
+
+  const svg = `
+    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
+      <g fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif" font-size="${fontSize}" font-weight="700">
+        <text x="${textX}" y="${textY}">${escapeSvgText(timerText)}</text>
+      </g>
+    </svg>
+  `;
+
+  return Buffer.from(svg);
+}
+
+/**
+ * Build leaderboard SVG overlay (top-right corner)
+ * @param {Array} entries - Array of {command, count} objects
+ * @returns {Buffer|null} - SVG buffer or null if no entries
+ */
+function buildLeaderboardSvg(entries) {
+  if (!outputWidth || !outputHeight) {
+    return null;
+  }
+
+  const margin = 20;
+  const fontSize = 16;
+  const titleFontSize = 18;
+  const subtitleFontSize = 10;
+  const lineHeight = Math.round(fontSize * 1.4);
+  const titleLineHeight = Math.round(titleFontSize * 1.3);
+  const subtitleLineHeight = Math.round(subtitleFontSize * 1.3);
+  const paddingX = 14;
+  const paddingY = 10;
+  const maxEntries = Math.min(3, entries.length);
+
+  const title = "NEXT MEME CONTENDER";
+  const subtitle = "Type /your_meme_idea to submit or vote";
+
+  // Build text lines: "🏆 /command: 42"
+  const lines = (entries && Array.isArray(entries) && entries.length > 0)
+    ? entries.slice(0, maxEntries).map((entry, idx) => {
+        const emoji = idx === 0 ? '🏆' : (idx === 1 ? '🥈' : '🥉');
+        const cmd = String(entry.command || '').slice(0, 30);
+        const count = Number(entry.count) || 0;
+        return `${emoji} ${cmd}: ${count}`;
+      })
+    : [];
+
+  const textBlockHeight = titleLineHeight + subtitleLineHeight + (lines.length * lineHeight);
+  const bannerHeight = textBlockHeight + paddingY * 2;
+  const bannerWidth = Math.min(280, outputWidth - margin * 2);
+  const bannerX = outputWidth - margin - bannerWidth;
+  const bannerY = margin;
+  const textX = bannerX + paddingX;
+  let currentY = bannerY + paddingY + titleFontSize;
+
+  // Title
+  const titleText = `<text x="${textX}" y="${currentY}" font-size="${titleFontSize}" font-weight="700" letter-spacing="0.5">${escapeSvgText(title)}</text>`;
+  currentY += titleLineHeight;
+
+  // Subtitle
+  const subtitleText = `<text x="${textX}" y="${currentY}" font-size="${subtitleFontSize}" font-weight="400" opacity="0.8">${escapeSvgText(subtitle)}</text>`;
+  currentY += subtitleLineHeight + 4;
+
+  // Leaderboard lines
+  const textLines = lines.map((line, index) => {
+    const y = currentY + index * lineHeight;
+    return `<text x="${textX}" y="${y}" font-size="${fontSize}">${escapeSvgText(line)}</text>`;
+  }).join('');
+
+  const svg = `
+    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
+      <g fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif" font-weight="500">
+        ${titleText}
+        ${subtitleText}
+        ${textLines}
+      </g>
+    </svg>
+  `;
+
+  return Buffer.from(svg);
+}
+
+/**
  * Set the current TV frame buffer for compositing
  * @param {Buffer|null} buffer - PNG buffer scaled to viewport size, or null to clear
  */
@@ -593,6 +729,149 @@ function getTVFrame() {
  */
 function getTVViewport() {
   return TV_VIEWPORT;
+}
+
+/**
+ * Set the current leaderboard data for overlay
+ * @param {Array|null} entries - Array of {command, count} objects, or null to clear
+ */
+function setLeaderboard(entries) {
+  if (!entries || !Array.isArray(entries) || entries.length === 0) {
+    if (currentLeaderboard !== null) {
+      currentLeaderboard = null;
+      leaderboardVersion++;
+    }
+    return;
+  }
+
+  // Check if data actually changed (avoid version bumps on identical data)
+  const newHash = JSON.stringify(entries.slice(0, 3).map(e => ({ c: e.command, n: e.count })));
+  const oldHash = currentLeaderboard
+    ? JSON.stringify(currentLeaderboard.slice(0, 3).map(e => ({ c: e.command, n: e.count })))
+    : '';
+
+  if (newHash !== oldHash) {
+    currentLeaderboard = entries.slice(0, 3); // Keep top 3
+    leaderboardVersion++;
+  }
+}
+
+/**
+ * Get current leaderboard data
+ * @returns {Array|null}
+ */
+function getLeaderboard() {
+  return currentLeaderboard;
+}
+
+/**
+ * Get current leaderboard version (for cache key)
+ * @returns {number}
+ */
+function getLeaderboardVersion() {
+  return leaderboardVersion;
+}
+
+/**
+ * Set the leaderboard timer state
+ * @param {number} remainingSeconds - Seconds remaining in countdown
+ * @param {boolean} isIdle - Whether timer is in idle/winner display mode
+ * @param {string|null} winner - Winner command to display during idle
+ */
+function setLeaderboardTimer(remainingSeconds, isIdle, winner) {
+  const changed = leaderboardTimer.remainingSeconds !== remainingSeconds ||
+                  leaderboardTimer.isIdle !== isIdle ||
+                  leaderboardTimer.winner !== winner;
+
+  if (changed) {
+    leaderboardTimer = { remainingSeconds, isIdle, winner };
+    leaderboardVersion++; // Force cache update when timer changes
+  }
+}
+
+/**
+ * Get current leaderboard timer state
+ * @returns {Object} - {remainingSeconds, isIdle, winner}
+ */
+function getLeaderboardTimer() {
+  return { ...leaderboardTimer };
+}
+
+/**
+ * Add a viewer chat message to the overlay log.
+ * Trims to CHAT_MAX_MESSAGES and bumps version for cache invalidation.
+ */
+function addChatMessage(username, text) {
+  if (!username || !text) return;
+  chatMessages.push({
+    username: String(username).slice(0, 20),
+    text: String(text).slice(0, 120),
+    addedAt: Date.now()
+  });
+  if (chatMessages.length > CHAT_MAX_MESSAGES) {
+    chatMessages = chatMessages.slice(-CHAT_MAX_MESSAGES);
+  }
+  chatVersion++;
+  lastOutputKey = null; // Invalidate output fast path
+}
+
+/**
+ * Get current chat version, lazy-expiring stale messages.
+ * Called every frame — O(8) maximum, sub-microsecond.
+ */
+function getChatVersion() {
+  const now = Date.now();
+  const before = chatMessages.length;
+  chatMessages = chatMessages.filter(m => (now - m.addedAt) < CHAT_EXPIRE_MS);
+  if (chatMessages.length !== before) {
+    chatVersion++;
+    lastOutputKey = null;
+  }
+  return chatVersion;
+}
+
+/**
+ * Build chat overlay SVG (bottom-left, above caption area).
+ * Returns Buffer or null if no messages.
+ */
+function buildChatOverlaySvg() {
+  if (!outputWidth || !outputHeight || chatMessages.length === 0) {
+    return null;
+  }
+
+  const now = Date.now();
+  const fontSize = 18;
+  const lineHeight = 27;
+  const paddingX = 12;
+  const paddingY = 10;
+  const maxWidth = 420;
+  const bottomReserve = 140; // Space for caption
+  const margin = 16;
+
+  const bannerHeight = chatMessages.length * lineHeight + paddingY * 2;
+  const bannerX = margin;
+  const bannerY = outputHeight - bottomReserve - bannerHeight;
+
+  const lines = chatMessages.map((msg, i) => {
+    const age = now - msg.addedAt;
+    const lifeRatio = age / CHAT_EXPIRE_MS;
+    // Full opacity for first 65% of lifetime, fade to 0.2 over remaining 35%
+    const opacity = lifeRatio < 0.65 ? 1.0 : Math.max(0.2, 1.0 - ((lifeRatio - 0.65) / 0.35) * 0.8);
+    const y = bannerY + paddingY + fontSize + i * lineHeight;
+    const name = msg.username;
+    return `<g opacity="${opacity.toFixed(2)}">` +
+      `<text x="${bannerX + paddingX}" y="${y}" font-size="${fontSize}" font-weight="700" fill="#a78bfa" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(name)}:</text>` +
+      `<text x="${bannerX + paddingX + name.length * fontSize * 0.65 + fontSize * 0.4}" y="${y}" font-size="${fontSize}" font-weight="400" fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(msg.text)}</text>` +
+      `</g>`;
+  }).join('');
+
+  const svg = `
+    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
+      ${lines}
+    </svg>
+  `;
+
+  return Buffer.from(svg);
 }
 
 async function buildStaticBaseFromEntries(entries, layerBlendMap) {
@@ -646,6 +925,43 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
   })
   .png()
   .toBuffer();
+}
+
+/**
+ * Get the lights-on buffer adjusted for current opacity.
+ * Caches by quantized opacity (5% steps) to avoid per-frame recomputation.
+ * @returns {Buffer|null}
+ */
+async function getLightsOnBufferWithOpacity() {
+  if (!lightsOnBuffer || !lightsOnRawData || !lightsOnMeta) return lightsOnBuffer;
+  if (lightsOnOpacity >= 0.999) return lightsOnBuffer;
+  if (lightsOnOpacity <= 0.001) return null;
+
+  // Quantize to 5% steps for caching
+  const quantized = Math.round(lightsOnOpacity * 20) / 20;
+  if (lightsOnOpacityCache[quantized]) return lightsOnOpacityCache[quantized];
+
+  // Create opacity-adjusted copy from raw RGBA
+  const adjusted = Buffer.from(lightsOnRawData);
+  for (let i = 3; i < adjusted.length; i += 4) {
+    adjusted[i] = Math.round(adjusted[i] * quantized);
+  }
+
+  const buf = await sharp(adjusted, {
+    raw: { width: lightsOnMeta.width, height: lightsOnMeta.height, channels: 4 }
+  }).png().toBuffer();
+
+  // Keep cache small (max 21 entries for 0-100% in 5% steps)
+  lightsOnOpacityCache[quantized] = buf;
+  return buf;
+}
+
+/**
+ * Get the quantized lights-on opacity for cache key use.
+ * @returns {number}
+ */
+function getQuantizedLightsOnOpacity() {
+  return Math.round(lightsOnOpacity * 20);
 }
 
 /**
@@ -880,7 +1196,8 @@ function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
   const tasks = phonemes.map(async (ph) => {
     const chadPh = speakingChar === 'chad' ? ph : 'A';
     const virgPh = speakingChar === 'virgin' ? ph : 'A';
-    const charCacheKey = `${exprBaseCacheKey}-lv${lightingVersion}-${chadPh}-${virgPh}-0-0`;
+    const lightsKey = `${lightsMode}-${getQuantizedLightsOnOpacity()}`;
+    const charCacheKey = `${exprBaseCacheKey}-lv${lightingVersion}-lt${lightsKey}-${chadPh}-${virgPh}-0-0`;
 
     if (frameCache[charCacheKey]) return; // already cached
 
@@ -920,12 +1237,15 @@ function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
 
     // Lights (above emission)
     if (lightsMode === 'on' && lightsOnBuffer) {
-      charOps.push({
-        input: lightsOnBuffer,
-        left: lightsOnPos.x,
-        top: lightsOnPos.y,
-        blend: 'over'
-      });
+      const lightsBuffer = await getLightsOnBufferWithOpacity();
+      if (lightsBuffer) {
+        charOps.push({
+          input: lightsBuffer,
+          left: lightsOnPos.x,
+          top: lightsOnPos.y,
+          blend: 'over'
+        });
+      }
     }
 
     // Composite Level 2 from raw RGBA expression base
@@ -1037,14 +1357,16 @@ async function compositeFrame(state) {
 
   // Build output key using the EFFECTIVE base key (not requested expression offsets)
   // so the fast path correctly reflects what was actually rendered
-  let outputKey = `${effectiveExprBaseKey}-lv${lightingVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvFrameIndex}-c${captionKey}`;
+  const lightsKey = `${lightsMode}-${getQuantizedLightsOnOpacity()}`;
+  const currentChatVersion = getChatVersion();
+  let outputKey = `${effectiveExprBaseKey}-lv${lightingVersion}-lt${lightsKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvFrameIndex}-c${captionKey}-lb${leaderboardVersion}-ch${currentChatVersion}`;
 
   // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
   if (outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
-  const charCacheKey = `${effectiveExprBaseKey}-lv${lightingVersion}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  const charCacheKey = `${effectiveExprBaseKey}-lv${lightingVersion}-lt${lightsKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
   let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
@@ -1098,12 +1420,15 @@ async function compositeFrame(state) {
 
     // Lights (above emission)
     if (lightsMode === 'on' && lightsOnBuffer) {
-      charOps.push({
-        input: lightsOnBuffer,
-        left: lightsOnPos.x,
-        top: lightsOnPos.y,
-        blend: 'over'
-      });
+      const lightsBuffer = await getLightsOnBufferWithOpacity();
+      if (lightsBuffer) {
+        charOps.push({
+          input: lightsBuffer,
+          left: lightsOnPos.x,
+          top: lightsOnPos.y,
+          blend: 'over'
+        });
+      }
     }
 
     // Composite Level 2: expression base (raw RGBA) + mouth/blink/emission/lights → JPEG
@@ -1147,6 +1472,36 @@ async function compositeFrame(state) {
   if (captionSvg) {
     overlayOps.push({
       input: captionSvg,
+      left: 0,
+      top: 0,
+      blend: 'over'
+    });
+  }
+
+  const timerSvg = buildTimerSvg();
+  if (timerSvg) {
+    overlayOps.push({
+      input: timerSvg,
+      left: 0,
+      top: 0,
+      blend: 'over'
+    });
+  }
+
+  const leaderboardSvg = currentLeaderboard ? buildLeaderboardSvg(currentLeaderboard) : null;
+  if (leaderboardSvg) {
+    overlayOps.push({
+      input: leaderboardSvg,
+      left: 0,
+      top: 0,
+      blend: 'over'
+    });
+  }
+
+  const chatSvg = buildChatOverlaySvg();
+  if (chatSvg) {
+    overlayOps.push({
+      input: chatSvg,
       left: 0,
       top: 0,
       blend: 'over'
@@ -1290,6 +1645,8 @@ function setLightsOnOpacity(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return lightsOnOpacity;
   lightsOnOpacity = Math.max(0, Math.min(1, parsed));
+  // Invalidate output fast path so next frame picks up new opacity
+  lastOutputKey = null;
   return lightsOnOpacity;
 }
 
@@ -1300,6 +1657,8 @@ function getLightsOnOpacity() {
 function setLightsMode(mode) {
   if (mode !== 'on' && mode !== 'off') return lightsMode;
   lightsMode = mode;
+  // Invalidate output fast path so next frame picks up new mode
+  lastOutputKey = null;
   return lightsMode;
 }
 
@@ -1624,5 +1983,11 @@ module.exports = {
   saveExpressionLimits,
   setEyebrowRotationLimits,
   setEyebrowAsymmetry,
-  setSpeakingCharacter
+  setSpeakingCharacter,
+  setLeaderboard,
+  getLeaderboard,
+  getLeaderboardVersion,
+  setLeaderboardTimer,
+  getLeaderboardTimer,
+  addChatMessage
 };

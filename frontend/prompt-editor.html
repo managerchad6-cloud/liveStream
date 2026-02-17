@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prompt Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f1014;
+      --panel: #1b1f2a;
+      --text: #f0f2f8;
+      --muted: #9aa4bf;
+      --accent: #ffb347;
+      --danger: #ff6b6b;
+      --good: #6ee7b7;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Space Grotesk', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+      padding-bottom: 60px;
+    }
+
+    #main {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    h1 { margin: 0; font-size: 1.5rem; }
+
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 900px) {
+      .columns { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .panel h2 {
+      margin: 0 0 16px 0;
+      font-size: 1.1rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel h2 .char-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .chad-dot { background: var(--accent); }
+    .virgin-dot { background: #7c9aff; }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+
+    textarea {
+      width: 100%;
+      background: #0f1014;
+      color: var(--text);
+      border: 1px solid #2a2f3e;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      resize: vertical;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .prompt-area { min-height: 360px; }
+    .tags-area { min-height: 120px; margin-top: 16px; }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+      align-items: center;
+    }
+
+    button {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: opacity 0.2s;
+    }
+
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-save { background: var(--accent); color: #000; }
+    .btn-reset { background: #2a2f3e; color: var(--muted); }
+
+    .status {
+      font-size: 0.85rem;
+      margin-left: auto;
+      transition: opacity 0.5s;
+    }
+
+    .status.ok { color: var(--good); }
+    .status.err { color: var(--danger); }
+    .status.loading { color: var(--muted); }
+
+    .char-count {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: right;
+      margin-top: 4px;
+    }
+
+    .back-link {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    .back-link:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <div id="main">
+    <header>
+      <h1>Prompt Editor</h1>
+      <a href="/director" class="back-link">Back to Director</a>
+    </header>
+
+    <div class="columns">
+      <!-- Chad Panel -->
+      <div class="panel" id="panel-chad">
+        <h2><span class="char-dot chad-dot"></span> Chad</h2>
+        <label for="chad-prompt">System Prompt</label>
+        <textarea id="chad-prompt" class="prompt-area" spellcheck="false"></textarea>
+        <div class="char-count" id="chad-prompt-count"></div>
+
+        <label for="chad-tags" class="tags-area-label">Audio Tags</label>
+        <textarea id="chad-tags" class="tags-area" spellcheck="false"></textarea>
+        <div class="char-count" id="chad-tags-count"></div>
+
+        <div class="actions">
+          <button class="btn-save" onclick="save('chad')">Save</button>
+          <button class="btn-reset" onclick="reset('chad')">Reset to File</button>
+          <span class="status" id="chad-status"></span>
+        </div>
+      </div>
+
+      <!-- Virgin Panel -->
+      <div class="panel" id="panel-virgin">
+        <h2><span class="char-dot virgin-dot"></span> Virgin</h2>
+        <label for="virgin-prompt">System Prompt</label>
+        <textarea id="virgin-prompt" class="prompt-area" spellcheck="false"></textarea>
+        <div class="char-count" id="virgin-prompt-count"></div>
+
+        <label for="virgin-tags" class="tags-area-label">Audio Tags</label>
+        <textarea id="virgin-tags" class="tags-area" spellcheck="false"></textarea>
+        <div class="char-count" id="virgin-tags-count"></div>
+
+        <div class="actions">
+          <button class="btn-save" onclick="save('virgin')">Save</button>
+          <button class="btn-reset" onclick="reset('virgin')">Reset to File</button>
+          <span class="status" id="virgin-status"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Environment detection (same logic as config.js)
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isFileProtocol = window.location.protocol === 'file:';
+    const params = new URLSearchParams(window.location.search);
+    const animOverride = params.get('anim');
+
+    function getChatUrl() {
+      const apiParam = params.get('api');
+      if (apiParam) return apiParam.replace(/\/$/, '');
+      if (isFileProtocol || isLocalhost) return 'http://localhost:3002';
+      return '';
+    }
+
+    function getAnimUrl() {
+      if (animOverride) return animOverride.replace(/\/$/, '');
+      if (isFileProtocol || isLocalhost) return 'http://localhost:3003';
+      return window.location.origin;
+    }
+
+    const CHAT_URL = getChatUrl();
+    const ANIM_URL = getAnimUrl();
+
+    // Character count updaters
+    ['chad', 'virgin'].forEach(id => {
+      const promptEl = document.getElementById(id + '-prompt');
+      const tagsEl = document.getElementById(id + '-tags');
+      const promptCount = document.getElementById(id + '-prompt-count');
+      const tagsCount = document.getElementById(id + '-tags-count');
+
+      promptEl.addEventListener('input', () => {
+        promptCount.textContent = promptEl.value.length + ' chars';
+      });
+      tagsEl.addEventListener('input', () => {
+        tagsCount.textContent = tagsEl.value.length + ' chars';
+      });
+    });
+
+    function setStatus(id, text, type) {
+      const el = document.getElementById(id + '-status');
+      el.textContent = text;
+      el.className = 'status ' + type;
+      if (type === 'ok' || type === 'err') {
+        setTimeout(() => { el.style.opacity = '0'; }, 3000);
+        setTimeout(() => { el.textContent = ''; el.style.opacity = '1'; }, 3500);
+      }
+    }
+
+    async function loadPrompt(id) {
+      try {
+        // Load from chat server (source of truth for disk persistence)
+        const res = await fetch(CHAT_URL + '/api/voices/' + id + '/prompt');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        document.getElementById(id + '-prompt').value = data.basePrompt;
+        document.getElementById(id + '-tags').value = data.audioTags;
+        document.getElementById(id + '-prompt-count').textContent = data.basePrompt.length + ' chars';
+        document.getElementById(id + '-tags-count').textContent = data.audioTags.length + ' chars';
+      } catch (err) {
+        console.error('Failed to load ' + id + ':', err);
+        setStatus(id, 'Load failed: ' + err.message, 'err');
+      }
+    }
+
+    async function save(id) {
+      const basePrompt = document.getElementById(id + '-prompt').value;
+      const audioTags = document.getElementById(id + '-tags').value;
+      const payload = JSON.stringify({ basePrompt, audioTags });
+      const headers = { 'Content-Type': 'application/json' };
+
+      setStatus(id, 'Saving...', 'loading');
+
+      try {
+        // Save to both servers in parallel
+        const [chatRes, animRes] = await Promise.all([
+          fetch(CHAT_URL + '/api/voices/' + id + '/prompt', { method: 'POST', headers, body: payload }),
+          fetch(ANIM_URL + '/api/voices/' + id + '/prompt', { method: 'POST', headers, body: payload })
+        ]);
+
+        if (!chatRes.ok) throw new Error('Chat server: HTTP ' + chatRes.status);
+        if (!animRes.ok) throw new Error('Anim server: HTTP ' + animRes.status);
+
+        const chatData = await chatRes.json();
+        if (chatData.warning) {
+          setStatus(id, 'Saved (warning: disk write failed)', 'err');
+        } else {
+          setStatus(id, 'Saved', 'ok');
+        }
+      } catch (err) {
+        console.error('Save failed for ' + id + ':', err);
+        setStatus(id, 'Save failed: ' + err.message, 'err');
+      }
+    }
+
+    async function reset(id) {
+      setStatus(id, 'Reloading...', 'loading');
+      await loadPrompt(id);
+      setStatus(id, 'Reset to file', 'ok');
+    }
+
+    // Initial load
+    loadPrompt('chad');
+    loadPrompt('virgin');
+  </script>
+</body>
+</html>

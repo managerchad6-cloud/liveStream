@@ -1,3 +1,13 @@
+/**
+ * BufferMonitor - Legacy tick-based buffer health monitoring
+ *
+ * NOTE: This class manages the OBSOLETE "filler" system (tick-based buffer filling).
+ * The NEW "expand" system (infinite conversation) is handled by PlaybackController
+ * via on-air events. Don't confuse "filler" with "expand":
+ *
+ * - FILLER (obsolete): Tick-based segments to fill buffer gaps (disabled by default)
+ * - EXPAND (current): Event-driven infinite conversation (PlaybackController)
+ */
 class BufferMonitor {
   constructor({ pipelineStore, fillerGenerator, eventEmitter, segmentRenderer, config }) {
     this.pipelineStore = pipelineStore;
@@ -19,8 +29,9 @@ class BufferMonitor {
     };
 
     this.fillerEnabled = config?.enabled ?? false;
-    // Continuity generation is now driven by ON-AIR events (see PlaybackController)
-    // BufferMonitor should not generate filler/expand on ticks.
+    // IMPORTANT: Infinite conversation (expand) is driven by ON-AIR events in PlaybackController.
+    // BufferMonitor only generates fillers (obsolete system, kept for legacy compatibility).
+    // Expand generation happens automatically when segments finish with empty pipeline.
     this.continuityDisabled = true;
     this.timer = null;
     this.lastLevel = null;
@@ -162,7 +173,9 @@ class BufferMonitor {
       }
     }
 
-    // Generate fillers if enabled and needed
+    // LEGACY: Generate fillers if enabled (obsolete - expands handle continuity now)
+    // This tick-based filler system is disabled by default (continuityDisabled = true)
+    // Infinite conversation happens via expand generation in PlaybackController
     if (!this.continuityDisabled &&
         this.fillerEnabled &&
         this.fillerGenerator &&

@@ -22,6 +22,10 @@ class PlaybackController {
   }
 
   start() {
+    if (this.isPaused) {
+      console.log('[PlaybackController] Resuming from pause');
+      console.trace('[PlaybackController] start() caller');
+    }
     this.isPaused = false;
     if (this.isPlaying) return this.getStatus();
     this.isPlaying = true;
@@ -55,13 +59,21 @@ class PlaybackController {
   /**
    * Called by the animation server when a segment's audio starts playing.
    * This is the authoritative signal - no guessing or polling.
+   *
+   * IMPORTANT: Expand generation happens HERE (when segment starts) so the next
+   * expand is ready by the time the current segment finishes - prevents silence gaps.
    */
   setOnAir(segmentId) {
     if (this.currentSegmentId !== segmentId) {
+      const previousSegmentId = this.currentSegmentId;  // Save before updating
       this.currentSegmentId = segmentId;
       console.log(`[PlaybackController] On-air: ${segmentId}`);
       this._broadcastUpdate();
-      this._maybeGenerateExpand(segmentId).catch(err => {
+
+      // Trigger expand generation immediately when segment starts playing
+      // This ensures the next expand is rendered and ready before this segment finishes
+      console.log(`[PlaybackController] Attempting expand generation for on-air segment ${segmentId}`);
+      this._maybeGenerateExpand(segmentId, previousSegmentId).catch(err => {
         console.warn(`[PlaybackController] On-air expand failed: ${err.message}`);
       });
     }
@@ -149,10 +161,24 @@ class PlaybackController {
     return Boolean(segment && segment.metadata && segment.metadata.continuity === 'expand');
   }
 
-  _pipelineHasOnlyOnAir(segmentId) {
-    const active = this.pipelineStore.getAllSegments()
-      .filter(s => s.status === 'forming' || s.status === 'ready');
-    return active.length === 1 && active[0].id === segmentId;
+  _pipelineHasOnlyOnAir(segmentId, previousSegmentId) {
+    // Check if the pipeline will be empty after this segment finishes.
+    // When setOnAir() is called, the previous segment might still be in 'ready'
+    // status (race condition before segmentDone() is called), so we need to
+    // exclude it from the count.
+    const ready = this.pipelineStore.getReadyQueue();
+
+    // Count ALL other ready segments (expand or not), excluding only this segment
+    // and the previous one that's transitioning to 'aired'
+    const otherSegments = ready.filter(s =>
+      s.id !== segmentId &&
+      s.id !== previousSegmentId
+    );
+
+    console.log(`[PlaybackController] Other segments in queue: ${otherSegments.length} (${otherSegments.map(s => `${s.type}:${s.id.slice(0,8)}`).join(', ')})`);
+
+    // Generate expand ONLY if pipeline will be completely empty after this segment
+    return otherSegments.length === 0;
   }
 
   _hasRealRendering() {
@@ -167,39 +193,78 @@ class PlaybackController {
     );
   }
 
-  async _maybeGenerateExpand(segmentId) {
-    if (!this.pipelineStore || !this.scriptGenerator || !this.segmentRenderer) return;
-    if (this.pendingExpand.has(segmentId)) return;
+  async _maybeGenerateExpand(segmentId, previousSegmentId = null) {
+    console.log(`[PlaybackController] _maybeGenerateExpand called for ${segmentId} (prev: ${previousSegmentId?.slice(0,8) || 'none'})`);
 
-    const onAir = this.pipelineStore.getSegment(segmentId);
-    if (!onAir) return;
+    if (this.isPaused) {
+      console.log(`[PlaybackController] Paused — skipping expand generation`);
+      return;
+    }
+
+    if (!this.pipelineStore || !this.scriptGenerator || !this.segmentRenderer) {
+      console.log(`[PlaybackController] Missing dependencies (store/generator/renderer)`);
+      return;
+    }
+
+    if (this.pendingExpand.has(segmentId)) {
+      console.log(`[PlaybackController] Expand already pending for ${segmentId}`);
+      return;
+    }
+
+    const sourceSegment = this.pipelineStore.getSegment(segmentId);
+    if (!sourceSegment) {
+      console.log(`[PlaybackController] Source segment ${segmentId} not found`);
+      return;
+    }
 
     // Continuity decisions are strictly ON-AIR-driven and only when pipeline is empty.
-    if (!this._pipelineHasOnlyOnAir(segmentId)) return;
-    if (this._hasRealRendering()) return;
-    if (this._hasExpandFor(segmentId)) return;
+    // Generate expand when this segment starts playing AND nothing else is in pipeline.
+    // This ensures the next expand is ready by the time this segment finishes (no silence gaps).
 
-    const seed = onAir.exitContext || onAir.seed;
-    if (!seed) return;
+    const hasOnlyOnAir = this._pipelineHasOnlyOnAir(segmentId, previousSegmentId);
+    console.log(`[PlaybackController] Pipeline has only on-air? ${hasOnlyOnAir}`);
+    if (!hasOnlyOnAir) {
+      const allSegments = this.pipelineStore.getAllSegments();
+      const ready = allSegments.filter(s => s.status === 'ready');
+      console.log(`[PlaybackController] Ready segments: ${ready.length} (${ready.map(s => s.id.slice(0,8)).join(', ')})`);
+      return;
+    }
 
+    const hasRealRendering = this._hasRealRendering();
+    console.log(`[PlaybackController] Has real rendering? ${hasRealRendering}`);
+    if (hasRealRendering) {
+      const forming = this.pipelineStore.getFormingSegments();
+      const nonExpand = forming.filter(seg => !this._isExpandSegment(seg));
+      console.log(`[PlaybackController] Non-expand forming segments: ${nonExpand.length} (${nonExpand.map(s => s.type).join(', ')})`);
+      return;
+    }
+
+    const hasExpand = this._hasExpandFor(segmentId);
+    console.log(`[PlaybackController] Already has expand for ${segmentId}? ${hasExpand}`);
+    if (hasExpand) return;
+
+    console.log(`[PlaybackController] All checks passed - generating expand for ${segmentId}`);
     this.pendingExpand.add(segmentId);
     try {
-      const segment = await this.scriptGenerator.expandDirectorNote(seed);
+      const segment = await this.scriptGenerator.expandConversation();
+      if (!segment) {
+        console.log(`[PlaybackController] Expand generation returned null`);
+        this.pendingExpand.delete(segmentId);
+        return;
+      }
+
+      console.log(`[PlaybackController] Expand generated: ${segment.id}`);
       await this.pipelineStore.updateSegment(segment.id, {
         metadata: { ...(segment.metadata || {}), continuity: 'expand', expandFrom: segmentId }
       });
 
-      if (this.pipelineStore.prioritizeSegment) {
-        await this.pipelineStore.prioritizeSegment(segment.id, {
-          afterOnAir: true,
-          avoidTransitionSplit: true
-        });
-      }
+      // Expands queue in natural order (generated when pipeline is empty, so just append)
 
       this.segmentRenderer.queueRender(segment.id).catch(err => {
         console.warn(`[PlaybackController] Expand render failed: ${err.message}`);
       });
 
+      console.log(`[PlaybackController] Expand ${segment.id} queued for rendering`);
       this._broadcastUpdate();
     } finally {
       this.pendingExpand.delete(segmentId);

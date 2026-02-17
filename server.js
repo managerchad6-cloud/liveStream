@@ -45,12 +45,27 @@ if (process.platform === 'win32') {
   }
 }
 const dataDir = path.join(__dirname, 'data');
+const logsDir = path.join(__dirname, 'logs');
 const commandsFile = path.join(dataDir, 'commands.json');
 const commandsStore = {
   counts: Object.create(null),
   total: 0,
   updatedAt: null
 };
+
+try {
+  fs.mkdirSync(logsDir, { recursive: true });
+} catch (err) {
+  console.warn('[Logs] Could not create logs dir:', err.message);
+}
+
+function appendLogFile(filename, payload) {
+  const filePath = path.join(logsDir, filename);
+  const line = JSON.stringify({ at: new Date().toISOString(), ...payload }) + '\n';
+  fs.promises.appendFile(filePath, line, 'utf8').catch(err => {
+    console.warn('[Logs] write failed:', err.message);
+  });
+}
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -72,12 +87,69 @@ app.get('/api/voices', (req, res) => {
   res.json(voiceList);
 });
 
+// API: Get character prompt
+app.get('/api/voices/:id/prompt', (req, res) => {
+  const id = req.params.id;
+  const voice = voices[id];
+  if (!voice) return res.status(404).json({ error: 'Voice not found' });
+  res.json({ basePrompt: voice.basePrompt, audioTags: voice.audioTags });
+});
+
+// API: Update character prompt (in-memory + disk)
+app.post('/api/voices/:id/prompt', async (req, res) => {
+  const id = req.params.id;
+  const voice = voices[id];
+  if (!voice) return res.status(404).json({ error: 'Voice not found' });
+
+  const { basePrompt, audioTags } = req.body;
+  if (typeof basePrompt === 'string') voice.basePrompt = basePrompt;
+  if (typeof audioTags === 'string') voice.audioTags = audioTags;
+
+  // Write back to voices.js on disk
+  try {
+    await persistVoicesFile();
+    console.log(`[Voices] Updated prompt for ${id}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Voices] Failed to persist:', err.message);
+    // In-memory update still applied
+    res.json({ ok: true, warning: 'In-memory updated but disk write failed: ' + err.message });
+  }
+});
+
+async function persistVoicesFile() {
+  const filePath = path.join(__dirname, 'voices.js');
+  const entries = Object.entries(voices).map(([id, v]) => {
+    const settings = JSON.stringify(v.voiceSettings, null, 6).replace(/\n/g, '\n    ');
+    let extra = '';
+    if (v.ttsModel) extra += `\n    ttsModel: ${JSON.stringify(v.ttsModel)},`;
+    if (v.speed != null) extra += `\n    speed: ${v.speed},`;
+    return `  ${id}: {
+    name: ${JSON.stringify(v.name)},
+    elevenLabsVoiceId: ${JSON.stringify(v.elevenLabsVoiceId)},
+    basePrompt: ${quoteTemplate(v.basePrompt)},
+    audioTags: ${quoteTemplate(v.audioTags)},${extra}
+    voiceSettings: ${settings}
+  }`;
+  });
+  const content = `const voices = {\n${entries.join(',\n')}\n};\n\nmodule.exports = voices;\n`;
+  const tmpPath = filePath + '.tmp';
+  await fs.promises.writeFile(tmpPath, content, 'utf8');
+  await fs.promises.rename(tmpPath, filePath);
+}
+
+function quoteTemplate(str) {
+  // Use backtick template literal, escaping backticks and ${
+  const escaped = str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+  return '`' + escaped + '`';
+}
+
 // API: Auto conversation (pre-generated) - now uses orchestrator pipeline
 app.post('/api/auto', async (req, res) => {
   try {
     const {
       seed,
-      turns = 12,
+      turns = 2,
       model = autoModel,
       temperature = 0.7
     } = req.body;
@@ -86,7 +158,7 @@ app.post('/api/auto', async (req, res) => {
       return res.status(400).json({ error: 'Seed is required and must be a string' });
     }
 
-    const turnCount = Math.max(2, Math.min(30, parseInt(turns, 10) || 12));
+    const turnCount = Math.max(2, Math.min(30, parseInt(turns, 10) || 2));
     console.log('[Auto] Request seed="' + seed.slice(0, 40) + '...", turns=' + turnCount);
 
     autoConversation.id += 1;
@@ -119,6 +191,8 @@ app.post('/api/auto', async (req, res) => {
 
     const segmentId = segmentResponse.data.id;
     console.log('[Auto] Created segment ' + segmentId + ', queuing for render');
+
+    appendLogFile('auto.jsonl', { seed: seed.slice(0, 200), segmentId, turns: script.length, script });
 
     // Return immediately - rendering happens in background
     res.json({
@@ -216,38 +290,43 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
 
-    // Generate character response via OpenAI
-    const memory = memoryStore[selectedVoice] || '';
-    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
+    // Generate character response via OpenAI (best-effort)
+    let replyText = null;
+    try {
+      const memory = memoryStore[selectedVoice] || '';
+      const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
 
-    const completion = await openai.chat.completions.create({
-      model: process.env.MODEL || 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message }
-      ],
-      max_tokens: 150,
-      temperature: temperature,
+      const completion = await openai.chat.completions.create({
+        model: process.env.MODEL || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: message }
+        ],
+        max_tokens: 150,
+        temperature: temperature,
+      });
+
+      replyText = completion.choices[0].message.content;
+      console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
+      console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
+    } catch (llmErr) {
+      console.warn('[Chat] OpenAI generation failed, forwarding raw message:', llmErr.message);
+    }
+
+    // Send to director inbox (fire-and-forget)
+    const inboxPayload = { username: 'chat', text: message };
+    if (replyText) {
+      inboxPayload.response = { speaker: selectedVoice, text: replyText };
+    }
+    axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, inboxPayload).catch(err => {
+      console.warn('[Chat] Failed to send to director inbox:', err.message);
     });
 
-    const replyText = completion.choices[0].message.content;
-    console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
-    console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
-
-    // Send to director inbox with pre-written response attached
-    // Director manually queues to pipeline via UI
-    await axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, {
-      username: 'chat',
-      text: message,
-      response: {
-        speaker: selectedVoice,
-        text: replyText
-      }
-    });
-
-    // Update conversation history and memory
-    appendConversationTurn(message, replyText, selectedVoice);
-    enqueueMemoryUpdate(selectedVoice, message, replyText);
+    // Update conversation history and memory if we got a response
+    if (replyText) {
+      appendConversationTurn(message, replyText, selectedVoice);
+      enqueueMemoryUpdate(selectedVoice, message, replyText);
+    }
 
     res.json({ queued: true, message: 'Sent to director inbox', voice: selectedVoice });
   } catch (error) {
@@ -304,6 +383,25 @@ app.get('/api/leaderboard', (req, res) => {
   });
 });
 
+// API: Clear leaderboard (reset all votes)
+app.post('/api/leaderboard/clear', async (req, res) => {
+  try {
+    commandsStore.counts = Object.create(null);
+    commandsStore.total = 0;
+    commandsStore.updatedAt = new Date().toISOString();
+    await persistCommandStore();
+    console.log('[Commands] Leaderboard cleared');
+    res.json({
+      ok: true,
+      message: 'Leaderboard cleared',
+      total: 0
+    });
+  } catch (error) {
+    console.error('[Commands] Clear error:', error.message);
+    res.status(500).json({ error: 'Failed to clear leaderboard' });
+  }
+});
+
 // Leaderboard page
 app.get('/leaderboard', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend', 'leaderboard.html'));
@@ -333,6 +431,7 @@ initCommandStore()
   })
   .finally(() => {
     app.listen(port, () => {
+      appendLogFile('chat.jsonl', { event: 'server_start', server: 'main' });
       console.log(`API server running on http://localhost:${port}`);
       console.log(`Platform: ${process.platform}`);
       // Auto-conversation env (presence only, for diagnostics)
@@ -551,9 +650,9 @@ function buildCharacterSystemPrompt(voiceConfig, model, memory, history) {
     ? `\n\nCONVERSATION MEMORY (use for continuity):\n${memory}\n\nAvoid repeating any "Recent anecdotes" unless the user asks to continue.`
     : '';
   const historySection = history && history.length
-    ? `\n\nCONVERSATION HISTORY (most recent last):\n${history.join('\n')}`
+    ? `\n\nCONVERSATION HISTORY (most recent last):\nLines from "[Viewer]" are from the livestream audience. Lines from "Chad" or "Virgin" are from your co-host.\n${history.join('\n')}`
     : '';
-  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nAvoid repeating stock or clichéd anecdotes (e.g., helping a friend move and ending up owning a building). Keep each response fresh and aligned to the user's intent.`;
+  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nNEVER use the "I accidentally did X and it turned into Y success" formula. No accidental success stories.\nChad: NEVER give advice or encouragement. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you", "no worries". You ROAST, brag, or dismiss — never help.\nVirgin: NEVER just be generically sad or agree with Chad. No "I guess", "easier said than done", "if only". Always have a SPECIFIC detail. Get defensive about your hobbies or change the subject.\nKeep each response fresh, punchy, and aligned to the user's intent.`;
   const base = model === 'eleven_v3'
     ? voiceConfig.basePrompt + voiceConfig.audioTags
     : voiceConfig.basePrompt;
@@ -608,8 +707,10 @@ function enqueueMemoryUpdate(voiceId, userMessage, assistantMessage) {
 
 function appendConversationTurn(userMessage, assistantMessage, voiceId) {
   const speaker = voiceId === 'virgin' ? 'Virgin' : 'Chad';
-  conversationHistory.push(`User: ${userMessage}`);
+  conversationHistory.push(`[Viewer]: ${userMessage}`);
   conversationHistory.push(`${speaker}: ${assistantMessage}`);
+  appendLogFile('chat.jsonl', { kind: 'user', text: userMessage });
+  appendLogFile('chat.jsonl', { kind: 'assistant', speaker, text: assistantMessage });
 }
 
 function appendDialogueLine(speakerId, text, targetHistory) {
@@ -619,6 +720,7 @@ function appendDialogueLine(speakerId, text, targetHistory) {
 
 function appendSystemNote(text) {
   conversationHistory.push(`System: ${text}`);
+  appendLogFile('chat.jsonl', { kind: 'system', text });
 }
 
 async function generateAutoScript(seed, turns, model, temperature) {
