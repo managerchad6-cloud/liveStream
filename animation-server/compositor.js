@@ -49,6 +49,14 @@ let noseLayerEntries = [];       // Nose layers composited above eye_cover (z-or
 let staticBaseVersion = 0;
 let lightingVersion = 0;  // Incremented on lighting hue changes, included in L2 cache key
 
+// TV-behind-characters split: bgBaseBuffer holds layers z < threshold; character static
+// layers are composited dynamically inside buildExpressionBase so TV content can be
+// inserted between them (background → TV → character bodies → expression layers).
+let bgBaseBuffer = null;       // Pre-composited background layers (z < CHARACTER_Z_THRESHOLD)
+let bgStaticLayerEntries = []; // Background layer entries used to rebuild bgBaseBuffer
+let charStaticLayerEntries = []; // Character layer entries composited in L1 after TV
+const CHARACTER_Z_THRESHOLD = 15; // First character z-index (static_virgin_chair)
+
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
 let currentTVFrame = null; // Current TV frame buffer for compositing
@@ -494,6 +502,12 @@ async function preloadLayers() {
   staticLayerEntries = staticLayers;
   staticBaseBuffer = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend);
   staticBaseVersion += 1;
+
+  // Split for TV-behind-characters: background layers go into bgBaseBuffer,
+  // character body layers are stored separately and composited inside buildExpressionBase.
+  bgStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex < CHARACTER_Z_THRESHOLD);
+  charStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex >= CHARACTER_Z_THRESHOLD);
+  bgBaseBuffer = await buildStaticBaseFromEntries(bgStaticLayerEntries, emissionLayerBlend);
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
@@ -1137,11 +1151,39 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot) {
     });
   }
 
-  // Composite Level 1: staticBase (raw RGBA) + expression layers + nose → raw RGBA buffer
-  const exprBaseResult = await sharp(staticBaseBuffer.data, {
-    raw: { width: staticBaseBuffer.info.width, height: staticBaseBuffer.info.height, channels: staticBaseBuffer.info.channels }
+  // Build composite op list: TV content → character bodies → expression + nose layers.
+  // This places the TV frame behind character bodies in the final image.
+  const allL1Ops = [];
+
+  // TV content (behind characters — composited at the TV viewport position)
+  if (currentTVFrame && TV_VIEWPORT) {
+    allL1Ops.push({
+      input: currentTVFrame,
+      left: TV_VIEWPORT.x,
+      top: TV_VIEWPORT.y,
+      blend: 'over'
+    });
+  }
+
+  // Character static body layers (chair, body, face — z >= CHARACTER_Z_THRESHOLD)
+  const sortedCharLayers = [...charStaticLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
+  for (const layer of sortedCharLayers) {
+    allL1Ops.push({
+      input: layer.buffer,
+      left: Math.round(layer.x * OUTPUT_SCALE),
+      top: Math.round(layer.y * OUTPUT_SCALE),
+      blend: EMISSION_LAYER_NAMES.has(layer.name) ? (emissionLayerBlend[layer.name] || 'soft-light') : 'over'
+    });
+  }
+
+  // Expression layers + nose (on top of character bodies)
+  allL1Ops.push(...exprOps);
+
+  // Composite Level 1: bgBase (raw RGBA) + TV + char bodies + expression layers → raw RGBA
+  const exprBaseResult = await sharp(bgBaseBuffer.data, {
+    raw: { width: bgBaseBuffer.info.width, height: bgBaseBuffer.info.height, channels: bgBaseBuffer.info.channels }
   })
-    .composite(exprOps)
+    .composite(allL1Ops)
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -1303,7 +1345,7 @@ async function compositeFrame(state) {
   //   by phoneme+blink per expression base. Composites only ~5 layers instead of 15-18.
   //   On phoneme changes, the expensive expression base is served from Level 1 cache.
 
-  const exprBaseCacheKey = `${staticBaseVersion}-${exprKey}`;
+  const exprBaseCacheKey = `${staticBaseVersion}-tv${tvFrameIndex}-${exprKey}`;
   const l1Hit = exprBaseCache[exprBaseCacheKey]; // { data, info } raw RGBA or undefined
   let exprBaseRaw;
   let effectiveExprBaseKey;
@@ -1450,22 +1492,15 @@ async function compositeFrame(state) {
   // Overlays: only TV content and captions (emission + lights are baked into charBuffer)
   const overlayOps = [];
 
-  if (currentTVFrame && TV_VIEWPORT) {
+  // TV content is baked into the L1 expression base (behind characters).
+  // Only the TV reflection glass layer is composited here, keeping it above everything.
+  if (currentTVFrame && TV_VIEWPORT && tvReflectionBuffer) {
     overlayOps.push({
-      input: currentTVFrame,
-      left: TV_VIEWPORT.x,
-      top: TV_VIEWPORT.y,
+      input: tvReflectionBuffer,
+      left: tvReflectionPos.x,
+      top: tvReflectionPos.y,
       blend: 'over'
     });
-
-    if (tvReflectionBuffer) {
-      overlayOps.push({
-        input: tvReflectionBuffer,
-        left: tvReflectionPos.x,
-        top: tvReflectionPos.y,
-        blend: 'over'
-      });
-    }
   }
 
   const captionSvg = caption ? buildCaptionSvg(caption) : null;
@@ -1538,6 +1573,9 @@ async function compositeFrame(state) {
 function clearCache() {
   scaledLayerBuffers = {};
   staticBaseBuffer = null;
+  bgBaseBuffer = null;
+  bgStaticLayerEntries = [];
+  charStaticLayerEntries = [];
   frameCache = {};
   exprLayerCache = {};
   exprBaseCache = {};
@@ -1587,6 +1625,9 @@ async function setEmissionOpacity(value) {
   staticLayerEntries = updatedEntries;
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
+  bgStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex < CHARACTER_Z_THRESHOLD);
+  charStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex >= CHARACTER_Z_THRESHOLD);
+  bgBaseBuffer = await buildStaticBaseFromEntries(bgStaticLayerEntries, emissionLayerBlend);
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
@@ -1623,6 +1664,9 @@ async function setEmissionLayerBlend(name, blend) {
   const nextBase = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend);
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
+  bgStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex < CHARACTER_Z_THRESHOLD);
+  charStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex >= CHARACTER_Z_THRESHOLD);
+  bgBaseBuffer = await buildStaticBaseFromEntries(bgStaticLayerEntries, emissionLayerBlend);
   frameCache = {};
   lastOutputKey = null;
   lastOutputBuffer = null;
@@ -1725,6 +1769,9 @@ async function setLightingHue(hue) {
   foregroundEmissionBuffer = updatedForegroundBuffer;
   staticBaseBuffer = nextBase;
   staticBaseVersion += 1;
+  bgStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex < CHARACTER_Z_THRESHOLD);
+  charStaticLayerEntries = staticLayerEntries.filter(l => l.zIndex >= CHARACTER_Z_THRESHOLD);
+  bgBaseBuffer = await buildStaticBaseFromEntries(bgStaticLayerEntries, emissionLayerBlend);
   lightingVersion++;
   // No cache nukes: stale L1 entries miss via new staticBaseVersion,
   // stale L2 entries miss via new lightingVersion in charCacheKey.
