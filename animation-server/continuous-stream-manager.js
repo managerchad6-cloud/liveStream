@@ -76,6 +76,46 @@ class ContinuousStreamManager {
     const outputPath = path.join(this.liveDir, 'stream.m3u8');
     const segmentPath = path.join(this.liveDir, 'segment_%03d.ts');
 
+    // Optional RTMP push to pump.fun (or any RTMP ingest).
+    // Set PUMP_FUN_RTMP_URL=rtmp://<server>/live/<stream-key> in .env to enable.
+    // When set, tee muxer encodes once and muxes to both HLS and RTMP.
+    const rtmpUrl = process.env.PUMP_FUN_RTMP_URL || null;
+
+    // 2-second GOP — required by pump.fun (keyframe every 2s at 30fps = 60 frames)
+    const gopSize = this.fps * 2;
+
+    // Build output args: HLS only, or HLS + RTMP via tee muxer
+    let outputArgs;
+    if (rtmpUrl) {
+      // Tee muxer: single encode, dual output. Forward slashes required in tee path strings.
+      const segPathFwd = segmentPath.replace(/\\/g, '/');
+      const outPathFwd = outputPath.replace(/\\/g, '/');
+      const hlsOpts = [
+        'f=hls',
+        'hls_time=1',
+        'hls_list_size=6',
+        'hls_flags=delete_segments+append_list+independent_segments',
+        'hls_segment_type=mpegts',
+        `hls_segment_filename=${segPathFwd}`
+      ].join(':');
+      outputArgs = [
+        '-f', 'tee',
+        '-map', '0:v', '-map', '1:a',
+        `[${hlsOpts}]${outPathFwd}|[f=flv]${rtmpUrl}`
+      ];
+      console.log(`[ContinuousStreamManager] RTMP push enabled → ${rtmpUrl}`);
+    } else {
+      outputArgs = [
+        '-f', 'hls',
+        '-hls_time', '1',
+        '-hls_list_size', '6',
+        '-hls_flags', 'delete_segments+append_list+independent_segments',
+        '-hls_segment_type', 'mpegts',
+        '-hls_segment_filename', segmentPath,
+        outputPath
+      ];
+    }
+
     // FFmpeg with TWO pipe inputs: video (stdin) and audio (fd 3)
     const args = [
       '-y',
@@ -90,31 +130,29 @@ class ContinuousStreamManager {
       '-ar', String(this.sampleRate),
       '-ac', String(this.channels),
       '-i', 'pipe:3',
-      // Video encoding
+      // Video encoding — CBR for stable RTMP ingest, veryfast for production quality
       '-c:v', 'libx264',
-      '-preset', 'ultrafast',
+      '-preset', 'veryfast',
       '-tune', 'zerolatency',
+      '-profile:v', 'high',
       '-pix_fmt', 'yuv420p',
-      '-crf', '23',
+      '-b:v', '4500k',
+      '-maxrate', '4500k',
+      '-bufsize', '9000k',
       '-r', String(this.fps),
-      '-g', String(this.fps),
-      '-keyint_min', String(this.fps),
+      '-g', String(gopSize),         // 2-second keyframe interval
+      '-keyint_min', String(gopSize),
       '-sc_threshold', '0',
       '-bf', '0',
       // Audio encoding
       '-c:a', 'aac',
       '-b:a', '128k',
+      '-ar', String(this.sampleRate),
       // Force A/V sync
       '-async', '1',
       '-vsync', 'cfr',
-      // Output - short segments for low latency
-      '-f', 'hls',
-      '-hls_time', '1',             // 1 second segments (was 2)
-      '-hls_list_size', '6',        // Keep 6 segments
-      '-hls_flags', 'delete_segments+append_list+independent_segments',
-      '-hls_segment_type', 'mpegts',
-      '-hls_segment_filename', segmentPath,
-      outputPath
+      // Output(s)
+      ...outputArgs
     ];
 
     // Spawn with extra pipe for audio (fd 3)

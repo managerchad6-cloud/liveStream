@@ -5,6 +5,7 @@ const SegmentRenderer = require('./segment-renderer');
 const PlaybackController = require('./playback-controller');
 const BufferMonitor = require('./buffer-monitor');
 const ChatIntakeAgent = require('./chat-intake');
+const PumpChatListener = require('./pump-chat-listener');
 
 class Orchestrator {
   constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage }) {
@@ -50,6 +51,11 @@ class Orchestrator {
     if (config?.chatIntake?.autoApprove) {
       this.chatIntake.setAutoApprove(config.chatIntake.autoApprove);
     }
+
+    this.pumpChatListener = new PumpChatListener({
+      chatIntake: this.chatIntake,
+      token: process.env.PUMP_FUN_TOKEN || null
+    });
   }
 
   init() {
@@ -59,6 +65,7 @@ class Orchestrator {
     if (this.chatIntake && (this.chatIntakeEnabled !== false)) {
       this.chatIntake.start();
     }
+    this.pumpChatListener.start();
   }
 
   /**
