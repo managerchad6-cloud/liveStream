@@ -1,5 +1,26 @@
 const crypto = require('crypto');
 
+// ─── Injection blocklist ──────────────────────────────────────────────────────
+// Phrases that attempt to override character behavior or extract system info.
+const INJECTION_PATTERNS = [
+  /ignore (previous|all|your) (instructions?|rules?|prompt)/i,
+  /you are now/i,
+  /act as (if you (are|were)|an? )/i,
+  /pretend (you('re| are)|to be)/i,
+  /\[?system\]?:/i,
+  /new instructions/i,
+  /forget (everything|all|your)/i,
+  /\bDAN\b/,
+  /jailbreak/i,
+  /break (character|roleplay)/i,
+  /stop (roleplaying|the roleplay|pretending)/i,
+  /in reality you (are|were)/i,
+  /your (actual|real) (name|purpose|instructions?|identity) is/i,
+  /admin mode/i,
+  /developer mode/i,
+  /override (your |all )?(instructions?|rules?|prompt)/i,
+];
+
 class ChatIntakeAgent {
   constructor({ scriptGenerator, pipelineStore, segmentRenderer, eventEmitter, onChatMessage }) {
     this.scriptGenerator = scriptGenerator;
@@ -11,10 +32,54 @@ class ChatIntakeAgent {
     this.inbox = [];
     this.autoApprove = false;
     this.queueSegmentWithBridge = null;
+
+    // Filter state
+    this._approvedTimestamps = []; // sliding window for rate limiter
+    this._recentApproved = [];     // last 10 approved texts for dedup
   }
 
   start() {}
   stop() {}
+
+  /**
+   * Returns a filter reason string if the message should be dropped, null if it passes.
+   * Only active when autoApprove is on — manual review handles its own judgment.
+   */
+  _filter(text) {
+    // 1. Length
+    if (text.length < 2)   return 'too_short';
+    if (text.length > 300) return 'too_long';
+
+    // 2. Rate limit — global sliding window, max 6 per 60s
+    const now = Date.now();
+    this._approvedTimestamps = this._approvedTimestamps.filter(t => now - t < 60_000);
+    if (this._approvedTimestamps.length >= 6) return 'rate_limit';
+
+    // 3. Duplicate — exact match against last 10 approved
+    const normalised = text.trim().toLowerCase();
+    if (this._recentApproved.includes(normalised)) return 'duplicate';
+
+    // 4. Spam
+    // 4a. No vowels at all and more than 4 letters (keyboard mash: zxcvbnm, qwrtplmn)
+    const letters = text.replace(/[^a-z]/gi, '');
+    if (letters.length > 4 && !/[aeiou]/i.test(letters)) return 'spam';
+    // 4b. No letters whatsoever (pure symbols / numbers / emojis)
+    if (text.length > 1 && letters.length === 0) return 'spam';
+
+    // 5. Prompt injection
+    for (const pattern of INJECTION_PATTERNS) {
+      if (pattern.test(text)) return 'injection';
+    }
+
+    return null; // passes
+  }
+
+  /** Record an approved message into filter state. */
+  _recordApproved(text) {
+    this._approvedTimestamps.push(Date.now());
+    this._recentApproved.unshift(text.trim().toLowerCase());
+    if (this._recentApproved.length > 10) this._recentApproved.pop();
+  }
 
   addMessage(username, text, response = null) {
     const card = {
@@ -34,13 +99,23 @@ class ChatIntakeAgent {
 
     if (!card.text) return null;
 
-    this.inbox.unshift(card);
-    this.inbox = this.inbox.slice(0, 50);
-
-    // Push to stream chat overlay (fires regardless of auto-approve)
+    // Push to stream chat overlay first — viewers always see their own message
     if (this.onChatMessage) {
       this.onChatMessage(card.username, card.text);
     }
+
+    // Filter gate — only applies during auto-approve
+    if (this.autoApprove) {
+      const reason = this._filter(card.text);
+      if (reason) {
+        console.log(`[ChatIntake] Filtered (${reason}): "${card.text.substring(0, 60)}"`);
+        return null; // vanishes — overlay already fired, nothing else happens
+      }
+      this._recordApproved(card.text);
+    }
+
+    this.inbox.unshift(card);
+    this.inbox = this.inbox.slice(0, 50);
 
     if (this.eventEmitter) {
       this.eventEmitter.broadcast('chat:new-card', card);
