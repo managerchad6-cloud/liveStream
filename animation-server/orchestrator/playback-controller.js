@@ -219,33 +219,48 @@ class PlaybackController {
       return;
     }
 
+    // Count words in the source segment's script (excluding narrator lines)
+    const sourceWordCount = Array.isArray(sourceSegment.script)
+      ? sourceSegment.script
+          .filter(l => l.speaker !== 'narrator')
+          .reduce((acc, l) => acc + (l.text || '').split(/\s+/).filter(Boolean).length, 0)
+      : 0;
+
     // Track expand chain: human-input segments start a new chain, expands continue it
     const humanInputTypes = ['chat-response', 'auto-convo', 'custom-script'];
     const isHumanInput = humanInputTypes.includes(sourceSegment.type);
     const isExpand = this._isExpandSegment(sourceSegment);
 
     if (isHumanInput) {
-      // New human input resets the chain — first expand will determine maxExpands
-      this.expandChain = { rootSegmentId: segmentId, maxExpands: null, airedCount: 0 };
-      console.log(`[PlaybackController] New expand chain started from ${sourceSegment.type} ${segmentId.slice(0,8)}`);
+      // Compute maxExpands deterministically from source word count — no LLM dependency.
+      // For chat-response: word count determines the budget.
+      // For seeds/scripts: default to 5 (LLM will still influence via prompt guidance).
+      let chainMax;
+      if (sourceSegment.type === 'chat-response') {
+        // Probabilistic: 50% → 0, 30% → 1, 20% → 2
+        // Word count can only reduce the cap, never increase it:
+        // long response (>20w) caps at 0, medium (10-20w) caps at 1, short (<10w) unrestricted
+        const r = Math.random();
+        const rolled = r < 0.5 ? 0 : r < 0.8 ? 1 : 2;
+        const wordCap = sourceWordCount > 20 ? 0 : sourceWordCount >= 10 ? 1 : 2;
+        chainMax = Math.min(rolled, wordCap);
+      } else {
+        chainMax = 5;
+      }
+      this.expandChain = { rootSegmentId: segmentId, maxExpands: chainMax, airedCount: 0 };
+      console.log(`[PlaybackController] New expand chain from ${sourceSegment.type} ${segmentId.slice(0,8)} — maxExpands=${chainMax} (sourceWords=${sourceWordCount})`);
     } else if (isExpand && this.expandChain) {
       // Count this aired expand
       this.expandChain.airedCount += 1;
 
-      // First expand in chain — read maxExpands from its metadata (set by LLM)
-      if (this.expandChain.maxExpands === null && typeof sourceSegment.metadata?.maxExpands === 'number') {
-        this.expandChain.maxExpands = sourceSegment.metadata.maxExpands;
-        console.log(`[PlaybackController] Chain maxExpands set to ${this.expandChain.maxExpands} (from LLM)`);
-      }
-
       // Check if chain is exhausted
-      if (this.expandChain.maxExpands !== null && this.expandChain.airedCount >= this.expandChain.maxExpands) {
+      if (this.expandChain.airedCount >= this.expandChain.maxExpands) {
         console.log(`[PlaybackController] Expand chain exhausted (${this.expandChain.airedCount}/${this.expandChain.maxExpands}) — going silent`);
         this.expandChain = null;
         return;
       }
 
-      console.log(`[PlaybackController] Expand ${this.expandChain.airedCount}/${this.expandChain.maxExpands ?? '?'} aired`);
+      console.log(`[PlaybackController] Expand ${this.expandChain.airedCount}/${this.expandChain.maxExpands} aired`);
     } else if (isExpand && !this.expandChain) {
       // Orphaned expand (chain was reset by new human input) — don't continue
       console.log(`[PlaybackController] Orphaned expand ${segmentId.slice(0,8)} — no active chain`);
@@ -284,46 +299,32 @@ class PlaybackController {
     // Determine expand options
     const isFirstExpand = isHumanInput; // first expand comes right after human input
     let wrapUp = false;
-    if (this.expandChain && this.expandChain.maxExpands !== null) {
-      // Next expand will be airedCount+1 (the one we're about to generate)
+    if (this.expandChain && this.expandChain.maxExpands >= 2) {
+      // wrapUp only makes sense for multi-expand chains (single-expand is just a reaction, not a conclusion)
       wrapUp = (this.expandChain.airedCount + 1) >= this.expandChain.maxExpands;
     }
 
-    console.log(`[PlaybackController] Generating expand for ${segmentId.slice(0,8)} (first=${isFirstExpand}, wrapUp=${wrapUp})`);
+    console.log(`[PlaybackController] Generating expand for ${segmentId.slice(0,8)} (first=${isFirstExpand}, wrapUp=${wrapUp}, sourceWords=${sourceWordCount})`);
     this.pendingExpand.add(segmentId);
     try {
-      const segment = await this.scriptGenerator.expandConversation({ isFirstExpand, wrapUp });
+      const segment = await this.scriptGenerator.expandConversation({ isFirstExpand, wrapUp, sourceType: sourceSegment.type, sourceWordCount });
       if (!segment) {
         console.log(`[PlaybackController] Expand generation returned null`);
         this.pendingExpand.delete(segmentId);
         return;
       }
 
-      console.log(`[PlaybackController] Expand generated: ${segment.id}${segment.metadata?.maxExpands != null ? ` (maxExpands=${segment.metadata.maxExpands})` : ''}`);
-
-      // If first expand and LLM says maxExpands=0, discard it — topic doesn't deserve follow-ups
-      if (isFirstExpand && segment.metadata?.maxExpands === 0) {
-        console.log(`[PlaybackController] maxExpands=0 — discarding expand and going silent`);
-        try { await this.pipelineStore.removeSegment(segment.id); } catch (_) {}
-        this.expandChain = null;
-        return;
-      }
-
-      // Store maxExpands on chain if this is the first expand
-      if (isFirstExpand && typeof segment.metadata?.maxExpands === 'number') {
-        this.expandChain.maxExpands = segment.metadata.maxExpands;
-        console.log(`[PlaybackController] Chain maxExpands set to ${this.expandChain.maxExpands} (from LLM)`);
-      }
+      console.log(`[PlaybackController] Expand generated: ${segment.id}`);
 
       await this.pipelineStore.updateSegment(segment.id, {
-        metadata: { ...(segment.metadata || {}), continuity: 'expand', expandFrom: segmentId, expandChainRoot: this.expandChain?.rootSegmentId || segmentId }
+        metadata: { ...(segment.metadata || {}), continuity: 'expand', expandFrom: segmentId, expandChainRoot: this.expandChain?.rootSegmentId || segmentId, wrapUp: wrapUp || false }
       });
 
       this.segmentRenderer.queueRender(segment.id).catch(err => {
         console.warn(`[PlaybackController] Expand render failed: ${err.message}`);
       });
 
-      console.log(`[PlaybackController] Expand ${segment.id.slice(0,8)} queued for rendering`);
+      console.log(`[PlaybackController] Expand ${segment.id.slice(0,8)} queued for rendering${wrapUp ? ' [WRAP-UP — chain closing]' : ''}`);
       this._broadcastUpdate();
     } finally {
       this.pendingExpand.delete(segmentId);

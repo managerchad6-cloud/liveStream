@@ -652,7 +652,7 @@ function buildCharacterSystemPrompt(voiceConfig, model, memory, history) {
   const historySection = history && history.length
     ? `\n\nCONVERSATION HISTORY (most recent last):\nLines from "[Viewer]" are from the livestream audience. Lines from "Chad" or "Virgin" are from your co-host.\n${history.join('\n')}`
     : '';
-  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nNEVER use the "I accidentally did X and it turned into Y success" formula. No accidental success stories.\nChad: NEVER give advice or encouragement. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you", "no worries". You ROAST, brag, or dismiss — never help.\nVirgin: NEVER just be generically sad or agree with Chad. No "I guess", "easier said than done", "if only". Always have a SPECIFIC detail. Get defensive about your hobbies or change the subject.\nKeep each response fresh, punchy, and aligned to the user's intent.`;
+  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nNEVER use the "I accidentally did X and it turned into Y success" formula. No accidental success stories.\nChad: NEVER give advice or encouragement. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you", "no worries". You ROAST, brag, or dismiss — never help.\nVirgin: NEVER just be generically sad or agree with Chad. No "I guess", "easier said than done", "if only". Always have a SPECIFIC detail. Get defensive about your hobbies or change the subject.\nKeep each response fresh, punchy, and aligned to the user's intent.\n\nRESPONSE LENGTH — match strictly to the message:\n- Insults, reactions, one-liners ("you're gay", "lol", "hi"): 1 sentence, 5-10 words. Hit and done.\n- Simple questions or casual comments: 1-2 sentences max.\n- Substantive questions with real content: 2-3 sentences max.\nNever rant. Never pad. A short jab beats a long speech every time.`;
   const base = model === 'eleven_v3'
     ? voiceConfig.basePrompt + voiceConfig.audioTags
     : voiceConfig.basePrompt;
@@ -900,12 +900,16 @@ async function playAutoScript(script, autoId) {
     const voiceConfig = voices[speakerId];
     if (!voiceConfig) continue;
 
+    const ttsText = text
+      .replace(/\$VVC/gi, 'VVC')
+      .replace(/pump\.fun/gi, 'pump fun');
+
     index += 1;
     try {
       const elevenLabsResponse = await axios.post(
         `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
         {
-          text,
+          text: ttsText,
           model_id: autoTtsModel,
           voice_settings: voiceConfig.voiceSettings
         },

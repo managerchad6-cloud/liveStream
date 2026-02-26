@@ -155,10 +155,14 @@ class SegmentRenderer {
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
+          const ttsText = line.text
+            .replace(/\$VVC/gi, 'VVC')
+            .replace(/pump\.fun/gi, 'pump fun');
+
           const ttsResponse = await axios.post(
             `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
             {
-              text: line.text,
+              text: ttsText,
               model_id: voiceConfig.ttsModel || process.env.AUTO_TTS_MODEL || 'eleven_v3',
               voice_settings: voiceConfig.voiceSettings,
               ...(voiceConfig.speed != null && { speed: voiceConfig.speed })

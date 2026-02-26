@@ -44,7 +44,7 @@ Rules:
 - Natural conversational flow (not rigid alternation)
 - Chad can interrupt, Virgin can trail off
 - One character can have multiple consecutive lines
-- 1-3 sentences per line
+- 1-2 sentences per line. Only go to 3 if the line absolutely requires it. Short punchy lines beat long ones.
 - No emojis, no markdown in dialogue text
 - Audio tags for ElevenLabs v3: [laughs], [chuckles], [sighs], [nervous laugh], [clears throat], etc.
 - CRITICAL: Chad must NEVER give advice, encouragement, or act like a life coach. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you". He ROASTS, brags, or dismisses — never helps.
@@ -208,7 +208,7 @@ Rules:
    * then generates the script. This prevents race conditions where chat messages
    * arriving during generation end up earlier in the queue.
    */
-  async expandConversation({ isFirstExpand = false, wrapUp = false } = {}) {
+  async expandConversation({ isFirstExpand = false, wrapUp = false, sourceType = null, sourceWordCount = 0 } = {}) {
     if (!this.openai) throw new Error('OpenAI not configured');
 
     // Collect conversation history from recent segments
@@ -243,26 +243,17 @@ Rules:
       .join('\n');
 
     try {
-      // Build JSON response format — first expand includes maxExpands
-      let jsonFormat = '{ "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "brief topic summary"';
-      if (isFirstExpand) {
-        jsonFormat += ', "maxExpands": <number>';
-      }
-      jsonFormat += ' }';
-
-      let maxExpandsClause = '';
-      if (isFirstExpand) {
-        maxExpandsClause = '\n\n"maxExpands" — how many total follow-up lines this topic deserves (0-5). Most conversations should be SHORT. Greetings like "hi", "what\'s up", "hey guys" = 0. Simple questions or generic comments = 0-1. A topic with mild debate potential = 2. A genuinely heated argument or deep lore discussion = 3-5. Default to 0 or 1 unless the topic is truly compelling. Silence is fine — don\'t force conversation.';
-      }
+      // maxExpands is now computed server-side in PlaybackController — not LLM-determined
+      const jsonFormat = '{ "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "brief topic summary" }';
 
       let wrapUpClause = '';
       if (wrapUp) {
-        wrapUpClause = '\n\nIMPORTANT: This is the FINAL line on this topic. Wrap up naturally — make a closing remark, a dismissive sign-off, or a natural conversation-ender. Do NOT open new threads or ask questions.';
+        wrapUpClause = '\n\nIMPORTANT: This is the last line on THIS specific topic. Land a final jab, reaction, or dismissal about what was just discussed, then let it go. Do NOT open new threads or ask questions. The stream continues — do NOT say goodbye, sign off, or imply the show is ending.';
       }
 
       // Build as actual chat messages so the LLM naturally predicts the next lines
       const messages = [
-        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n\nRespond with ONLY JSON: ${jsonFormat}\nExactly 1 line. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${maxExpandsClause}${wrapUpClause}` }
+        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n\nRespond with ONLY JSON: ${jsonFormat}\nThe "script" array must contain EXACTLY 1 object — one speaker, one line. Never add a second entry. Keep it SHORT: 1 sentence, 2 max. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${wrapUpClause}` }
       ];
 
       // Feed conversation history as assistant messages so LLM sees it as its own output
@@ -320,10 +311,7 @@ Rules:
         exitContext: parsed.exitContext || null
       };
 
-      // Store maxExpands from first expand's LLM response
-      if (isFirstExpand && typeof parsed.maxExpands === 'number') {
-        updateData.metadata = { ...(segment.metadata || {}), maxExpands: Math.max(0, Math.min(5, Math.round(parsed.maxExpands))) };
-      }
+      // maxExpands is controlled server-side in PlaybackController, not by LLM
 
       await this.pipelineStore.updateSegment(segment.id, updateData);
 
@@ -352,7 +340,11 @@ Rules:
 
     try {
       const recentExitContexts = this._recentExitContexts(3);
-      const systemPrompt = `Generate a 1-3 line response to this chat message. Type: chat-response.\n` +
+      const systemPrompt = `Respond to this chat message in character. Match length strictly to how much the message deserves:\n` +
+        `- Greetings, reactions, one-word inputs ("hi", "lol", "nice", "sup"): 1 line total, 3-6 words. A quick hit, nothing more.\n` +
+        `- Simple questions or casual comments: 1-2 lines, 1 short sentence each.\n` +
+        `- Substantive questions with real content: up to 3 lines, 2 sentences max per line.\n` +
+        `Never pad a shallow message with a long answer. Silence deserves silence, "hi" deserves a word.\n\n` +
         `Context: ${recentExitContexts.join(' | ') || 'none'}.\n` +
         `\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n` +
         `\nCRITICAL RULES:\n` +
