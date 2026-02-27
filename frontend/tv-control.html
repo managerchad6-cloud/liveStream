@@ -359,6 +359,191 @@
       50% { opacity: 0.5; }
     }
 
+    /* Segment Cue Panel */
+    .cue-attach-box {
+      background: #1a1a2e;
+      border: 1px dashed #333;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .cue-attach-box.has-media {
+      border-color: #00d4ff;
+      border-style: solid;
+    }
+    .cue-attach-thumb {
+      width: 60px;
+      height: 34px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #0a0a1a;
+      display: block;
+    }
+    .cue-attach-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .cue-attach-name {
+      font-size: 0.8em;
+      color: #ccc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cue-attach-label {
+      font-size: 0.75em;
+      color: #666;
+    }
+    .cue-script-lines {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .cue-script-line {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .cue-script-line select {
+      width: 100px;
+      flex-shrink: 0;
+    }
+    .cue-script-line input {
+      flex: 1;
+    }
+    .cue-script-line button {
+      padding: 6px 10px;
+      font-size: 0.85em;
+      background: #333;
+      color: #aaa;
+      min-width: unset;
+    }
+    .cue-script-line button:hover {
+      background: #dc2626;
+      color: #fff;
+    }
+    /* Pipeline cue list */
+    .cue-pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .cue-pipeline-item {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .cue-pipeline-item .cue-seg-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .cue-seg-seed {
+      font-size: 0.85em;
+      color: #ccc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cue-seg-meta {
+      font-size: 0.75em;
+      color: #666;
+      margin-top: 3px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .cue-pipeline-thumb {
+      width: 48px;
+      height: 27px;
+      object-fit: cover;
+      border-radius: 3px;
+      background: #0a0a1a;
+      flex-shrink: 0;
+    }
+    .cue-pipeline-video-badge {
+      width: 48px;
+      height: 27px;
+      background: #0a0a1a;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1em;
+      flex-shrink: 0;
+    }
+    .badge-forming { background: #f59e0b; color: #000; }
+    .badge-ready   { background: #4ade80; color: #000; }
+    .badge-onair   { background: #00d4ff; color: #000; animation: pulse 1s infinite; }
+
+    /* Media Library */
+    .library-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px;
+    }
+    .library-item {
+      background: #1a1a2e;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 2px solid transparent;
+      transition: border-color 0.2s;
+    }
+    .library-item:hover {
+      border-color: #00d4ff;
+    }
+    .library-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: #0a0a1a;
+      display: block;
+    }
+    .library-thumb-placeholder {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: #0a0a1a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2em;
+    }
+    .library-item-info {
+      padding: 8px;
+    }
+    .library-item-name {
+      font-size: 0.75em;
+      color: #ccc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 6px;
+    }
+    .library-item-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+    .library-item-meta button {
+      padding: 3px 8px;
+      font-size: 0.72em;
+      min-width: unset;
+    }
+    .library-empty {
+      text-align: center;
+      color: #666;
+      padding: 40px;
+      grid-column: 1 / -1;
+    }
+
     /* Upload Tracker */
     .upload-tracker {
       width: 100%;
@@ -520,6 +705,7 @@
       <div class="tabs">
         <button class="tab active" onclick="switchTab('url')">URL / Path</button>
         <button class="tab" onclick="switchTab('upload')">Upload File</button>
+        <button class="tab" onclick="switchTab('library')">Media Library</button>
       </div>
 
       <div id="tab-url" class="tab-content active">
@@ -566,6 +752,103 @@
           </div>
           <div class="upload-tracker-list" id="upload-tracker-list">
           </div>
+        </div>
+      </div>
+
+      <div id="tab-library" class="tab-content">
+        <div style="display:flex; gap:10px; margin-bottom:15px; align-items:center;">
+          <input type="text" id="library-search" placeholder="Search by filename..." style="flex:1;" oninput="filterLibrary()">
+          <button onclick="fetchLibrary()" class="secondary" style="min-width:80px;">Refresh</button>
+        </div>
+        <div id="library-grid" class="library-grid">
+          <div class="library-empty">Switch to this tab to load library</div>
+        </div>
+        <div id="library-pagination" style="display:none; gap:10px; align-items:center; justify-content:center; margin-top:15px;">
+          <button onclick="libraryPage(-1)" class="secondary" id="lib-prev">&#9664; Prev</button>
+          <span id="lib-page-info" style="color:#888; font-size:0.9em;"></span>
+          <button onclick="libraryPage(1)" class="secondary" id="lib-next">Next &#9654;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Segment Cue -->
+    <div class="panel">
+      <h2>Segment Cue</h2>
+
+      <div class="tabs" style="margin-bottom:15px;">
+        <button class="tab active" onclick="switchCueTab('seed')">Seed Prompt</button>
+        <button class="tab" onclick="switchCueTab('script')">Custom Script</button>
+        <button class="tab" onclick="switchCueTab('pipeline')">Pipeline</button>
+      </div>
+
+      <!-- Seed Prompt tab -->
+      <div id="cue-tab-seed" class="tab-content active">
+        <div class="add-form">
+          <div class="form-row">
+            <label>Topic</label>
+            <input type="text" id="cue-seed-topic" placeholder="e.g. Chad brags about his new car">
+          </div>
+          <div class="cue-attach-box" id="cue-seed-attach-box">
+            <div class="cue-attach-info">
+              <div class="cue-attach-label">TV Media (optional)</div>
+              <div class="cue-attach-name" id="cue-seed-attach-name">None attached</div>
+            </div>
+            <button class="secondary" onclick="openCuePicker('seed')" style="min-width:unset; padding:6px 12px; font-size:0.85em;">Pick from Library</button>
+            <label style="margin:0; cursor:pointer;">
+              <input type="file" id="cue-seed-file" accept="image/*,video/*" style="display:none;" onchange="onCueSeedFileChange()">
+              <span class="secondary" style="background:#333; color:#fff; padding:6px 12px; border-radius:8px; font-size:0.85em; cursor:pointer;">Upload</span>
+            </label>
+            <button class="secondary" onclick="clearCueAttach('seed')" id="cue-seed-clear-btn" style="display:none; padding:6px 10px; font-size:0.85em; color:#dc2626;">✕</button>
+          </div>
+          <div id="cue-seed-upload-status" style="font-size:0.8em; color:#888; display:none;"></div>
+          <button onclick="queueSeedSegment()">▶ Queue Seed Segment</button>
+        </div>
+      </div>
+
+      <!-- Custom Script tab -->
+      <div id="cue-tab-script" class="tab-content">
+        <div class="add-form">
+          <div class="cue-script-lines" id="cue-script-lines">
+            <div class="cue-script-line">
+              <select><option value="chad">Chad</option><option value="virgin">Virgin</option><option value="narrator">Narrator</option></select>
+              <input type="text" placeholder="Line of dialogue...">
+              <button onclick="removeCueLine(this)">✕</button>
+            </div>
+          </div>
+          <button class="secondary" onclick="addCueLine()" style="margin-bottom:8px;">+ Add Line</button>
+          <div class="cue-attach-box" id="cue-script-attach-box">
+            <div class="cue-attach-info">
+              <div class="cue-attach-label">TV Media (optional)</div>
+              <div class="cue-attach-name" id="cue-script-attach-name">None attached</div>
+            </div>
+            <button class="secondary" onclick="openCuePicker('script')" style="min-width:unset; padding:6px 12px; font-size:0.85em;">Pick from Library</button>
+            <label style="margin:0; cursor:pointer;">
+              <input type="file" id="cue-script-file" accept="image/*,video/*" style="display:none;" onchange="onCueScriptFileChange()">
+              <span class="secondary" style="background:#333; color:#fff; padding:6px 12px; border-radius:8px; font-size:0.85em; cursor:pointer;">Upload</span>
+            </label>
+            <button class="secondary" onclick="clearCueAttach('script')" id="cue-script-clear-btn" style="display:none; padding:6px 10px; font-size:0.85em; color:#dc2626;">✕</button>
+          </div>
+          <div id="cue-script-upload-status" style="font-size:0.8em; color:#888; display:none;"></div>
+          <button onclick="queueScriptSegment()">▶ Queue Script Segment</button>
+        </div>
+      </div>
+
+      <!-- Pipeline tab -->
+      <div id="cue-tab-pipeline" class="tab-content">
+        <div id="cue-pipeline-list" class="cue-pipeline">
+          <div class="playlist-empty">No forming or ready segments</div>
+        </div>
+      </div>
+
+      <!-- Mini library picker modal -->
+      <div id="cue-picker-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:#16213e; border-radius:12px; padding:20px; width:90%; max-width:700px; max-height:80vh; overflow-y:auto;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+            <h3 style="margin:0; color:#00d4ff;">Pick Media</h3>
+            <button onclick="closeCuePicker()" class="secondary" style="padding:6px 12px;">✕ Close</button>
+          </div>
+          <input type="text" id="cue-picker-search" placeholder="Search..." style="width:100%; margin-bottom:12px;" oninput="renderCuePicker()">
+          <div id="cue-picker-grid" class="library-grid"></div>
         </div>
       </div>
     </div>
@@ -940,7 +1223,415 @@
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
       document.getElementById(`tab-${tab}`).classList.add('active');
+      if (tab === 'library') fetchLibrary();
     }
+
+    // ============== Media Library ==============
+
+    let libraryItems = [];
+    let libraryFiltered = [];
+    let libraryOffset = 0;
+    const LIBRARY_PAGE_SIZE = 20;
+
+    async function fetchLibrary() {
+      const grid = document.getElementById('library-grid');
+      grid.innerHTML = '<div class="library-empty">Loading...</div>';
+      document.getElementById('library-pagination').style.display = 'none';
+      try {
+        const res = await fetch(`${API_BASE}/api/media?limit=500`);
+        const data = await res.json();
+        libraryItems = (data.items || []).slice().reverse(); // newest first
+        libraryOffset = 0;
+        filterLibrary();
+      } catch (err) {
+        grid.innerHTML = '<div class="library-empty">Failed to load media library</div>';
+      }
+    }
+
+    function filterLibrary() {
+      const q = document.getElementById('library-search').value.toLowerCase();
+      libraryFiltered = q
+        ? libraryItems.filter(item => item.originalName.toLowerCase().includes(q))
+        : libraryItems;
+      libraryOffset = 0;
+      renderLibrary();
+    }
+
+    function libraryPage(dir) {
+      libraryOffset = Math.max(0, libraryOffset + dir * LIBRARY_PAGE_SIZE);
+      renderLibrary();
+    }
+
+    function renderLibrary() {
+      const grid = document.getElementById('library-grid');
+      const pagination = document.getElementById('library-pagination');
+      const total = libraryFiltered.length;
+      const page = libraryFiltered.slice(libraryOffset, libraryOffset + LIBRARY_PAGE_SIZE);
+
+      if (page.length === 0) {
+        grid.innerHTML = '<div class="library-empty">No media files found</div>';
+        pagination.style.display = 'none';
+        return;
+      }
+
+      grid.innerHTML = page.map(item => `
+        <div class="library-item">
+          ${item.type === 'video'
+            ? `<div class="library-thumb-placeholder">🎬</div>`
+            : `<img class="library-thumb" src="${API_BASE}/api/media/${item.id}/thumbnail" alt="${item.originalName}" onerror="this.parentElement.querySelector('.library-thumb-placeholder') || this.insertAdjacentHTML('afterend', '<div class=\\'library-thumb-placeholder\\'>🖼</div>'); this.remove();">`
+          }
+          <div class="library-item-info">
+            <div class="library-item-name" title="${item.originalName}">${item.originalName}</div>
+            <div class="library-item-meta">
+              <span class="type ${item.type}">${item.type}</span>
+              <button onclick="addMediaToPlaylist('${item.id}')">+ Add</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+
+      const showPagination = total > LIBRARY_PAGE_SIZE;
+      pagination.style.display = showPagination ? 'flex' : 'none';
+      document.getElementById('lib-page-info').textContent =
+        `${libraryOffset + 1}–${Math.min(libraryOffset + LIBRARY_PAGE_SIZE, total)} of ${total}`;
+      document.getElementById('lib-prev').disabled = libraryOffset === 0;
+      document.getElementById('lib-next').disabled = libraryOffset + LIBRARY_PAGE_SIZE >= total;
+    }
+
+    async function addMediaToPlaylist(mediaId) {
+      try {
+        const res = await fetch(`${API_BASE}/tv/playlist/add`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mediaId })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        fetchStatus();
+      } catch (err) {
+        alert('Failed to add media: ' + err.message);
+      }
+    }
+
+    // ============== End Media Library ==============
+
+    // ============== Segment Cue ==============
+
+    // State per tab: { mediaId, originalName, type, pendingFile }
+    const cueAttach = { seed: null, script: null };
+    let cuePickerTarget = null; // 'seed' | 'script' | 'pipeline:<segmentId>'
+    let pipelinePickerSegmentId = null;
+
+    function switchCueTab(tab) {
+      document.querySelectorAll('#cue-tab-seed, #cue-tab-script, #cue-tab-pipeline').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.panel:has(#cue-tab-seed) .tab').forEach(t => t.classList.remove('active'));
+      // Target the tab buttons in the segment cue panel specifically
+      const tabBtns = document.querySelectorAll('.panel .tabs:has(+ #cue-tab-seed ~ #cue-tab-pipeline) .tab');
+      document.getElementById(`cue-tab-${tab}`).classList.add('active');
+      document.querySelector(`[onclick="switchCueTab('${tab}')"]`).classList.add('active');
+      if (tab === 'pipeline') refreshCuePipeline();
+    }
+
+    // Switch cue tabs using a simpler approach
+    document.querySelectorAll('[onclick^="switchCueTab"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[onclick^="switchCueTab"]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        ['seed', 'script', 'pipeline'].forEach(t => {
+          const el = document.getElementById(`cue-tab-${t}`);
+          if (el) el.classList.remove('active');
+        });
+        const tab = btn.getAttribute('onclick').match(/'(\w+)'/)[1];
+        document.getElementById(`cue-tab-${tab}`)?.classList.add('active');
+        if (tab === 'pipeline') refreshCuePipeline();
+      });
+    });
+
+    function setCueAttach(tab, item) {
+      // item: { id, originalName, type } or null
+      cueAttach[tab] = item;
+      const nameEl = document.getElementById(`cue-${tab}-attach-name`);
+      const clearBtn = document.getElementById(`cue-${tab}-clear-btn`);
+      const box = document.getElementById(`cue-${tab}-attach-box`);
+      if (item) {
+        nameEl.textContent = item.originalName;
+        clearBtn.style.display = 'inline-block';
+        box.classList.add('has-media');
+      } else {
+        nameEl.textContent = 'None attached';
+        clearBtn.style.display = 'none';
+        box.classList.remove('has-media');
+      }
+    }
+
+    function clearCueAttach(tab) {
+      setCueAttach(tab, null);
+      document.getElementById(`cue-${tab}-file`).value = '';
+      document.getElementById(`cue-${tab}-upload-status`).style.display = 'none';
+    }
+
+    // File upload for cue attachment (returns Promise<{id, originalName, type}>)
+    async function uploadCueFile(file, statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.textContent = `Uploading ${file.name}…`;
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${API_BASE}/api/media/upload`, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+      const data = await res.json();
+      statusEl.textContent = `Uploaded: ${data.originalName}`;
+      return { id: data.id, originalName: data.originalName, type: data.type };
+    }
+
+    function onCueSeedFileChange() {
+      const file = document.getElementById('cue-seed-file').files[0];
+      if (!file) return;
+      // Optimistically show filename, upload happens on queue
+      setCueAttach('seed', { id: null, originalName: file.name, type: file.type.startsWith('video') ? 'video' : 'image', pendingFile: file });
+    }
+
+    function onCueScriptFileChange() {
+      const file = document.getElementById('cue-script-file').files[0];
+      if (!file) return;
+      setCueAttach('script', { id: null, originalName: file.name, type: file.type.startsWith('video') ? 'video' : 'image', pendingFile: file });
+    }
+
+    // Library picker modal
+    function openCuePicker(target) {
+      cuePickerTarget = target;
+      document.getElementById('cue-picker-modal').style.display = 'flex';
+      document.getElementById('cue-picker-search').value = '';
+      renderCuePicker();
+      if (libraryItems.length === 0) {
+        fetchLibrary().then(() => renderCuePicker());
+      }
+    }
+
+    function closeCuePicker() {
+      document.getElementById('cue-picker-modal').style.display = 'none';
+      cuePickerTarget = null;
+      pipelinePickerSegmentId = null;
+    }
+
+    function renderCuePicker() {
+      const q = document.getElementById('cue-picker-search').value.toLowerCase();
+      const items = q ? libraryItems.filter(i => i.originalName.toLowerCase().includes(q)) : libraryItems;
+      const grid = document.getElementById('cue-picker-grid');
+      if (items.length === 0) {
+        grid.innerHTML = '<div class="library-empty">No items. Upload something first.</div>';
+        return;
+      }
+      grid.innerHTML = items.slice(0, 40).map(item => `
+        <div class="library-item" onclick="selectCuePick('${item.id}', '${item.originalName.replace(/'/g,"\\'")}', '${item.type}')" style="cursor:pointer;">
+          ${item.type === 'video'
+            ? `<div class="library-thumb-placeholder">🎬</div>`
+            : `<img class="library-thumb" src="${API_BASE}/api/media/${item.id}/thumbnail" alt="">`}
+          <div class="library-item-info">
+            <div class="library-item-name" title="${item.originalName}">${item.originalName}</div>
+            <div class="library-item-meta"><span class="type ${item.type}">${item.type}</span></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function selectCuePick(id, originalName, type) {
+      closeCuePicker();
+      if (cuePickerTarget === 'seed' || cuePickerTarget === 'script') {
+        setCueAttach(cuePickerTarget, { id, originalName, type });
+      } else if (cuePickerTarget && cuePickerTarget.startsWith('pipeline:')) {
+        const segId = cuePickerTarget.replace('pipeline:', '');
+        await attachMediaToSegment(segId, id);
+        refreshCuePipeline();
+      }
+    }
+
+    // Ensure media is uploaded and return mediaId (or null)
+    async function resolveCueMedia(tab) {
+      const attach = cueAttach[tab];
+      if (!attach) return null;
+      if (attach.id) return attach.id; // already in library
+      if (attach.pendingFile) {
+        const statusEl = document.getElementById(`cue-${tab}-upload-status`);
+        const item = await uploadCueFile(attach.pendingFile, statusEl);
+        if (libraryItems.findIndex(i => i.id === item.id) === -1) libraryItems.unshift(item);
+        setCueAttach(tab, item);
+        return item.id;
+      }
+      return null;
+    }
+
+    async function queueSeedSegment() {
+      const topic = document.getElementById('cue-seed-topic').value.trim();
+      if (!topic) { alert('Enter a topic'); return; }
+
+      const statusEl = document.getElementById('cue-seed-upload-status');
+
+      // Start segment creation and media upload in parallel
+      const [segmentResult, mediaId] = await Promise.all([
+        fetch(`${API_BASE}/api/orchestrator/seed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic })
+        }).then(r => r.json()),
+        resolveCueMedia('seed').catch(err => { console.warn('Media upload failed:', err); return null; })
+      ]);
+
+      if (segmentResult.error) { alert('Segment error: ' + segmentResult.error); return; }
+
+      const segmentId = segmentResult.segment?.id;
+
+      // Attach media if we got a mediaId (upload finished before or during rendering)
+      if (segmentId && mediaId) {
+        await attachMediaToSegment(segmentId, mediaId);
+      }
+
+      document.getElementById('cue-seed-topic').value = '';
+      clearCueAttach('seed');
+      statusEl.style.display = 'none';
+    }
+
+    async function queueScriptSegment() {
+      const lines = Array.from(document.querySelectorAll('#cue-script-lines .cue-script-line')).map(row => ({
+        speaker: row.querySelector('select').value,
+        text: row.querySelector('input').value.trim()
+      })).filter(l => l.text);
+
+      if (lines.length === 0) { alert('Add at least one line'); return; }
+
+      const statusEl = document.getElementById('cue-script-upload-status');
+
+      const [segmentResult, mediaId] = await Promise.all([
+        fetch(`${API_BASE}/api/orchestrator/custom-script`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ script: lines })
+        }).then(r => r.json()),
+        resolveCueMedia('script').catch(err => { console.warn('Media upload failed:', err); return null; })
+      ]);
+
+      if (segmentResult.error) { alert('Segment error: ' + segmentResult.error); return; }
+
+      const segmentId = segmentResult.id;
+
+      if (segmentId && mediaId) {
+        await attachMediaToSegment(segmentId, mediaId);
+      }
+
+      // Queue for rendering (custom-script endpoint creates but doesn't auto-render)
+      if (segmentId) {
+        fetch(`${API_BASE}/api/orchestrator/render/${segmentId}`, { method: 'POST' }).catch(() => {});
+      }
+
+      // Reset script to single empty line
+      document.getElementById('cue-script-lines').innerHTML = `
+        <div class="cue-script-line">
+          <select><option value="chad">Chad</option><option value="virgin">Virgin</option><option value="narrator">Narrator</option></select>
+          <input type="text" placeholder="Line of dialogue...">
+          <button onclick="removeCueLine(this)">✕</button>
+        </div>`;
+      clearCueAttach('script');
+      statusEl.style.display = 'none';
+    }
+
+    function addCueLine() {
+      const container = document.getElementById('cue-script-lines');
+      const div = document.createElement('div');
+      div.className = 'cue-script-line';
+      div.innerHTML = `
+        <select><option value="chad">Chad</option><option value="virgin">Virgin</option><option value="narrator">Narrator</option></select>
+        <input type="text" placeholder="Line of dialogue...">
+        <button onclick="removeCueLine(this)">✕</button>`;
+      container.appendChild(div);
+    }
+
+    function removeCueLine(btn) {
+      const lines = document.querySelectorAll('#cue-script-lines .cue-script-line');
+      if (lines.length <= 1) return; // keep at least one
+      btn.closest('.cue-script-line').remove();
+    }
+
+    // Attach media to an existing segment
+    async function attachMediaToSegment(segmentId, mediaId) {
+      try {
+        await fetch(`${API_BASE}/api/orchestrator/segments/${segmentId}/media`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mediaId })
+        });
+      } catch (err) {
+        console.warn('attachMediaToSegment failed:', err.message);
+      }
+    }
+
+    async function detachMediaFromSegment(segmentId) {
+      await attachMediaToSegment(segmentId, null);
+      refreshCuePipeline();
+    }
+
+    // Pipeline view — show forming/ready segments with attached media
+    async function refreshCuePipeline() {
+      const list = document.getElementById('cue-pipeline-list');
+      try {
+        const res = await fetch(`${API_BASE}/api/orchestrator/state`);
+        const state = await res.json();
+        const onAirId = state.playback?.currentSegmentId;
+        const segments = (state.pipeline?.segments || [])
+          .filter(s => s.status === 'forming' || s.status === 'ready' || s.id === onAirId)
+          .slice(-10); // most recent 10
+
+        if (segments.length === 0) {
+          list.innerHTML = '<div class="playlist-empty">No forming or ready segments</div>';
+          return;
+        }
+
+        list.innerHTML = segments.map(seg => {
+          const mediaId = seg.metadata?.attachedMediaId;
+          const isOnAir = seg.id === onAirId;
+          const statusLabel = isOnAir ? 'on-air' : seg.status;
+          const statusClass = isOnAir ? 'badge-onair' : (seg.status === 'ready' ? 'badge-ready' : 'badge-forming');
+          const seedPreview = seg.seed ? seg.seed.substring(0, 60) : (seg.script?.[0]?.text?.substring(0, 60) || '—');
+
+          let thumbHtml = '';
+          if (mediaId) {
+            const mItem = libraryItems.find(i => i.id === mediaId);
+            if (mItem?.type === 'video') {
+              thumbHtml = `<div class="cue-pipeline-video-badge">🎬</div>`;
+            } else if (mediaId) {
+              thumbHtml = `<img class="cue-pipeline-thumb" src="${API_BASE}/api/media/${mediaId}/thumbnail" alt="">`;
+            }
+          }
+
+          return `
+            <div class="cue-pipeline-item">
+              ${thumbHtml || `<div class="cue-pipeline-video-badge" style="opacity:0.2;">📺</div>`}
+              <div class="cue-seg-info">
+                <div class="cue-seg-seed" title="${seg.seed || ''}">${seedPreview}</div>
+                <div class="cue-seg-meta">
+                  <span class="status-badge ${statusClass}" style="padding:1px 6px; border-radius:3px; font-size:0.72em;">${statusLabel}</span>
+                  <span class="type ${seg.type}" style="font-size:0.72em;">${seg.type}</span>
+                  ${mediaId ? `<button onclick="detachMediaFromSegment('${seg.id}')" style="padding:2px 6px; font-size:0.7em; background:#333; color:#aaa; border-radius:3px;">✕ detach</button>` : ''}
+                </div>
+              </div>
+              ${!isOnAir && seg.status !== 'aired' ? `
+                <button onclick="openPipelinePicker('${seg.id}')" style="padding:5px 10px; font-size:0.78em; background:#333; color:#ccc; min-width:unset;">${mediaId ? '↻' : '+ media'}</button>
+              ` : ''}
+            </div>`;
+        }).join('');
+      } catch (err) {
+        list.innerHTML = `<div class="playlist-empty">Error: ${err.message}</div>`;
+      }
+    }
+
+    function openPipelinePicker(segmentId) {
+      cuePickerTarget = `pipeline:${segmentId}`;
+      pipelinePickerSegmentId = segmentId;
+      document.getElementById('cue-picker-modal').style.display = 'flex';
+      document.getElementById('cue-picker-search').value = '';
+      renderCuePicker();
+      if (libraryItems.length === 0) fetchLibrary().then(() => renderCuePicker());
+    }
+
+    // ============== End Segment Cue ==============
 
     // Show/hide duration based on type
     document.getElementById('add-type').addEventListener('change', (e) => {

@@ -41,6 +41,15 @@ class ContinuousStreamManager {
 
     // Callbacks
     this.onAudioComplete = null;
+
+    // Background music service (optional)
+    this.backgroundMusicService = null;
+
+    // Duck factor: lowers music to 20% while a character speaks, fades back after silence.
+    // Attack: 3 frames (~100ms) to reach 0.2. Release: 500ms to return to 1.0.
+    this._duckFactor = 1.0;
+    this._duckAttackPerFrame  = 1.0 / Math.round(0.1 * fps); // ≈0.333 — silence in 3 frames
+    this._duckReleasePerFrame = 1.0 / Math.round(0.5 * fps); // ≈0.067 — restore in 15 frames
   }
 
   start(onFrameRequest) {
@@ -148,8 +157,7 @@ class ContinuousStreamManager {
       '-c:a', 'aac',
       '-b:a', '128k',
       '-ar', String(this.sampleRate),
-      // Force A/V sync
-      '-async', '1',
+      // CFR video ensures stable HLS segments
       '-vsync', 'cfr',
       // Output(s)
       ...outputArgs
@@ -184,6 +192,32 @@ class ContinuousStreamManager {
     });
 
     console.log('[ContinuousStreamManager] FFmpeg started with audio pipe');
+  }
+
+  setBackgroundMusic(service) {
+    this.backgroundMusicService = service;
+  }
+
+  // Mix character audio with background music (s16le stereo).
+  // Allocates a fresh buffer per call — required because audioStdin.write() is async
+  // (libuv holds the buffer reference until the uv_write completes), so reusing a
+  // pre-allocated buffer causes the previous frame's write to see the next frame's data,
+  // producing accumulating echo/reverb.
+  _mixAudio(charBuf, musicBuf, musicVolume) {
+    const out = Buffer.allocUnsafe(charBuf.length);
+    const n = charBuf.length >>> 2; // bytes/4 = stereo sample pairs (L+R = 4 bytes each)
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      // Fold music to mono (average L+R) before mixing.
+      // Music is stereo with deliberate L/R phase offsets for width — adding it
+      // sample-by-sample would create a comb filter against the mono character audio.
+      const musicMono = Math.round(((musicBuf.readInt16LE(o) + musicBuf.readInt16LE(o + 2)) >> 1) * musicVolume);
+      const mixedL = charBuf.readInt16LE(o) + musicMono;
+      const mixedR = charBuf.readInt16LE(o + 2) + musicMono;
+      out.writeInt16LE(mixedL > 32767 ? 32767 : mixedL < -32768 ? -32768 : mixedL, o);
+      out.writeInt16LE(mixedR > 32767 ? 32767 : mixedR < -32768 ? -32768 : mixedR, o + 2);
+    }
+    return out;
   }
 
   // Load audio for playback (called by server)
@@ -308,7 +342,22 @@ class ContinuousStreamManager {
             try { this.videoStdin.write(videoData); } catch (e) {}
           }
           if (this.audioStdin && this.audioStdin.writable) {
-            try { this.audioStdin.write(audioData); } catch (e) {}
+            try {
+              const bms = this.backgroundMusicService;
+              if (bms && bms.isActive()) {
+                // Hard-gate duck: silence music quickly on speech onset, restore smoothly after
+                if (this.isPlayingAudio) {
+                  this._duckFactor = Math.max(0.2, this._duckFactor - this._duckAttackPerFrame);
+                } else {
+                  this._duckFactor = Math.min(1.0, this._duckFactor + this._duckReleasePerFrame);
+                }
+                audioData = this._mixAudio(audioData, bms.getChunk(audioData.length), bms.volume * this._duckFactor);
+              } else {
+                // No active music — still advance duck toward 1.0 so it's ready when music resumes
+                this._duckFactor = Math.min(1.0, this._duckFactor + this._duckReleasePerFrame);
+              }
+              this.audioStdin.write(audioData);
+            } catch (e) {}
           }
         }
 

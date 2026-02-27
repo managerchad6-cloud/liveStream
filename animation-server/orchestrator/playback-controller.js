@@ -21,6 +21,16 @@ class PlaybackController {
     this.pendingExpand = new Set();
     // Expand chain tracking: { rootSegmentId, maxExpands, airedCount }
     this.expandChain = null;
+    // Registered on-air hooks: Array<(segmentId, segment) => void>
+    this._onAirHooks = [];
+  }
+
+  /**
+   * Register a callback fired when any segment goes on-air.
+   * @param {Function} fn - (segmentId: string, segment: Object) => void
+   */
+  registerOnAirHook(fn) {
+    this._onAirHooks.push(fn);
   }
 
   start() {
@@ -71,6 +81,16 @@ class PlaybackController {
       this.currentSegmentId = segmentId;
       console.log(`[PlaybackController] On-air: ${segmentId}`);
       this._broadcastUpdate();
+
+      // Fire registered on-air hooks (e.g. TV media cue)
+      if (this._onAirHooks.length > 0) {
+        const segment = this.pipelineStore.getSegment(segmentId);
+        for (const hook of this._onAirHooks) {
+          try { hook(segmentId, segment); } catch (err) {
+            console.warn(`[PlaybackController] On-air hook error: ${err.message}`);
+          }
+        }
+      }
 
       // Trigger expand generation immediately when segment starts playing
       // This ensures the next expand is rendered and ready before this segment finishes
@@ -235,18 +255,13 @@ class PlaybackController {
       // Compute maxExpands deterministically from source word count — no LLM dependency.
       // For chat-response: word count determines the budget.
       // For seeds/scripts: default to 5 (LLM will still influence via prompt guidance).
-      let chainMax;
-      if (sourceSegment.type === 'chat-response') {
-        // Probabilistic: 50% → 0, 30% → 1, 20% → 2
-        // Word count can only reduce the cap, never increase it:
-        // long response (>20w) caps at 0, medium (10-20w) caps at 1, short (<10w) unrestricted
-        const r = Math.random();
-        const rolled = r < 0.5 ? 0 : r < 0.8 ? 1 : 2;
-        const wordCap = sourceWordCount > 20 ? 0 : sourceWordCount >= 10 ? 1 : 2;
-        chainMax = Math.min(rolled, wordCap);
-      } else {
-        chainMax = 5;
-      }
+      // Probabilistic: 50% → 0, 30% → 1, 20% → 2
+      // Word count can only reduce the cap, never increase it:
+      // long response (>20w) caps at 0, medium (10-20w) caps at 1, short (<10w) unrestricted
+      const r = Math.random();
+      const rolled = r < 0.5 ? 0 : r < 0.8 ? 1 : 2;
+      const wordCap = sourceWordCount > 20 ? 0 : sourceWordCount >= 10 ? 1 : 2;
+      const chainMax = Math.min(rolled, wordCap);
       this.expandChain = { rootSegmentId: segmentId, maxExpands: chainMax, airedCount: 0 };
       console.log(`[PlaybackController] New expand chain from ${sourceSegment.type} ${segmentId.slice(0,8)} — maxExpands=${chainMax} (sourceWords=${sourceWordCount})`);
     } else if (isExpand && this.expandChain) {

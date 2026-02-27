@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const { VideoDecoder, getVideoInfo } = require('./video-decoder');
 
 const CONTENT_DIR = path.join(__dirname, 'content');
+const PERSIST_PATH = path.join(__dirname, 'tv-playlist.json');
 
 /**
  * TVContentService - manages a playlist of images/videos for the TV viewport
@@ -56,6 +57,7 @@ class TVContentService {
     };
 
     this.playlist.push(item);
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
 
     // Pre-load the item in background
     this._loadItem(item).catch(err => {
@@ -166,6 +168,7 @@ class TVContentService {
       this.frameIndex = 0;
     }
 
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log(`[TVContent] Removed item: ${id}`);
     return true;
   }
@@ -203,6 +206,7 @@ class TVContentService {
     this.frameIndex = 0;
     this.currentFrameBuffer = null;
     this.state = 'stopped';
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log('[TVContent] Playlist cleared');
   }
 
@@ -215,6 +219,7 @@ class TVContentService {
       return false;
     }
     this.state = 'playing';
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log(`[TVContent] Playing from index ${this.currentIndex}, frame ${this.frameIndex}`);
     return true;
   }
@@ -224,6 +229,7 @@ class TVContentService {
    */
   pause() {
     this.state = 'paused';
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log('[TVContent] Paused');
     return true;
   }
@@ -236,6 +242,7 @@ class TVContentService {
     this.currentIndex = 0;
     this.frameIndex = 0;
     this.currentFrameBuffer = null;
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log('[TVContent] Stopped');
     return true;
   }
@@ -248,6 +255,7 @@ class TVContentService {
 
     this.currentIndex = (this.currentIndex + 1) % this.playlist.length;
     this.frameIndex = 0;
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log(`[TVContent] Next: now at index ${this.currentIndex}`);
     return true;
   }
@@ -260,6 +268,7 @@ class TVContentService {
 
     this.currentIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
     this.frameIndex = 0;
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log(`[TVContent] Prev: now at index ${this.currentIndex}`);
     return true;
   }
@@ -324,6 +333,7 @@ class TVContentService {
    */
   setHold(enabled) {
     this.hold = !!enabled;
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log(`[TVContent] Hold mode: ${this.hold ? 'ON' : 'OFF'}`);
     return this.hold;
   }
@@ -333,6 +343,7 @@ class TVContentService {
    */
   setVolume(volume) {
     this.volume = Math.max(0, Math.min(1, volume));
+    this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log(`[TVContent] Volume: ${Math.round(this.volume * 100)}%`);
     return this.volume;
   }
@@ -377,6 +388,91 @@ class TVContentService {
     this.viewportHeight = height;
     // Note: existing loaded content won't be resized
     console.log(`[TVContent] Viewport size set to ${width}x${height}`);
+  }
+
+  /**
+   * Atomically persist playlist state to disk
+   */
+  async _persist() {
+    const data = {
+      playlist: this.playlist.map(item => ({
+        id: item.id,
+        type: item.type,
+        mediaId: item.mediaId || null,
+        source: item.source,
+        duration: item.duration,
+        audioPath: item.audioPath || null
+      })),
+      currentIndex: this.currentIndex,
+      hold: this.hold,
+      volume: this.volume,
+      state: this.state
+    };
+    const tmpPath = `${PERSIST_PATH}.tmp`;
+    try {
+      await fs.promises.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+      await fs.promises.rename(tmpPath, PERSIST_PATH);
+    } catch (err) {
+      console.warn('[TVContent] Failed to persist playlist:', err.message);
+    }
+  }
+
+  /**
+   * Restore playlist from disk after server restart
+   * @param {Function} getPathFn - (mediaId) => absolutePath, resolves paths via media library
+   */
+  async restore(getPathFn) {
+    try {
+      const raw = await fs.promises.readFile(PERSIST_PATH, 'utf8');
+      const data = JSON.parse(raw);
+
+      if (!data || !Array.isArray(data.playlist) || data.playlist.length === 0) return;
+
+      const wasPlaying = data.state === 'playing';
+      this.hold = !!data.hold;
+      this.volume = typeof data.volume === 'number' ? data.volume : 0.5;
+
+      let restored = 0;
+      for (const entry of data.playlist) {
+        // Prefer resolving via media library (handles file moves)
+        let source = entry.source;
+        if (entry.mediaId && getPathFn) {
+          const resolved = getPathFn(entry.mediaId);
+          if (resolved) source = resolved;
+        }
+
+        // Skip missing files
+        if (!source || (!source.startsWith('http://') && !source.startsWith('https://') && !fs.existsSync(source))) {
+          console.warn(`[TVContent] Restore: skipping missing file: ${source}`);
+          continue;
+        }
+
+        await this.addItem({
+          type: entry.type,
+          source,
+          duration: entry.duration,
+          audioPath: entry.audioPath || null,
+          mediaId: entry.mediaId || null
+        });
+        restored++;
+      }
+
+      // Restore position
+      if (typeof data.currentIndex === 'number' && data.currentIndex < this.playlist.length) {
+        this.currentIndex = data.currentIndex;
+      }
+
+      // Resume playback if it was playing before restart
+      if (wasPlaying && this.playlist.length > 0) {
+        this.play();
+      }
+
+      console.log(`[TVContent] Restored ${restored}/${data.playlist.length} items (state: ${this.state})`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        console.warn('[TVContent] Restore failed:', err.message);
+      }
+    }
   }
 }
 

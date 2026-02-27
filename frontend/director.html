@@ -308,6 +308,142 @@
       padding: 16px;
     }
 
+    /* Media attach row */
+    .attach-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #1a1f2e;
+      border: 1px dashed #3a4050;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      flex-shrink: 0;
+    }
+    .attach-row.has-media {
+      border-color: var(--accent);
+      border-style: solid;
+    }
+    .attach-name {
+      flex: 1;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 0.8rem;
+    }
+    .attach-name.set { color: var(--text); }
+    .btn-attach {
+      background: #2a3040;
+      color: var(--muted);
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      border-radius: 5px;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-attach:hover { background: #3a4050; color: var(--text); }
+
+    /* Pipeline card attach button */
+    .pipeline-card .btn-attach {
+      margin-top: auto;
+      width: 100%;
+      text-align: center;
+    }
+    .pipeline-card .attach-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #0a0a1a;
+      margin-top: 4px;
+    }
+    .rendering-card .btn-attach {
+      margin-top: 6px;
+      width: 100%;
+    }
+
+    /* Picker modal */
+    #picker-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.78);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    #picker-modal.open { display: flex; }
+    .picker-inner {
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 20px;
+      width: 92%;
+      max-width: 700px;
+      max-height: 78vh;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .picker-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .picker-header h3 { margin: 0; font-size: 1rem; color: var(--accent); }
+    .picker-search {
+      width: 100%;
+      background: #232838;
+      border: 1px solid #3a4050;
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      flex-shrink: 0;
+    }
+    .picker-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 8px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .picker-item {
+      background: #232838;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.15s;
+    }
+    .picker-item:hover { border-color: var(--accent); }
+    .picker-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: #0a0a1a;
+      display: block;
+    }
+    .picker-thumb-placeholder {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: #0a0a1a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5em;
+    }
+    .picker-item-name {
+      font-size: 0.72em;
+      color: var(--muted);
+      padding: 5px 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     #status-bar {
       position: fixed;
       bottom: 0;
@@ -376,6 +512,16 @@
       <h2>Create Segment (Seed Prompt)</h2>
       <div id="director-input">
         <textarea id="seed-input" placeholder="Enter a topic or question..."></textarea>
+        <div class="attach-row" id="seed-attach-row">
+          <span>📺</span>
+          <span class="attach-name" id="seed-attach-name">No TV media</span>
+          <button class="btn-attach" onclick="openPicker('seed')">Library</button>
+          <label style="cursor:pointer;margin:0;">
+            <input type="file" id="seed-attach-file" accept="image/*,video/*" style="display:none;" onchange="onAttachFile('seed')">
+            <span class="btn-attach">Upload</span>
+          </label>
+          <button class="btn-attach" id="seed-attach-clear" style="display:none;color:#f66;" onclick="clearAttach('seed')">✕</button>
+        </div>
         <button class="btn-primary" id="create-btn">Create</button>
       </div>
     </div>
@@ -384,7 +530,31 @@
       <div id="custom-script-input" class="custom-script-input">
         <input id="custom-seed-input" placeholder="Optional seed/title (e.g. custom opener)" />
         <textarea id="custom-script-json" placeholder='{"script":[{"speaker":"chad","text":"..."},{"speaker":"virgin","text":"..."}],"exitContext":"..."}'></textarea>
+        <div class="attach-row" id="script-attach-row">
+          <span>📺</span>
+          <span class="attach-name" id="script-attach-name">No TV media</span>
+          <button class="btn-attach" onclick="openPicker('script')">Library</button>
+          <label style="cursor:pointer;margin:0;">
+            <input type="file" id="script-attach-file" accept="image/*,video/*" style="display:none;" onchange="onAttachFile('script')">
+            <span class="btn-attach">Upload</span>
+          </label>
+          <button class="btn-attach" id="script-attach-clear" style="display:none;color:#f66;" onclick="clearAttach('script')">✕</button>
+        </div>
         <button class="btn-primary" id="create-custom-btn">Create Custom</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Media picker modal -->
+  <div id="picker-modal">
+    <div class="picker-inner">
+      <div class="picker-header">
+        <h3>Pick TV Media</h3>
+        <button class="btn-attach" onclick="closePicker()">✕ Close</button>
+      </div>
+      <input class="picker-search" id="picker-search" placeholder="Search by filename..." oninput="renderPickerGrid()">
+      <div class="picker-grid" id="picker-grid">
+        <span class="empty-state">Loading...</span>
       </div>
     </div>
   </div>
@@ -423,6 +593,132 @@
     let ws = null;
     let currentSegmentId = null;
 
+    // ---- Media attach state ----
+    // attachState[tab] = { id, name, type, file } or null
+    const attachState = { seed: null, script: null };
+    let libItems = [];
+    let pickerTarget = null; // 'seed' | 'script' | 'seg:<segmentId>'
+
+    function setAttach(tab, item) {
+      attachState[tab] = item;
+      const nameEl = document.getElementById(`${tab}-attach-name`);
+      const clearBtn = document.getElementById(`${tab}-attach-clear`);
+      const row = document.getElementById(`${tab}-attach-row`);
+      if (item) {
+        nameEl.textContent = item.name;
+        nameEl.classList.add('set');
+        clearBtn.style.display = 'inline-block';
+        row.classList.add('has-media');
+      } else {
+        nameEl.textContent = 'No TV media';
+        nameEl.classList.remove('set');
+        clearBtn.style.display = 'none';
+        row.classList.remove('has-media');
+      }
+    }
+
+    function clearAttach(tab) {
+      setAttach(tab, null);
+      document.getElementById(`${tab}-attach-file`).value = '';
+    }
+
+    function onAttachFile(tab) {
+      const file = document.getElementById(`${tab}-attach-file`).files[0];
+      if (!file) return;
+      setAttach(tab, { id: null, name: file.name, type: file.type.startsWith('video') ? 'video' : 'image', file });
+    }
+
+    async function uploadAttachFile(file) {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch(`${API_BASE}/api/media/upload`, { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+      return res.json(); // { id, originalName, type, ... }
+    }
+
+    async function resolveAttachMedia(tab) {
+      const a = attachState[tab];
+      if (!a) return null;
+      if (a.id) return a.id;
+      if (a.file) {
+        const item = await uploadAttachFile(a.file);
+        setAttach(tab, { id: item.id, name: item.originalName, type: item.type });
+        if (!libItems.find(i => i.id === item.id)) libItems.unshift(item);
+        return item.id;
+      }
+      return null;
+    }
+
+    async function patchSegmentMedia(segmentId, mediaId) {
+      await fetch(`${API_BASE}/api/orchestrator/segments/${segmentId}/media`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mediaId: mediaId || null })
+      });
+    }
+
+    async function detachSegmentMedia(segmentId) {
+      await patchSegmentMedia(segmentId, null);
+      refreshAll();
+    }
+
+    // ---- Picker modal ----
+    async function fetchLibItems() {
+      try {
+        const res = await fetch(`${API_BASE}/api/media?limit=500`);
+        const data = await res.json();
+        libItems = (data.items || []).slice().reverse();
+      } catch (e) { libItems = []; }
+    }
+
+    function openPicker(target) {
+      pickerTarget = target;
+      document.getElementById('picker-modal').classList.add('open');
+      document.getElementById('picker-search').value = '';
+      renderPickerGrid();
+      if (libItems.length === 0) fetchLibItems().then(renderPickerGrid);
+    }
+
+    function closePicker() {
+      document.getElementById('picker-modal').classList.remove('open');
+      pickerTarget = null;
+    }
+
+    function renderPickerGrid() {
+      const q = document.getElementById('picker-search').value.toLowerCase();
+      const filtered = q ? libItems.filter(i => i.originalName.toLowerCase().includes(q)) : libItems;
+      const grid = document.getElementById('picker-grid');
+      if (filtered.length === 0) {
+        grid.innerHTML = '<span class="empty-state">No media. Upload something first.</span>';
+        return;
+      }
+      grid.innerHTML = filtered.slice(0, 60).map(item => `
+        <div class="picker-item" onclick="selectPickerItem('${item.id}','${item.originalName.replace(/'/g,"\\'")}','${item.type}')">
+          ${item.type === 'video'
+            ? `<div class="picker-thumb-placeholder">🎬</div>`
+            : `<img class="picker-thumb" src="${API_BASE}/api/media/${item.id}/thumbnail" alt="">`}
+          <div class="picker-item-name" title="${item.originalName}">${item.originalName}</div>
+        </div>
+      `).join('');
+    }
+
+    async function selectPickerItem(id, name, type) {
+      closePicker();
+      if (pickerTarget === 'seed' || pickerTarget === 'script') {
+        setAttach(pickerTarget, { id, name, type });
+      } else if (pickerTarget?.startsWith('seg:')) {
+        const segId = pickerTarget.replace('seg:', '');
+        await patchSegmentMedia(segId, id);
+        refreshAll();
+      }
+    }
+
+    // Close picker on backdrop click
+    document.getElementById('picker-modal').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('picker-modal')) closePicker();
+    });
+    // ---- End media attach ----
+
     async function apiGet(path) {
       const res = await fetch(API_BASE + path);
       return res.json();
@@ -450,6 +746,7 @@
         const failed = seg.renderProgress === -1;
         const pct = failed ? 0 : Math.round((seg.renderProgress || 0) * 100);
         const errorMsg = seg.metadata?.renderError || 'Failed';
+        const attachedId = seg.metadata?.attachedMediaId;
         return `
           <div class="rendering-card${failed ? ' failed' : ''}" data-id="${seg.id}">
             <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -461,6 +758,12 @@
               ? `<div style="font-size:0.75rem;color:#c44;margin-top:4px;">${errorMsg}</div>`
               : `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
                  <div style="font-size:0.75rem;color:var(--muted);margin-top:4px;">${pct}%</div>`
+            }
+            ${attachedId
+              ? `<div style="font-size:0.72rem;color:var(--accent);margin-top:4px;">📺 cued</div>
+                 <button class="btn-attach" onclick="openPicker('seg:${seg.id}')">↻ Change</button>
+                 <button class="btn-attach" style="color:#f66;" onclick="detachSegmentMedia('${seg.id}')">✕ Detach</button>`
+              : `<button class="btn-attach" onclick="openPicker('seg:${seg.id}')">📺 Attach TV</button>`
             }
           </div>
         `;
@@ -493,12 +796,19 @@
       container.innerHTML = displayOrder.map((seg, index) => {
         // The last one in display (rightmost) is the on-air one (index 0 in original array)
         const isOnAir = index === displayOrder.length - 1 && onAirId === seg.id;
+        const attachedId = seg.metadata?.attachedMediaId;
         return `
           <div class="pipeline-card${isOnAir ? ' on-air' : ''}">
             ${isOnAir ? '<div class="on-air-badge">On Air</div>' : ''}
             <div class="type">${seg.type}</div>
             <div class="seed">${(seg.seed || 'filler').slice(0, 30)}${(seg.seed || '').length > 30 ? '...' : ''}</div>
             <div class="duration">${seg.estimatedDuration || 0}s</div>
+            ${attachedId
+              ? `<div style="font-size:0.72rem;color:var(--accent);margin-top:2px;">📺 cued</div>
+                 ${!isOnAir ? `<button class="btn-attach" onclick="openPicker('seg:${seg.id}')">↻</button>
+                 <button class="btn-attach" style="color:#f66;" onclick="detachSegmentMedia('${seg.id}')">✕</button>` : ''}`
+              : (!isOnAir ? `<button class="btn-attach" onclick="openPicker('seg:${seg.id}')">📺 Attach</button>` : '')
+            }
           </div>
         `;
       }).join('');
@@ -687,12 +997,19 @@
       btn.textContent = 'Creating...';
 
       try {
-        const result = await apiPost('/api/orchestrator/expand', { seed, mediaRefs: [] });
+        // Create segment + upload media in parallel
+        const [result, mediaId] = await Promise.all([
+          apiPost('/api/orchestrator/expand', { seed }),
+          resolveAttachMedia('seed').catch(err => { console.warn('Media upload failed:', err); return null; })
+        ]);
+
         if (result.error) {
           alert(result.error);
         } else {
           await apiPost(`/api/orchestrator/render/${result.id}`, {});
+          if (mediaId) await patchSegmentMedia(result.id, mediaId);
           document.getElementById('seed-input').value = '';
+          clearAttach('seed');
         }
       } catch (err) {
         alert(err.message);
@@ -722,12 +1039,19 @@
           metadata: parsed.metadata || {}
         };
 
-        const result = await apiPost('/api/orchestrator/custom-script', payload);
+        // Create segment + upload media in parallel
+        const [result, mediaId] = await Promise.all([
+          apiPost('/api/orchestrator/custom-script', payload),
+          resolveAttachMedia('script').catch(err => { console.warn('Media upload failed:', err); return null; })
+        ]);
+
         if (result.error) {
           alert(result.error);
         } else {
           await apiPost(`/api/orchestrator/render/${result.id}`, {});
+          if (mediaId) await patchSegmentMedia(result.id, mediaId);
           document.getElementById('custom-script-json').value = '';
+          clearAttach('script');
         }
       } catch (err) {
         alert(`Invalid JSON or request failed: ${err.message}`);

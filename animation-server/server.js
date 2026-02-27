@@ -56,6 +56,7 @@ const PipelineStore = require('./orchestrator/pipeline-store');
 const TVLayerManager = require('./orchestrator/tv-layer-manager');
 const OrchestratorSocket = require('./orchestrator/websocket');
 const Orchestrator = require('./orchestrator');
+const BackgroundMusicService = require('./background-music');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
@@ -351,6 +352,41 @@ app.post('/lighting/lights', (req, res) => {
   res.json({ mode: value });
 });
 
+// ── Background Music Routes ──────────────────────────────────────────────────
+
+app.get('/music', (req, res) => {
+  res.sendFile(path.join(ROOT_DIR, 'frontend', 'music-control.html'));
+});
+
+app.get('/music/status', (req, res) => {
+  if (!backgroundMusic) return res.json({ enabled: false, url: null, volume: 0.20, connected: false, bufferedSeconds: 0 });
+  res.json(backgroundMusic.getStatus());
+});
+
+app.post('/music/start', (req, res) => {
+  if (!backgroundMusic) return res.status(503).json({ error: 'Music service not ready' });
+  const { url, volume } = req.body || {};
+  if (!url && !backgroundMusic.url) return res.status(400).json({ error: 'url required' });
+  backgroundMusic.start(url || undefined, volume !== undefined ? volume : undefined);
+  res.json(backgroundMusic.getStatus());
+});
+
+app.post('/music/stop', (req, res) => {
+  if (!backgroundMusic) return res.status(503).json({ error: 'Music service not ready' });
+  backgroundMusic.stop();
+  res.json(backgroundMusic.getStatus());
+});
+
+app.post('/music/volume', (req, res) => {
+  if (!backgroundMusic) return res.status(503).json({ error: 'Music service not ready' });
+  const volume = req.body?.volume;
+  if (volume === undefined) return res.status(400).json({ error: 'volume required' });
+  backgroundMusic.setVolume(volume);
+  res.json(backgroundMusic.getStatus());
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.post('/lighting/lights-opacity', (req, res) => {
   const opacity = Math.max(0, Math.min(1, Number(req.body?.opacity) || 0));
   setLightsMode('on');
@@ -457,6 +493,7 @@ const blinkControllers = {
   virgin: new BlinkController(STREAM_FPS)
 };
 let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
+let backgroundMusic = null;
 let frameCount = 0;
 let tvService = null;  // TV content service (initialized after preloadLayers)
 let mediaLibrary = null;
@@ -1225,9 +1262,9 @@ function extractAudioFromVideo(videoPath, outputPath) {
   });
 }
 
-// Configure multer for TV content uploads
+// Configure multer for TV content uploads (temp dir; files are moved to media library)
 const tvUpload = multer({
-  dest: TV_CONTENT_DIR,
+  dest: TEMP_DIR,
   limits: { fileSize: 100 * 1024 * 1024 }  // 100MB limit for videos
 });
 
@@ -1245,10 +1282,26 @@ app.post('/tv/playlist/add', async (req, res) => {
     return res.status(503).json({ error: 'TV service not initialized' });
   }
 
-  const { type, source, duration } = req.body;
+  const { type, source, duration, mediaId } = req.body;
 
+  // mediaId path: resolve from media library
+  if (mediaId) {
+    if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+    const mediaItem = mediaLibrary.get(mediaId);
+    if (!mediaItem) return res.status(404).json({ error: 'Media item not found' });
+    const resolvedSource = mediaLibrary.getOriginalPath(mediaId);
+    try {
+      const item = await tvService.addItem({ type: mediaItem.type, source: resolvedSource, duration, mediaId });
+      return res.json({ success: true, item });
+    } catch (err) {
+      console.error('[TV] Add item error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // Path/URL path
   if (!type || !source) {
-    return res.status(400).json({ error: 'Missing required fields: type, source' });
+    return res.status(400).json({ error: 'Missing required fields: type, source (or mediaId)' });
   }
 
   if (type !== 'image' && type !== 'video') {
@@ -1264,12 +1317,14 @@ app.post('/tv/playlist/add', async (req, res) => {
   }
 });
 
-// Upload and add file to TV playlist
+// Upload and add file to TV playlist (routes through media library for persistence)
 app.post('/tv/upload', tvUpload.single('file'), async (req, res) => {
   if (!tvService) {
     return res.status(503).json({ error: 'TV service not initialized' });
   }
-
+  if (!mediaLibrary) {
+    return res.status(503).json({ error: 'Media library not initialized' });
+  }
   if (!req.file) {
     return res.status(400).json({ error: 'No file provided' });
   }
@@ -1277,31 +1332,57 @@ app.post('/tv/upload', tvUpload.single('file'), async (req, res) => {
   const type = req.body.type || (req.file.mimetype.startsWith('video/') ? 'video' : 'image');
   const duration = req.body.duration ? parseFloat(req.body.duration) : undefined;
 
-  // Generate a proper filename
-  const ext = path.extname(req.file.originalname) || (type === 'video' ? '.mp4' : '.png');
-  const newPath = path.join(TV_CONTENT_DIR, `${req.file.filename}${ext}`);
-  fs.renameSync(req.file.path, newPath);
+  // Add file to media library (copies from temp, generates thumbnail)
+  let mediaItem;
+  try {
+    mediaItem = await mediaLibrary.addFile(req.file.path, req.file.originalname, req.file.mimetype);
+  } catch (err) {
+    try { fs.unlinkSync(req.file.path); } catch (e) {}
+    return res.status(500).json({ error: err.message });
+  }
+  try { fs.unlinkSync(req.file.path); } catch (e) {}
 
+  const source = mediaLibrary.getOriginalPath(mediaItem.id);
   let audioPath = null;
 
-  // Extract audio for videos
+  // Extract audio for videos (stored in TV_CONTENT_DIR for /tv/audio serving)
   if (type === 'video') {
-    const audioFilePath = path.join(TV_CONTENT_DIR, `${req.file.filename}.mp3`);
-    audioPath = await extractAudioFromVideo(newPath, audioFilePath);
+    const audioFilePath = path.join(TV_CONTENT_DIR, `${mediaItem.id}.mp3`);
+    audioPath = await extractAudioFromVideo(source, audioFilePath);
     if (audioPath) {
       console.log(`[TV] Extracted audio: ${audioPath}`);
     }
   }
 
   try {
-    const item = await tvService.addItem({ type, source: newPath, duration, audioPath });
-    res.json({ success: true, item });
+    const item = await tvService.addItem({ type, source, duration, audioPath, mediaId: mediaItem.id });
+    res.json({ success: true, item, mediaId: mediaItem.id });
   } catch (err) {
     console.error('[TV] Upload error:', err);
-    try { fs.unlinkSync(newPath); } catch (e) {}
-    if (audioPath) {
-      try { fs.unlinkSync(audioPath); } catch (e) {}
-    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fire-and-forget agent API: clear playlist, add one item, play
+app.post('/tv/play', async (req, res) => {
+  if (!tvService) return res.status(503).json({ error: 'TV service not initialized' });
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+
+  const { mediaId } = req.body;
+  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId' });
+
+  const mediaItem = mediaLibrary.get(mediaId);
+  if (!mediaItem) return res.status(404).json({ error: 'Media item not found' });
+
+  const source = mediaLibrary.getOriginalPath(mediaId);
+  tvService.clear();
+
+  try {
+    const item = await tvService.addItem({ type: mediaItem.type, source, mediaId });
+    tvService.play();
+    res.json({ success: true, item });
+  } catch (err) {
+    console.error('[TV] Play error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1698,16 +1779,21 @@ app.post('/api/tv-layer/clear-manual', async (req, res) => {
 // ============== Orchestrator Script API ==============
 app.post('/api/orchestrator/seed', async (req, res) => {
   if (!scriptGenerator || !playbackController || !segmentRenderer) return res.status(503).json({ error: 'Orchestrator not initialized' });
-  const { topic } = req.body || {};
+  const { topic, attachedMediaId } = req.body || {};
   if (!topic) return res.status(400).json({ error: 'Missing topic' });
   try {
     const segment = await scriptGenerator.expandDirectorNote(topic);
+    if (attachedMediaId) {
+      await pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), attachedMediaId }
+      });
+    }
     if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
     broadcastPipelineUpdate();
     segmentRenderer.queueRender(segment.id);
     await playbackController.start();
     processQueue();
-    res.json({ segment, playing: true });
+    res.json({ segment: pipelineStore.getSegment(segment.id), playing: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1756,7 +1842,8 @@ app.post('/api/orchestrator/custom-script', async (req, res) => {
     script,
     exitContext = null,
     estimatedDuration = null,
-    metadata = {}
+    metadata = {},
+    attachedMediaId
   } = req.body || {};
 
   if (!Array.isArray(script) || script.length === 0) {
@@ -1789,7 +1876,12 @@ app.post('/api/orchestrator/custom-script', async (req, res) => {
 
     await pipelineStore.updateSegment(segment.id, {
       exitContext,
-      metadata: { ...(segment.metadata || {}), ...(metadata || {}), source: 'custom-script' }
+      metadata: {
+        ...(segment.metadata || {}),
+        ...(metadata || {}),
+        source: 'custom-script',
+        ...(attachedMediaId ? { attachedMediaId } : {})
+      }
     });
 
     const created = pipelineStore.getSegment(segment.id);
@@ -1799,6 +1891,29 @@ app.post('/api/orchestrator/custom-script', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Attach or detach a media library item from a segment (fires before on-air)
+app.patch('/api/orchestrator/segments/:id/media', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
+  const segment = pipelineStore.getSegment(req.params.id);
+  if (!segment) return res.status(404).json({ error: 'Segment not found' });
+
+  const { mediaId } = req.body;
+  if (mediaId && mediaLibrary && !mediaLibrary.get(mediaId)) {
+    return res.status(404).json({ error: 'Media item not found' });
+  }
+
+  const newMeta = { ...(segment.metadata || {}) };
+  if (mediaId) {
+    newMeta.attachedMediaId = mediaId;
+  } else {
+    delete newMeta.attachedMediaId;
+  }
+
+  await pipelineStore.updateSegment(req.params.id, { metadata: newMeta });
+  broadcastPipelineUpdate();
+  res.json({ success: true, segmentId: req.params.id, mediaId: mediaId || null });
 });
 
 // Queue a pre-written single-line response directly to the pipeline
@@ -2137,6 +2252,11 @@ async function start() {
   mediaLibrary = new MediaLibrary(ROOT_DIR);
   await mediaLibrary.init();
 
+  // Restore TV playlist from last session
+  if (tvService) {
+    await tvService.restore((id) => mediaLibrary.getOriginalPath(id));
+  }
+
   // Initialize pipeline store with dialogue logging to logs/ (git-ignored)
   const dialogueLogPath = path.join(LOGS_DIR, 'dialogue.jsonl');
   const onSegmentActivity = (segment, event) => {
@@ -2177,6 +2297,13 @@ async function start() {
     streamManager = new StreamManager(STREAMS_DIR, STREAM_FPS);
   }
   streamManager.start(renderFrame);
+
+  // Background music — init and restore persisted state
+  backgroundMusic = new BackgroundMusicService();
+  backgroundMusic.restore();
+  if (STREAM_MODE === 'synced' && streamManager.setBackgroundMusic) {
+    streamManager.setBackgroundMusic(backgroundMusic);
+  }
 
   // Start leaderboard polling (every 2 seconds)
   const CHAT_API_PORT = process.env.PORT || 3002;
@@ -2507,6 +2634,25 @@ async function start() {
   playbackController = orchestrator.playbackController;
   chatIntake = orchestrator.chatIntake;
   console.log('[Orchestrator] Initialized');
+
+  // TV media cue: when a segment with attachedMediaId goes on-air, switch TV to that media
+  playbackController.registerOnAirHook((segmentId, segment) => {
+    const mediaId = segment?.metadata?.attachedMediaId;
+    if (!mediaId || !tvService || !mediaLibrary) return;
+    const mediaItem = mediaLibrary.get(mediaId);
+    if (!mediaItem) {
+      console.warn(`[TV Cue] Media ${mediaId} not found for segment ${segmentId}`);
+      return;
+    }
+    const source = mediaLibrary.getOriginalPath(mediaId);
+    tvService.clear();
+    tvService.addItem({ type: mediaItem.type, source, mediaId }).then(() => {
+      tvService.play();
+      console.log(`[TV Cue] On-air: playing media ${mediaId} for segment ${segmentId}`);
+    }).catch(err => {
+      console.error(`[TV Cue] Failed to play media for segment ${segmentId}:`, err.message);
+    });
+  });
 }
 
 start();

@@ -60,11 +60,25 @@ class ChatIntakeAgent {
     if (this._recentApproved.includes(normalised)) return 'duplicate';
 
     // 4. Spam
-    // 4a. No vowels at all and more than 4 letters (keyboard mash: zxcvbnm, qwrtplmn)
     const letters = text.replace(/[^a-z]/gi, '');
-    if (letters.length > 4 && !/[aeiou]/i.test(letters)) return 'spam';
-    // 4b. No letters whatsoever (pure symbols / numbers / emojis)
+    // 4a. No letters whatsoever (pure symbols / numbers / emojis)
     if (text.length > 1 && letters.length === 0) return 'spam';
+    // 4b. No vowels at all and more than 4 letters (zxcvbnm mash)
+    if (letters.length > 4 && !/[aeiou]/i.test(letters)) return 'spam';
+    // 4c. Very low vowel ratio — e.g. "asdfghjkl" has one vowel but is still gibberish
+    if (letters.length > 8) {
+      const vowelCount = (letters.match(/[aeiou]/gi) || []).length;
+      if (vowelCount / letters.length < 0.08) return 'spam';
+    }
+    // 4d. Keyboard row mashing — >= 70% of letters from one QWERTY row
+    if (letters.length > 5) {
+      const top  = (letters.match(/[qwertyuiop]/gi) || []).length;
+      const home = (letters.match(/[asdfghjkl]/gi)  || []).length;
+      const bot  = (letters.match(/[zxcvbnm]/gi)    || []).length;
+      if (Math.max(top, home, bot) / letters.length >= 0.70) return 'spam';
+    }
+    // 4e. Consecutive character repetition — 4+ of the same char in a row ("aaaaaaa")
+    if (/(.)\1{3,}/.test(text)) return 'spam';
 
     // 5. Prompt injection
     for (const pattern of INJECTION_PATTERNS) {

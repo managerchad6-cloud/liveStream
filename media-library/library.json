@@ -106,5 +106,101 @@
     "fileSize": 592786,
     "addedAt": "2026-02-11T12:41:17.228Z",
     "metadata": {}
+  },
+  {
+    "id": "f6f46ffa-435a-4a37-b58f-4d4b4670a1d3",
+    "originalName": "qr1xefhpnqif1.jpeg",
+    "type": "image",
+    "mimeType": "image/jpeg",
+    "ext": ".jpeg",
+    "filename": "f6f46ffa-435a-4a37-b58f-4d4b4670a1d3.jpeg",
+    "thumbnailFilename": "f6f46ffa-435a-4a37-b58f-4d4b4670a1d3.jpg",
+    "fileSize": 1371414,
+    "addedAt": "2026-02-27T15:45:54.403Z",
+    "metadata": {}
+  },
+  {
+    "id": "15494daf-8716-4c15-99db-654536f208e1",
+    "originalName": "virgin_3d_render_vs_chad_ms_paint_sketch.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "15494daf-8716-4c15-99db-654536f208e1.png",
+    "thumbnailFilename": "15494daf-8716-4c15-99db-654536f208e1.jpg",
+    "fileSize": 477818,
+    "addedAt": "2026-02-27T15:48:16.568Z",
+    "metadata": {}
+  },
+  {
+    "id": "83c8350b-e9cf-4ef8-9753-e6438cf311ac",
+    "originalName": "2556t3awh29g1.jpeg",
+    "type": "image",
+    "mimeType": "image/jpeg",
+    "ext": ".jpeg",
+    "filename": "83c8350b-e9cf-4ef8-9753-e6438cf311ac.jpeg",
+    "thumbnailFilename": "83c8350b-e9cf-4ef8-9753-e6438cf311ac.jpg",
+    "fileSize": 248518,
+    "addedAt": "2026-02-27T15:49:12.178Z",
+    "metadata": {}
+  },
+  {
+    "id": "ff46306a-8790-481b-a7dc-63d62ea6cdb3",
+    "originalName": "Screenshot 2026-02-27 165035.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "ff46306a-8790-481b-a7dc-63d62ea6cdb3.png",
+    "thumbnailFilename": "ff46306a-8790-481b-a7dc-63d62ea6cdb3.jpg",
+    "fileSize": 186091,
+    "addedAt": "2026-02-27T15:51:13.682Z",
+    "metadata": {}
+  },
+  {
+    "id": "90a705d3-f9ad-41ec-a89c-5b5f7b8c1d3a",
+    "originalName": "2025-12-26T18-44-11_static_camera_in_a_watermarked.mp4",
+    "type": "video",
+    "mimeType": "video/mp4",
+    "ext": ".mp4",
+    "filename": "90a705d3-f9ad-41ec-a89c-5b5f7b8c1d3a.mp4",
+    "thumbnailFilename": "90a705d3-f9ad-41ec-a89c-5b5f7b8c1d3a.jpg",
+    "fileSize": 752094,
+    "addedAt": "2026-02-27T15:53:12.829Z",
+    "metadata": {}
+  },
+  {
+    "id": "4e5d903c-fac0-4d3a-b4f0-c6f1407db2f6",
+    "originalName": "Screenshot 2026-02-27 165549.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "4e5d903c-fac0-4d3a-b4f0-c6f1407db2f6.png",
+    "thumbnailFilename": "4e5d903c-fac0-4d3a-b4f0-c6f1407db2f6.jpg",
+    "fileSize": 648050,
+    "addedAt": "2026-02-27T15:57:47.847Z",
+    "metadata": {}
+  },
+  {
+    "id": "78b8e815-e30b-4536-b5d9-4132f5a06847",
+    "originalName": "Screenshot 2026-02-27 165035.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "78b8e815-e30b-4536-b5d9-4132f5a06847.png",
+    "thumbnailFilename": "78b8e815-e30b-4536-b5d9-4132f5a06847.jpg",
+    "fileSize": 186091,
+    "addedAt": "2026-02-27T16:22:34.640Z",
+    "metadata": {}
+  },
+  {
+    "id": "07a15fba-a6fe-493d-94cb-4669dd86c225",
+    "originalName": "parliament.mp4",
+    "type": "video",
+    "mimeType": "video/mp4",
+    "ext": ".mp4",
+    "filename": "07a15fba-a6fe-493d-94cb-4669dd86c225.mp4",
+    "thumbnailFilename": "07a15fba-a6fe-493d-94cb-4669dd86c225.jpg",
+    "fileSize": 66496626,
+    "addedAt": "2026-02-27T18:24:33.116Z",
+    "metadata": {}
   }
 ]

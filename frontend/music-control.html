@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Music Controller</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+    .left {
+      flex: 1.2;
+      background: #020617;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      padding: 16px;
+    }
+    .stream-wrap {
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1e293b;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      position: relative;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+      object-fit: cover;
+    }
+    .right {
+      flex: 0.8;
+      max-width: 520px;
+      padding: 24px;
+      background: #0b1224;
+      border-left: 1px solid #1e293b;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow-y: auto;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.4em;
+      color: #a78bfa;
+    }
+    .panel {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .panel h2 {
+      margin: 0 0 12px 0;
+      font-size: 1em;
+      color: #93c5fd;
+      font-weight: 600;
+    }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    input[type="range"] {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 8px;
+      background: #1e293b;
+      border-radius: 999px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      background: #a78bfa;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: #a78bfa;
+      border-radius: 50%;
+      cursor: pointer;
+      border: none;
+    }
+    .value {
+      min-width: 48px;
+      text-align: right;
+      color: #cbd5f5;
+      font-variant-numeric: tabular-nums;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    select, input[type="text"] {
+      width: 100%;
+      background: #0b1224;
+      color: #e2e8f0;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.95em;
+    }
+    input[type="text"]::placeholder {
+      color: #475569;
+    }
+    button {
+      background: #a78bfa;
+      color: #0b1224;
+      border: none;
+      padding: 9px 16px;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 0.95em;
+      white-space: nowrap;
+    }
+    button.stop-btn {
+      background: #ef4444;
+      color: #fff;
+    }
+    button.stop-btn:disabled {
+      background: #374151;
+      color: #6b7280;
+      cursor: default;
+    }
+    button:disabled {
+      background: #374151;
+      color: #6b7280;
+      cursor: default;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #374151;
+      flex-shrink: 0;
+    }
+    .status-dot.connected { background: #22c55e; }
+    .status-dot.enabled { background: #facc15; }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9em;
+      color: #94a3b8;
+    }
+    .status-url {
+      font-size: 0.8em;
+      color: #475569;
+      word-break: break-all;
+      margin-top: 4px;
+    }
+    .warning {
+      color: #f59e0b;
+      font-size: 0.85em;
+      margin-top: 6px;
+      display: none;
+    }
+    .note {
+      color: #64748b;
+      font-size: 0.85em;
+      margin-top: 6px;
+    }
+    .buffer-bar-wrap {
+      height: 4px;
+      background: #1e293b;
+      border-radius: 999px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+    .buffer-bar {
+      height: 100%;
+      background: #a78bfa;
+      border-radius: 999px;
+      transition: width 0.5s ease;
+      width: 0%;
+    }
+  </style>
+</head>
+<body>
+  <div class="left">
+    <div class="stream-wrap">
+      <video id="stream" autoplay muted playsinline></video>
+      <div id="stream-overlay" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);color:#e2e8f0;font-weight:600;">
+        <button id="stream-play-btn">Click to start video</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="right">
+    <h1>Music Controller</h1>
+
+    <!-- Status -->
+    <div class="panel">
+      <h2>Status</h2>
+      <div class="status-row">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Stopped</span>
+        <span id="status-buffer" style="margin-left:auto;font-variant-numeric:tabular-nums;"></span>
+      </div>
+      <div class="status-url" id="status-url"></div>
+      <div class="buffer-bar-wrap">
+        <div class="buffer-bar" id="buffer-bar"></div>
+      </div>
+    </div>
+
+    <!-- Station -->
+    <div class="panel">
+      <h2>Station</h2>
+      <select id="station-select">
+        <option value="http://ice1.somafm.com/groovesalad-128-mp3">SomaFM Groove Salad (ambient/chillout)</option>
+        <option value="http://ice1.somafm.com/dronezone-128-mp3">SomaFM Drone Zone (deep ambient)</option>
+        <option value="http://ice1.somafm.com/deepspaceone-128-mp3">SomaFM Deep Space One (space ambient)</option>
+        <option value="http://ice1.somafm.com/defcon-128-mp3">SomaFM DEF CON Radio (chiptune/electronic)</option>
+        <option value="http://ice1.somafm.com/lush-128-mp3">SomaFM Lush (indie/dream pop)</option>
+        <option value="http://stream.friskyradio.com/frisky_mp3_hi">Frisky Radio (deep/tech house)</option>
+        <option value="http://radiofgfr.ice.infomaniak.ch/radiofg-192.mp3">Radio FG (house/electro)</option>
+        <option value="custom">Custom URL...</option>
+      </select>
+      <div id="custom-url-row" class="row" style="margin-top:10px;display:none;">
+        <input type="text" id="custom-url" placeholder="http://stream.example.com/station.mp3">
+      </div>
+      <div class="row">
+        <button id="connect-btn">Connect</button>
+        <button class="stop-btn" id="stop-btn" disabled>Stop</button>
+      </div>
+      <div class="note">SomaFM is free, no ads, no DMCA. Groove Salad recommended.</div>
+    </div>
+
+    <!-- Volume -->
+    <div class="panel">
+      <h2>Volume Mix</h2>
+      <div class="slider-row">
+        <input type="range" id="volume-slider" min="0" max="100" step="1" value="20">
+        <div class="value" id="volume-value">20%</div>
+      </div>
+      <div class="warning" id="clip-warning">⚠ Clipping risk at high volumes — keep below 40% for clean mixing.</div>
+      <div class="note">Volume relative to character voices (100% = equal level).</div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.hostname === 'localhost'
+      ? 'http://localhost:3003'
+      : `http://${window.location.hostname}:3003`;
+
+    const streamEl = document.getElementById('stream');
+    const streamOverlay = document.getElementById('stream-overlay');
+    const streamPlayBtn = document.getElementById('stream-play-btn');
+    const stationSelect = document.getElementById('station-select');
+    const customUrlRow = document.getElementById('custom-url-row');
+    const customUrlInput = document.getElementById('custom-url');
+    const connectBtn = document.getElementById('connect-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const volumeSlider = document.getElementById('volume-slider');
+    const volumeValue = document.getElementById('volume-value');
+    const clipWarning = document.getElementById('clip-warning');
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const statusUrl = document.getElementById('status-url');
+    const statusBuffer = document.getElementById('status-buffer');
+    const bufferBar = document.getElementById('buffer-bar');
+
+    let hlsPlayer = null;
+    let volumeDebounce = null;
+    let pollInterval = null;
+
+    // ── HLS stream ────────────────────────────────────────────────────────────
+    function connectStream() {
+      const streamUrl = `${API_BASE}/streams/live/stream.m3u8`;
+      if (window.Hls && Hls.isSupported()) {
+        if (hlsPlayer) hlsPlayer.destroy();
+        hlsPlayer = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          liveSyncDuration: 1.5,
+          liveMaxLatencyDuration: 6,
+          maxBufferLength: 4,
+          maxMaxBufferLength: 8,
+          maxLiveSyncPlaybackRate: 1.5
+        });
+        hlsPlayer.loadSource(streamUrl);
+        hlsPlayer.attachMedia(streamEl);
+        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+          streamEl.play().catch(() => { streamOverlay.style.display = 'flex'; });
+        });
+        hlsPlayer.on(Hls.Events.ERROR, (e, data) => {
+          if (data.fatal) setTimeout(connectStream, 1500);
+        });
+      } else if (streamEl.canPlayType('application/vnd.apple.mpegurl')) {
+        streamEl.src = streamUrl;
+        streamEl.play().catch(() => { streamOverlay.style.display = 'flex'; });
+      }
+    }
+
+    streamPlayBtn.addEventListener('click', () => {
+      streamEl.play().then(() => { streamOverlay.style.display = 'none'; }).catch(() => {});
+    });
+
+    // ── Station select ────────────────────────────────────────────────────────
+    stationSelect.addEventListener('change', () => {
+      if (stationSelect.value === 'custom') {
+        customUrlRow.style.display = 'flex';
+      } else {
+        customUrlRow.style.display = 'none';
+      }
+    });
+
+    function getSelectedUrl() {
+      if (stationSelect.value === 'custom') {
+        return customUrlInput.value.trim();
+      }
+      return stationSelect.value;
+    }
+
+    // ── Connect / Stop ────────────────────────────────────────────────────────
+    connectBtn.addEventListener('click', async () => {
+      const url = getSelectedUrl();
+      if (!url) { alert('Please enter a stream URL.'); return; }
+      connectBtn.disabled = true;
+      connectBtn.textContent = 'Connecting…';
+      try {
+        const res = await fetch(`${API_BASE}/music/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, volume: parseInt(volumeSlider.value, 10) / 100 })
+        });
+        const data = await res.json();
+        applyStatus(data);
+      } catch (e) {
+        console.error('Connect failed:', e);
+      } finally {
+        connectBtn.disabled = false;
+        connectBtn.textContent = 'Connect';
+      }
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      stopBtn.disabled = true;
+      try {
+        const res = await fetch(`${API_BASE}/music/stop`, { method: 'POST' });
+        const data = await res.json();
+        applyStatus(data);
+      } catch (e) {
+        console.error('Stop failed:', e);
+      }
+    });
+
+    // ── Volume ────────────────────────────────────────────────────────────────
+    volumeSlider.addEventListener('input', () => {
+      const v = parseInt(volumeSlider.value, 10);
+      volumeValue.textContent = `${v}%`;
+      clipWarning.style.display = v > 40 ? 'block' : 'none';
+      if (volumeDebounce) clearTimeout(volumeDebounce);
+      volumeDebounce = setTimeout(() => {
+        fetch(`${API_BASE}/music/volume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ volume: v / 100 })
+        }).catch(() => {});
+      }, 200);
+    });
+
+    // ── Status polling ────────────────────────────────────────────────────────
+    function applyStatus(data) {
+      if (!data) return;
+
+      const connected = data.connected;
+      const enabled = data.enabled;
+
+      if (connected && !data.prebuffering) {
+        statusDot.className = 'status-dot connected';
+        statusText.textContent = 'Playing';
+      } else if (connected && data.prebuffering) {
+        statusDot.className = 'status-dot enabled';
+        statusText.textContent = `Buffering… (${data.bufferedSeconds || 0}s / 2s)`;
+      } else if (enabled) {
+        statusDot.className = 'status-dot enabled';
+        statusText.textContent = 'Connecting…';
+      } else {
+        statusDot.className = 'status-dot';
+        statusText.textContent = 'Stopped';
+      }
+
+      statusUrl.textContent = data.url || '';
+      const buf = data.bufferedSeconds || 0;
+      statusBuffer.textContent = enabled ? `${buf.toFixed(1)}s buffered` : '';
+      const pct = Math.min(100, (buf / 10) * 100);
+      bufferBar.style.width = `${pct}%`;
+
+      stopBtn.disabled = !enabled;
+
+      // Sync volume slider without re-triggering input handler
+      if (typeof data.volume === 'number') {
+        const pctVol = Math.round(data.volume * 100);
+        volumeSlider.value = pctVol;
+        volumeValue.textContent = `${pctVol}%`;
+        clipWarning.style.display = pctVol > 40 ? 'block' : 'none';
+      }
+
+      // Sync station select if URL matches a preset
+      if (data.url) {
+        let found = false;
+        for (const opt of stationSelect.options) {
+          if (opt.value === data.url) {
+            stationSelect.value = data.url;
+            customUrlRow.style.display = 'none';
+            found = true;
+            break;
+          }
+        }
+        if (!found && data.url) {
+          stationSelect.value = 'custom';
+          customUrlInput.value = data.url;
+          customUrlRow.style.display = 'flex';
+        }
+      }
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/music/status`);
+        const data = await res.json();
+        applyStatus(data);
+      } catch (e) {}
+    }
+
+    // Start everything
+    connectStream();
+    pollStatus();
+    pollInterval = setInterval(pollStatus, 3000);
+  </script>
+</body>
+</html>
