@@ -47,7 +47,6 @@ let staticLayerEntries = [];
 let expressionLayerEntries = []; // Eye/eyebrow layers composited dynamically with offsets
 let noseLayerEntries = [];       // Nose layers composited above eye_cover (z-order)
 let staticBaseVersion = 0;
-let lightingVersion = 0;  // Incremented on lighting hue changes, included in L2 cache key
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
@@ -65,24 +64,6 @@ let chatMessages = [];       // Array of { character, text, addedAt }
 let chatVersion = 0;         // Bumped on add/expire (cache invalidation)
 const CHAT_MAX_MESSAGES = 8;
 const CHAT_EXPIRE_MS = 45000; // 45 seconds
-let foregroundEmissionBuffer = null; // Foreground LED emission (composited above all)
-let foregroundEmissionPos = { x: 0, y: 0 };
-let foregroundEmissionLayerId = null;
-let lightsOnBuffer = null;
-let lightsOnRawData = null; // Raw RGBA data for opacity adjustment
-let lightsOnMeta = null;    // {width, height} for raw data rebuild
-let lightsOnPos = { x: 0, y: 0 };
-let lightsOnOpacity = 1;
-let lightsOnOpacityCache = {}; // quantized opacity → PNG buffer
-let lightsMode = 'on'; // 'on' or 'off'
-let emissionOpacity = 1;
-let emissionBaseBuffers = {};
-let emissionLayerMeta = {};
-let emissionLayerBlend = {};
-let lightingHue = 0;
-let lightingUpdateId = 0;
-let lightingBaseBuffers = {};
-let lightingLayerMeta = {};
 
 // Expression limits (loaded from expression-limits.json if it exists)
 let expressionLimits = null;
@@ -168,31 +149,6 @@ const EYEBROW_LAYER_SIDES = {
   'static_virgin_eyebrow_left': 'left',
   'static_virgin_eyebrow_right': 'right'
 };
-
-const EMISSION_LAYER_KEYS = {
-  foreground: 'LED light Emission (Foreground)',
-  middleground: 'LED light Emission (Middleground)',
-  background: 'LED light Emission (Background)'
-};
-let emissionLayerEnabled = {
-  [EMISSION_LAYER_KEYS.foreground]: true,
-  [EMISSION_LAYER_KEYS.middleground]: true,
-  [EMISSION_LAYER_KEYS.background]: true
-};
-const EMISSION_LAYER_NAMES = new Set([
-  EMISSION_LAYER_KEYS.foreground,
-  EMISSION_LAYER_KEYS.middleground,
-  EMISSION_LAYER_KEYS.background
-]);
-const LIGHTING_LAYER_NAMES = new Set([
-  EMISSION_LAYER_KEYS.foreground,
-  EMISSION_LAYER_KEYS.middleground,
-  EMISSION_LAYER_KEYS.background,
-  'LED Strip',
-  'Chad Sculpture'
-]);
-
-const LIGHTS_ON_MASK_THRESHOLD = 55;
 
 function loadManifest() {
   if (!manifest) {
@@ -324,23 +280,6 @@ async function preloadLayers() {
   staticLayerEntries = [];
   expressionLayerEntries = [];
   noseLayerEntries = [];
-  foregroundEmissionBuffer = null;
-  foregroundEmissionPos = { x: 0, y: 0 };
-  foregroundEmissionLayerId = null;
-  lightsOnBuffer = null;
-  lightsOnRawData = null;
-  lightsOnMeta = null;
-  lightsOnOpacityCache = {};
-  lightsOnPos = { x: 0, y: 0 };
-  emissionBaseBuffers = {};
-  emissionLayerMeta = {};
-  emissionLayerBlend = {
-    [EMISSION_LAYER_KEYS.foreground]: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light',
-    [EMISSION_LAYER_KEYS.middleground]: emissionLayerBlend[EMISSION_LAYER_KEYS.middleground] || 'soft-light',
-    [EMISSION_LAYER_KEYS.background]: emissionLayerBlend[EMISSION_LAYER_KEYS.background] || 'soft-light'
-  };
-  lightingBaseBuffers = {};
-  lightingLayerMeta = {};
 
   for (const layer of m.layers) {
     const layerPath = path.join(LAYERS_DIR, ...layer.path.split('/'));
@@ -378,49 +317,6 @@ async function preloadLayers() {
         } else if (layer.id === 'mask') {
           // Mask is only used for viewport extraction, not rendering
           console.log('[Compositor] Mask layer excluded from rendering');
-        } else if (layer.name === 'Lights On') {
-          const { data } = await sharp(buffer)
-            .ensureAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true });
-
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            const max = r > g ? (r > b ? r : b) : (g > b ? g : b);
-            if (max <= LIGHTS_ON_MASK_THRESHOLD) {
-              data[i + 3] = 0;
-            }
-          }
-
-          lightsOnRawData = data;
-          lightsOnMeta = { width: scaledWidth, height: scaledHeight };
-          lightsOnBuffer = await sharp(data, {
-            raw: {
-              width: scaledWidth,
-              height: scaledHeight,
-              channels: 4
-            }
-          })
-          .png()
-          .toBuffer();
-          lightsOnOpacityCache = {}; // Clear opacity cache on reload
-          lightsOnPos = {
-            x: Math.round(layer.x * OUTPUT_SCALE),
-            y: Math.round(layer.y * OUTPUT_SCALE)
-          };
-        } else if (layer.name === EMISSION_LAYER_KEYS.foreground) {
-          foregroundEmissionBuffer = buffer;
-          foregroundEmissionLayerId = layer.id;
-          foregroundEmissionPos = {
-            x: Math.round(layer.x * OUTPUT_SCALE),
-            y: Math.round(layer.y * OUTPUT_SCALE)
-          };
-          emissionBaseBuffers[layer.id] = buffer;
-          emissionLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
-          lightingBaseBuffers[layer.id] = buffer;
-          lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
         } else if (layer.type === 'static' && layer.visible !== false && EXPRESSION_LAYER_NAMES.has(layer.id)) {
           // Expression layers (eyes/eyebrows/eye_cover) are composited dynamically with offsets
           // Ensure buffer matches output dimensions exactly (avoid rounding mismatches)
@@ -469,14 +365,6 @@ async function preloadLayers() {
           });
           console.log(`[Compositor] Nose layer stored (above eye_cover): ${layer.id}`);
         } else if (layer.type === 'static' && layer.visible !== false) {
-          if (EMISSION_LAYER_NAMES.has(layer.name)) {
-            emissionBaseBuffers[layer.id] = buffer;
-            emissionLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
-          }
-          if (LIGHTING_LAYER_NAMES.has(layer.name)) {
-            lightingBaseBuffers[layer.id] = buffer;
-            lightingLayerMeta[layer.id] = { width: scaledWidth, height: scaledHeight, name: layer.name };
-          }
           staticLayers.push({ ...layer, buffer });
         } else {
           dynamicLayers.push(layer);
@@ -492,7 +380,7 @@ async function preloadLayers() {
   // Pre-composite static layers into base image
   console.log('Pre-compositing static base image...');
   staticLayerEntries = staticLayers;
-  staticBaseBuffer = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend);
+  staticBaseBuffer = await buildStaticBaseFromEntries(staticLayerEntries);
   staticBaseVersion += 1;
   frameCache = {};
   lastOutputKey = null;
@@ -874,17 +762,13 @@ function buildChatOverlaySvg() {
   return Buffer.from(svg);
 }
 
-async function buildStaticBaseFromEntries(entries, layerBlendMap) {
-  const sorted = [...entries]
-    .filter(layer => layer.name !== 'Lights On' && layer.id !== 'Lights_On')
-    .sort((a, b) => a.zIndex - b.zIndex);
+async function buildStaticBaseFromEntries(entries) {
+  const sorted = [...entries].sort((a, b) => a.zIndex - b.zIndex);
   const staticOps = sorted.map(layer => ({
     input: layer.buffer,
     left: Math.round(layer.x * OUTPUT_SCALE),
     top: Math.round(layer.y * OUTPUT_SCALE),
-    blend: EMISSION_LAYER_NAMES.has(layer.name)
-      ? (layerBlendMap[layer.name] || 'soft-light')
-      : 'over',
+    blend: 'over',
     opacity: 1
   }));
 
@@ -925,43 +809,6 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
   })
   .png()
   .toBuffer();
-}
-
-/**
- * Get the lights-on buffer adjusted for current opacity.
- * Caches by quantized opacity (5% steps) to avoid per-frame recomputation.
- * @returns {Buffer|null}
- */
-async function getLightsOnBufferWithOpacity() {
-  if (!lightsOnBuffer || !lightsOnRawData || !lightsOnMeta) return lightsOnBuffer;
-  if (lightsOnOpacity >= 0.999) return lightsOnBuffer;
-  if (lightsOnOpacity <= 0.001) return null;
-
-  // Quantize to 5% steps for caching
-  const quantized = Math.round(lightsOnOpacity * 20) / 20;
-  if (lightsOnOpacityCache[quantized]) return lightsOnOpacityCache[quantized];
-
-  // Create opacity-adjusted copy from raw RGBA
-  const adjusted = Buffer.from(lightsOnRawData);
-  for (let i = 3; i < adjusted.length; i += 4) {
-    adjusted[i] = Math.round(adjusted[i] * quantized);
-  }
-
-  const buf = await sharp(adjusted, {
-    raw: { width: lightsOnMeta.width, height: lightsOnMeta.height, channels: 4 }
-  }).png().toBuffer();
-
-  // Keep cache small (max 21 entries for 0-100% in 5% steps)
-  lightsOnOpacityCache[quantized] = buf;
-  return buf;
-}
-
-/**
- * Get the quantized lights-on opacity for cache key use.
- * @returns {number}
- */
-function getQuantizedLightsOnOpacity() {
-  return Math.round(lightsOnOpacity * 20);
 }
 
 /**
@@ -1196,8 +1043,7 @@ function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
   const tasks = phonemes.map(async (ph) => {
     const chadPh = speakingChar === 'chad' ? ph : 'A';
     const virgPh = speakingChar === 'virgin' ? ph : 'A';
-    const lightsKey = `${lightsMode}-${getQuantizedLightsOnOpacity()}`;
-    const charCacheKey = `${exprBaseCacheKey}-lv${lightingVersion}-lt${lightsKey}-${chadPh}-${virgPh}-0-0`;
+    const charCacheKey = `${exprBaseCacheKey}-${chadPh}-${virgPh}-0-0`;
 
     if (frameCache[charCacheKey]) return; // already cached
 
@@ -1220,29 +1066,6 @@ function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
           input: buffer,
           left: Math.round(layer.x * OUTPUT_SCALE),
           top: Math.round(layer.y * OUTPUT_SCALE),
-          blend: 'over'
-        });
-      }
-    }
-
-    // Emission (above mouths/blinks)
-    if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
-      charOps.push({
-        input: foregroundEmissionBuffer,
-        left: foregroundEmissionPos.x,
-        top: foregroundEmissionPos.y,
-        blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light'
-      });
-    }
-
-    // Lights (above emission)
-    if (lightsMode === 'on' && lightsOnBuffer) {
-      const lightsBuffer = await getLightsOnBufferWithOpacity();
-      if (lightsBuffer) {
-        charOps.push({
-          input: lightsBuffer,
-          left: lightsOnPos.x,
-          top: lightsOnPos.y,
           blend: 'over'
         });
       }
@@ -1299,8 +1122,8 @@ async function compositeFrame(state) {
   // === Two-level compositing ===
   // Level 1: Expression base (staticBase + expression layers + nose) — cached by exprKey.
   //   Only recomputes when expression offsets change (~3-5x/sec).
-  // Level 2: Character frame (expression base + mouth + blink + emission + lights) — cached
-  //   by phoneme+blink per expression base. Composites only ~5 layers instead of 15-18.
+  // Level 2: Character frame (expression base + mouth + blink) — cached
+  //   by phoneme+blink per expression base. Composites only a few layers.
   //   On phoneme changes, the expensive expression base is served from Level 1 cache.
 
   const exprBaseCacheKey = `${staticBaseVersion}-${exprKey}`;
@@ -1357,16 +1180,15 @@ async function compositeFrame(state) {
 
   // Build output key using the EFFECTIVE base key (not requested expression offsets)
   // so the fast path correctly reflects what was actually rendered
-  const lightsKey = `${lightsMode}-${getQuantizedLightsOnOpacity()}`;
   const currentChatVersion = getChatVersion();
-  let outputKey = `${effectiveExprBaseKey}-lv${lightingVersion}-lt${lightsKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvFrameIndex}-c${captionKey}-lb${leaderboardVersion}-ch${currentChatVersion}`;
+  let outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvFrameIndex}-c${captionKey}-lb${leaderboardVersion}-ch${currentChatVersion}`;
 
   // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
   if (outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
-  const charCacheKey = `${effectiveExprBaseKey}-lv${lightingVersion}-lt${lightsKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
+  const charCacheKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
   let charBuffer = frameCache[charCacheKey];
 
   if (!charBuffer) {
@@ -1408,30 +1230,7 @@ async function compositeFrame(state) {
       }
     }
 
-    // Emission (above mouths/blinks)
-    if (foregroundEmissionBuffer && emissionLayerEnabled[EMISSION_LAYER_KEYS.foreground]) {
-      charOps.push({
-        input: foregroundEmissionBuffer,
-        left: foregroundEmissionPos.x,
-        top: foregroundEmissionPos.y,
-        blend: emissionLayerBlend[EMISSION_LAYER_KEYS.foreground] || 'soft-light'
-      });
-    }
-
-    // Lights (above emission)
-    if (lightsMode === 'on' && lightsOnBuffer) {
-      const lightsBuffer = await getLightsOnBufferWithOpacity();
-      if (lightsBuffer) {
-        charOps.push({
-          input: lightsBuffer,
-          left: lightsOnPos.x,
-          top: lightsOnPos.y,
-          blend: 'over'
-        });
-      }
-    }
-
-    // Composite Level 2: expression base (raw RGBA) + mouth/blink/emission/lights → JPEG
+    // Composite Level 2: expression base (raw RGBA) + mouth/blink → JPEG
     charBuffer = await sharp(exprBaseRaw.data, {
       raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
     })
@@ -1447,7 +1246,7 @@ async function compositeFrame(state) {
     frameCache[charCacheKey] = charBuffer;
   }
 
-  // Overlays: only TV content and captions (emission + lights are baked into charBuffer)
+  // Overlays: TV content, captions, leaderboard, chat
   const overlayOps = [];
 
   if (currentTVFrame && TV_VIEWPORT) {
@@ -1559,184 +1358,6 @@ function getManifestDimensions() {
     originalHeight: m.height,
     scale: OUTPUT_SCALE
   };
-}
-
-async function setEmissionOpacity(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return emissionOpacity;
-  const nextOpacity = Math.max(0, Math.min(1, parsed));
-  if (nextOpacity === emissionOpacity) return emissionOpacity;
-
-  const updatedBuffers = {};
-  for (const layerId of Object.keys(emissionBaseBuffers)) {
-    const base = emissionBaseBuffers[layerId];
-    const meta = emissionLayerMeta[layerId];
-    if (!meta) continue;
-    updatedBuffers[layerId] = await applyOpacityToBuffer(base, meta, nextOpacity);
-  }
-
-  const updatedScaled = { ...scaledLayerBuffers, ...updatedBuffers };
-  const updatedEntries = staticLayerEntries.map(entry => ({
-    ...entry,
-    buffer: updatedScaled[entry.id] || entry.buffer
-  }));
-
-  const nextBase = await buildStaticBaseFromEntries(updatedEntries, emissionLayerBlend);
-
-  scaledLayerBuffers = updatedScaled;
-  staticLayerEntries = updatedEntries;
-  staticBaseBuffer = nextBase;
-  staticBaseVersion += 1;
-  frameCache = {};
-  lastOutputKey = null;
-  lastOutputBuffer = null;
-  committedExprBaseKey = null;
-  committedExprBaseBuffer = null;
-  lastExprBaseKey = null;
-  lastExprBaseBuffer = null;
-  emissionOpacity = nextOpacity;
-  if (foregroundEmissionLayerId && updatedScaled[foregroundEmissionLayerId]) {
-    foregroundEmissionBuffer = updatedScaled[foregroundEmissionLayerId];
-  }
-  return emissionOpacity;
-}
-
-async function setEmissionLayerBlend(name, blend) {
-  const allowed = new Set([
-    'over',
-    'multiply',
-    'screen',
-    'overlay',
-    'darken',
-    'lighten',
-    'hard-light',
-    'soft-light',
-    'difference',
-    'exclusion',
-    'add',
-    'subtract',
-    'divide'
-  ]);
-  if (!EMISSION_LAYER_NAMES.has(name)) return emissionLayerBlend;
-  if (!allowed.has(blend)) return emissionLayerBlend;
-  emissionLayerBlend[name] = blend;
-  const nextBase = await buildStaticBaseFromEntries(staticLayerEntries, emissionLayerBlend);
-  staticBaseBuffer = nextBase;
-  staticBaseVersion += 1;
-  frameCache = {};
-  lastOutputKey = null;
-  lastOutputBuffer = null;
-  committedExprBaseKey = null;
-  committedExprBaseBuffer = null;
-  lastExprBaseKey = null;
-  lastExprBaseBuffer = null;
-  return emissionLayerBlend;
-}
-
-function getEmissionLayerBlend() {
-  return { ...emissionLayerBlend };
-}
-
-function getEmissionOpacity() {
-  return emissionOpacity;
-}
-
-function setLightsOnOpacity(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return lightsOnOpacity;
-  lightsOnOpacity = Math.max(0, Math.min(1, parsed));
-  // Invalidate output fast path so next frame picks up new opacity
-  lastOutputKey = null;
-  return lightsOnOpacity;
-}
-
-function getLightsOnOpacity() {
-  return lightsOnOpacity;
-}
-
-function setLightsMode(mode) {
-  if (mode !== 'on' && mode !== 'off') return lightsMode;
-  lightsMode = mode;
-  // Invalidate output fast path so next frame picks up new mode
-  lastOutputKey = null;
-  return lightsMode;
-}
-
-function getLightsMode() {
-  return lightsMode;
-}
-
-async function setLightingHue(hue) {
-  const parsed = Number(hue);
-  if (!Number.isFinite(parsed)) return lightingHue;
-  const nextHue = Math.max(-180, Math.min(180, parsed));
-  if (nextHue === lightingHue) return lightingHue;
-
-  const updateId = ++lightingUpdateId;
-  const hueForSharp = Math.round(((nextHue % 360) + 360) % 360);
-  const updatedLighting = {};
-
-  for (const layerId of Object.keys(lightingBaseBuffers)) {
-    const base = lightingBaseBuffers[layerId];
-    const updated = nextHue === 0
-      ? base
-      : await sharp(base).modulate({ hue: hueForSharp }).png().toBuffer();
-    if (updateId !== lightingUpdateId) {
-      return lightingHue;
-    }
-    updatedLighting[layerId] = updated;
-  }
-
-  const updatedScaled = { ...scaledLayerBuffers };
-  const updatedEntries = staticLayerEntries.map(entry => ({ ...entry }));
-  const updatedEmissionBase = { ...emissionBaseBuffers };
-  let updatedForegroundBuffer = foregroundEmissionBuffer;
-
-  for (const layerId of Object.keys(updatedLighting)) {
-    const meta = lightingLayerMeta[layerId];
-    const name = meta?.name;
-    const updated = updatedLighting[layerId];
-    if (name && EMISSION_LAYER_NAMES.has(name)) {
-      updatedEmissionBase[layerId] = updated;
-      const withOpacity = await applyOpacityToBuffer(updated, emissionLayerMeta[layerId], emissionOpacity);
-      updatedScaled[layerId] = withOpacity;
-      if (foregroundEmissionLayerId === layerId) {
-        updatedForegroundBuffer = withOpacity;
-      }
-    } else {
-      updatedScaled[layerId] = updated;
-    }
-  }
-
-  for (const entry of updatedEntries) {
-    if (updatedScaled[entry.id]) {
-      entry.buffer = updatedScaled[entry.id];
-    }
-  }
-
-  const nextBase = await buildStaticBaseFromEntries(updatedEntries, emissionLayerBlend);
-  if (updateId !== lightingUpdateId) {
-    return lightingHue;
-  }
-
-  scaledLayerBuffers = updatedScaled;
-  staticLayerEntries = updatedEntries;
-  emissionBaseBuffers = updatedEmissionBase;
-  foregroundEmissionBuffer = updatedForegroundBuffer;
-  staticBaseBuffer = nextBase;
-  staticBaseVersion += 1;
-  lightingVersion++;
-  // No cache nukes: stale L1 entries miss via new staticBaseVersion,
-  // stale L2 entries miss via new lightingVersion in charCacheKey.
-  // Only reset output fast-path so next frame re-evaluates.
-  lastOutputKey = null;
-  lastOutputBuffer = null;
-  lightingHue = nextHue;
-  return lightingHue;
-}
-
-function getLightingHue() {
-  return lightingHue;
 }
 
 /**
@@ -1966,16 +1587,6 @@ module.exports = {
   setTVFrame,
   getTVFrame,
   getTVViewport,
-  setEmissionOpacity,
-  getEmissionOpacity,
-  setEmissionLayerBlend,
-  getEmissionLayerBlend,
-  setLightsOnOpacity,
-  getLightsOnOpacity,
-  setLightsMode,
-  getLightsMode,
-  setLightingHue,
-  getLightingHue,
   setExpressionOffset,
   getExpressionOffsets,
   resetExpressionOffsets,

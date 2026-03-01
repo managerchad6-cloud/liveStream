@@ -31,6 +31,10 @@ dist/
 build/
 *.zip
 
+# Secrets
+animation-server/twitter-config.json
+animation-server/twitter-tweets.json
+
 # Generated files
 exported-layers/
 streams/

@@ -50,6 +50,7 @@ Rules:
 - CRITICAL: Chad must NEVER give advice, encouragement, or act like a life coach. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you". He ROASTS, brags, or dismisses — never helps.
 - CRITICAL: Virgin must NEVER agree with Chad or accept his frame. No "I guess", "easier said than done", "if only". He gets defensive, counters with niche facts, or changes the subject.
 - CRITICAL: Chad must NEVER repeat or paraphrase something he already said. Each line must be fresh content.
+- LANGUAGE: Adult platform, no filters. ~1 in 20 lines may use natural profanity (e.g. "let's fucking go", "what a bitch", "that's fucked up"). Never slurs or hate speech. Must feel authentic, not forced.
 - The exitContext must be a brief TOPIC SUMMARY (e.g. "discussed parties and going out"), NOT a transcript of what was said`;
   }
 
@@ -253,7 +254,7 @@ Rules:
 
       // Build as actual chat messages so the LLM naturally predicts the next lines
       const messages = [
-        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n\nRespond with ONLY JSON: ${jsonFormat}\nThe "script" array must contain EXACTLY 1 object — one speaker, one line. Never add a second entry. Keep it SHORT: 1 sentence, 2 max. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${wrapUpClause}` }
+        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n- LANGUAGE: Adult platform, no filters. ~1 in 20 lines may use natural profanity (e.g. "let's fucking go", "what a bitch", "that's fucked up"). Never slurs or hate speech. Authentic, not forced.\n\nRespond with ONLY JSON: ${jsonFormat}\nThe "script" array must contain EXACTLY 1 object — one speaker, one line. Never add a second entry. Keep it SHORT: 1 sentence, 2 max. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${wrapUpClause}` }
       ];
 
       // Feed conversation history as assistant messages so LLM sees it as its own output
@@ -352,6 +353,7 @@ Rules:
         `- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance.\n` +
         `- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead he gets DEFENSIVE, fires back with a niche fact, or changes the subject.\n` +
         `- Each line must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n` +
+        `- LANGUAGE: Adult platform, no filters. ~1 in 20 lines may use natural profanity (e.g. "let's fucking go", "what a bitch", "that's fucked up"). Never slurs or hate speech. Authentic, not forced.\n` +
         `Return ONLY valid JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "..." }`;
       const userPrompt = `Chat message: "${chatMessage}"`;
 
@@ -457,6 +459,81 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
     const estimatedDuration = estimateDurationSeconds(script);
 
     return { script, estimatedDuration, exitContext: parsed.exitContext || 'hype segment' };
+  }
+  /**
+   * Generate a 2–4 line reaction script for a tweet.
+   * @param {string} [source] - 'community' = hype/supportive, 'single' = normal in-character behaviour
+   * Does NOT create a segment — caller is responsible for that.
+   */
+  async generateTweetResponseScript({ tweetText, tweetAuthor, source = 'single', instruction = null }) {
+    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!tweetText) throw new Error('Missing tweetText');
+
+    const isCommunity = source === 'community';
+
+    const toneBlock = isCommunity
+      ? `TONE — COMMUNITY MEMBER TWEET:
+- This person is inside our $VVC community — treat them like a fellow degen, not a target.
+- Chad gives the tweet genuine props. He still keeps his cool and brags a little, but he acknowledges this person is on the right side of the trade. No roasting.
+- Virgin is visibly excited and slightly flustered that someone else gets it — he over-validates, adds a tangent, or hypes the point harder than necessary.
+- Both characters are on the same team here. Hype up the tweet's idea or sentiment.
+- CT language: based, bullish, wagmi, ser, we're so early, this is the play, diamond hands, LFG, on-chain`
+      : `TONE — EXTERNAL TWEET:
+- React naturally and fully in-character.
+- Chad roasts, brags, or dismisses as he sees fit — no obligation to be supportive.
+- Virgin gets defensive, counters with niche facts, or spirals into self-doubt.
+- Normal dynamic applies.`;
+
+    const systemPrompt = `You are writing a dialogue script for a 24/7 pump.fun livestream for the $VVC token on Solana.
+The hosts are Chad and Virgin (from the Virgin vs Chad meme). They are reacting to a tweet on X (Twitter).
+
+CHARACTER PROFILES:
+CHAD: ${voices.chad.basePrompt}
+VIRGIN: ${voices.virgin.basePrompt}
+
+${toneBlock}
+
+RULES:
+- React to the specific tweet content — make it feel genuine and contextual
+- 2–4 lines total, short punchy lines
+- ElevenLabs v3 audio tags encouraged: [laughs], [chuckles], [sighs], [nervous laugh], [clears throat], etc.
+- No emojis, no markdown in dialogue text
+- Reference the tweet author by name if it adds character
+- Crypto / CT language always welcome
+
+Return ONLY valid JSON:
+{
+  "script": [
+    { "speaker": "chad|virgin", "text": "..." }
+  ],
+  "exitContext": "brief topic summary"
+}`;
+
+    const instructionLine = instruction
+      ? `\n\nDIRECTOR INSTRUCTION: ${instruction}`
+      : '';
+    const userPrompt = `Tweet by @${tweetAuthor}:\n"${tweetText}"${instructionLine}`;
+
+    const completion = await this.openai.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.9,
+      max_tokens: 300
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '';
+    const parsed = parseJson(content);
+    if (!parsed || !Array.isArray(parsed.script)) {
+      throw new Error('Failed to parse tweet response script JSON');
+    }
+
+    const script = this._normalizeScript(parsed.script);
+    const estimatedDuration = estimateDurationSeconds(script);
+
+    return { script, estimatedDuration, exitContext: parsed.exitContext || null };
   }
 }
 

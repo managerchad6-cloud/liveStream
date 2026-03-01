@@ -444,6 +444,31 @@
       text-overflow: ellipsis;
     }
 
+    /* Twitter Ingest panel */
+    .twitter-panel {
+      background: linear-gradient(135deg, #0a0f1a, #1b1f2a);
+      border: 1px solid #1d9bf0;
+    }
+    .twitter-panel h2 { color: #1d9bf0; }
+    .twitter-cols {
+      display: flex;
+      gap: 16px;
+    }
+    .twitter-col { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .twitter-field {
+      background: #0d1117;
+      border: 1px solid #1d9bf0;
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      width: 100%;
+    }
+    .twitter-field::placeholder { color: #2a5070; }
+    .twitter-status { font-size: 0.8rem; color: #1d9bf0; }
+
+
     .hype-field {
       background: #0f1014;
       border: 1px solid #ff4500;
@@ -564,6 +589,63 @@
         </div>
         <button class="btn-primary" id="create-custom-btn">Create Custom</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Twitter Ingest — 3 boxes -->
+  <div style="display:flex;gap:16px;margin-bottom:16px;">
+
+    <!-- Auth -->
+    <div id="tw-auth-panel" class="panel twitter-panel" style="flex:1;margin-bottom:0;">
+      <h2>X Auth</h2>
+      <div class="twitter-col">
+        <input id="tw-ct0" class="twitter-field" type="password" placeholder="ct0 cookie" />
+        <input id="tw-auth-token" class="twitter-field" type="password" placeholder="auth_token cookie" />
+        <button class="btn-primary" id="tw-save-btn" style="margin-top:4px;">Save</button>
+        <div id="tw-auth-status" class="twitter-status">—</div>
+      </div>
+    </div>
+
+    <!-- Community ingest -->
+    <div class="panel twitter-panel" style="flex:1;margin-bottom:0;">
+      <h2>Community Ingest</h2>
+      <div class="twitter-col">
+        <input id="tw-community-url" class="twitter-field" placeholder="https://x.com/i/communities/..." />
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="tw-poll-interval" class="twitter-field" type="number" min="1" value="5" placeholder="5" style="width:70px;flex-shrink:0;" />
+          <span style="font-size:0.8rem;color:var(--muted);white-space:nowrap;">min poll interval</span>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:4px;">
+          <button class="btn-primary" id="tw-community-toggle-btn" style="background:#1d9bf0;flex:1;">Start Polling</button>
+          <button id="tw-show-historical-btn" style="display:none;padding:6px 10px;border:1px solid #1d9bf0;border-radius:8px;background:transparent;color:#1d9bf0;cursor:pointer;font-family:inherit;font-size:0.85rem;white-space:nowrap;">Show all tweets</button>
+        </div>
+        <div id="tw-community-status" class="twitter-status">&#9675; Stopped</div>
+      </div>
+    </div>
+
+    <!-- Single tweet -->
+    <div class="panel twitter-panel" style="flex:1;margin-bottom:0;">
+      <h2>Single Tweet</h2>
+      <div class="twitter-col">
+        <input id="tw-tweet-url" class="twitter-field" placeholder="https://x.com/user/status/..." />
+        <input id="tw-tweet-instruction" class="twitter-field" placeholder="Instruction: roast this, promote it, call a RAID…" style="margin-top:4px;" />
+        <button class="btn-primary" id="tw-tweet-fetch-btn" style="background:#1d9bf0;margin-top:4px;">Fetch Tweet</button>
+        <div id="tw-tweet-status" class="twitter-status">—</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Historical tweets modal -->
+  <div id="historical-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;overflow-y:auto;padding:40px 20px;">
+    <div style="background:var(--panel);border-radius:14px;max-width:700px;margin:0 auto;padding:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h3 style="margin:0;color:#1d9bf0;">All Community Tweets</h3>
+        <button onclick="closeHistorical()" style="padding:6px 12px;border:none;border-radius:8px;background:var(--danger);color:#fff;cursor:pointer;font-family:inherit;">✕ Close</button>
+      </div>
+      <input id="historical-search" placeholder="Search tweets…" oninput="renderHistoricalList()"
+        style="width:100%;padding:8px;background:#0d1117;border:1px solid #1d9bf0;border-radius:8px;color:var(--text);font-family:inherit;margin-bottom:12px;">
+      <div id="historical-list" style="display:flex;flex-direction:column;gap:8px;max-height:65vh;overflow-y:auto;"></div>
     </div>
   </div>
 
@@ -983,6 +1065,9 @@
         if (payload.event === 'chat:new-card') {
           refreshAll();
         }
+        if (payload.event === 'twitter:status-update') {
+          setCommunityStatus(payload.data || {});
+        }
       };
 
       ws.onclose = () => {
@@ -1121,7 +1206,221 @@
       refreshAll();
     });
 
+    // ── Twitter Ingest ──────────────────────────────────────────────────────
+
+    function setAuthStatus(hasCookies) {
+      const panel = document.getElementById('tw-auth-panel');
+      const statusEl = document.getElementById('tw-auth-status');
+      if (hasCookies) {
+        statusEl.innerHTML = '&#10003; Credentials saved';
+        statusEl.style.color = 'var(--good)';
+        panel.style.borderColor = 'var(--good)';
+        document.getElementById('tw-ct0').placeholder = 'ct0 cookie (saved)';
+        document.getElementById('tw-auth-token').placeholder = 'auth_token cookie (saved)';
+      } else {
+        statusEl.innerHTML = '&#9888; No credentials set';
+        statusEl.style.color = 'var(--danger)';
+        panel.style.borderColor = 'var(--danger)';
+      }
+    }
+
+    async function loadTwitterConfig() {
+      try {
+        const cfg = await apiGet('/api/orchestrator/twitter/config');
+        if (cfg.communityUrl) document.getElementById('tw-community-url').value = cfg.communityUrl;
+        if (cfg.pollIntervalMinutes) document.getElementById('tw-poll-interval').value = cfg.pollIntervalMinutes;
+        setAuthStatus(cfg.hasCookies);
+      } catch {}
+    }
+
+    // ── Community polling status display ────────────────────────────────────
+
+    function setCommunityStatus(st) {
+      const statusEl = document.getElementById('tw-community-status');
+      const toggleBtn = document.getElementById('tw-community-toggle-btn');
+      const historicalBtn = document.getElementById('tw-show-historical-btn');
+
+      if (st.isPolling) {
+        let lastChecked = '—';
+        if (st.lastPolled) {
+          const diffMs = Date.now() - new Date(st.lastPolled).getTime();
+          const diffMin = Math.floor(diffMs / 60000);
+          lastChecked = diffMin < 1 ? 'just now' : `${diffMin}m ago`;
+        }
+        statusEl.innerHTML = `&#9679; Polling &middot; last checked ${lastChecked} &middot; ${st.seenCount} tweets seen`;
+        statusEl.style.color = 'var(--good)';
+        toggleBtn.textContent = 'Stop Polling';
+        toggleBtn.style.background = 'var(--danger)';
+      } else {
+        statusEl.innerHTML = `&#9675; Stopped &middot; ${st.seenCount} tweets seen`;
+        statusEl.style.color = 'var(--muted)';
+        toggleBtn.textContent = 'Start Polling';
+        toggleBtn.style.background = '#1d9bf0';
+      }
+
+      historicalBtn.style.display = st.initialized ? 'block' : 'none';
+    }
+
+    async function loadCommunityStatus() {
+      try {
+        const st = await apiGet('/api/orchestrator/twitter/community/status');
+        setCommunityStatus(st);
+      } catch {}
+    }
+
+    // ── Historical tweets modal ──────────────────────────────────────────────
+
+    let _historicalTweets = [];
+
+    async function openHistorical() {
+      document.getElementById('historical-modal').style.display = 'block';
+      document.getElementById('historical-search').value = '';
+      document.getElementById('historical-list').innerHTML = '<span style="color:var(--muted)">Loading…</span>';
+      try {
+        const data = await apiGet('/api/orchestrator/twitter/historical');
+        _historicalTweets = data.tweets || [];
+      } catch {
+        _historicalTweets = [];
+      }
+      renderHistoricalList();
+    }
+
+    function closeHistorical() {
+      document.getElementById('historical-modal').style.display = 'none';
+    }
+
+    function renderHistoricalList() {
+      const q = document.getElementById('historical-search').value.toLowerCase();
+      const filtered = q
+        ? _historicalTweets.filter(t => (t.text + t.author).toLowerCase().includes(q))
+        : _historicalTweets;
+
+      const el = document.getElementById('historical-list');
+      if (filtered.length === 0) {
+        el.innerHTML = '<span style="color:var(--muted)">No tweets found</span>';
+        return;
+      }
+
+      el.innerHTML = filtered.map(t => `
+        <div data-id="${t.id}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#0d1117;border-radius:8px;border:1px solid #1d9bf020;">
+          <span style="color:#1d9bf0;white-space:nowrap;font-size:0.85rem;">@${escHtml(t.author)}</span>
+          <span style="flex:1;font-size:0.85rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(t.text.slice(0, 80))}${t.text.length > 80 ? '…' : ''}</span>
+          <a href="${escHtml(t.url)}" target="_blank" rel="noopener" style="font-size:0.8rem;color:#1d9bf0;text-decoration:none;white-space:nowrap;">&#x2197; View</a>
+          <button class="btn-small hist-queue-btn ${t.queued ? 'btn-queued' : 'btn-primary'}"
+            style="white-space:nowrap;${t.queued ? 'background:var(--muted);color:#000;cursor:default;' : ''}"
+            ${t.queued ? 'disabled' : ''}>
+            ${t.queued ? 'Queued' : 'Queue'}
+          </button>
+        </div>
+      `).join('');
+
+      el.querySelectorAll('.hist-queue-btn:not([disabled])').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.closest('[data-id]').dataset.id;
+          btn.disabled = true; btn.textContent = '…';
+          try {
+            await apiPost(`/api/orchestrator/twitter/historical/${id}/queue`, {});
+            const t = _historicalTweets.find(x => x.id === id);
+            if (t) t.queued = true;
+            btn.textContent = 'Queued';
+            btn.style.background = 'var(--muted)';
+            btn.style.color = '#000';
+            refreshAll();
+          } catch (err) {
+            btn.disabled = false; btn.textContent = 'Queue';
+            alert(err.message);
+          }
+        });
+      });
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── Auth box ─────────────────────────────────────────────────────────────
+
+    document.getElementById('tw-save-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('tw-auth-status');
+      const body = {};
+      const ct0 = document.getElementById('tw-ct0').value.trim();
+      const authToken = document.getElementById('tw-auth-token').value.trim();
+      if (ct0) body.ct0 = ct0;
+      if (authToken) body.authToken = authToken;
+      try {
+        await apiPost('/api/orchestrator/twitter/config', body);
+        document.getElementById('tw-ct0').value = '';
+        document.getElementById('tw-auth-token').value = '';
+        setAuthStatus(true);
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.style.color = 'var(--danger)';
+      }
+    });
+
+    // ── Community toggle (start/stop) ─────────────────────────────────────────
+
+    document.getElementById('tw-community-toggle-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('tw-community-toggle-btn');
+      const isPolling = btn.textContent.includes('Stop');
+
+      if (isPolling) {
+        btn.disabled = true;
+        try {
+          const st = await apiPost('/api/orchestrator/twitter/community/stop', {});
+          setCommunityStatus(st);
+        } catch (err) {
+          document.getElementById('tw-community-status').textContent = `Error: ${err.message}`;
+        }
+        btn.disabled = false;
+      } else {
+        const communityUrl = document.getElementById('tw-community-url').value.trim();
+        const pollIntervalMinutes = Number(document.getElementById('tw-poll-interval').value) || 5;
+        btn.disabled = true;
+        const statusEl = document.getElementById('tw-community-status');
+        statusEl.innerHTML = 'Initializing…';
+        statusEl.style.color = '#1d9bf0';
+        try {
+          const st = await apiPost('/api/orchestrator/twitter/community/start', { communityUrl, pollIntervalMinutes });
+          setCommunityStatus(st);
+        } catch (err) {
+          statusEl.textContent = `Error: ${err.message}`;
+          statusEl.style.color = 'var(--danger)';
+        }
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('tw-show-historical-btn').addEventListener('click', openHistorical);
+
+    // ── Single tweet box ──────────────────────────────────────────────────────
+
+    document.getElementById('tw-tweet-fetch-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('tw-tweet-fetch-btn');
+      const statusEl = document.getElementById('tw-tweet-status');
+      const tweetUrl = document.getElementById('tw-tweet-url').value.trim();
+      const instruction = document.getElementById('tw-tweet-instruction').value.trim();
+      if (!tweetUrl) { statusEl.textContent = 'Enter a tweet URL'; return; }
+      btn.disabled = true; btn.textContent = 'Fetching…';
+      statusEl.textContent = 'Fetching…';
+      try {
+        const result = await apiPost('/api/orchestrator/twitter/fetch', { tweetUrl, instruction: instruction || undefined });
+        statusEl.textContent = `Queued (${result.segmentId?.slice(0, 8)})`;
+        document.getElementById('tw-tweet-url').value = '';
+        document.getElementById('tw-tweet-instruction').value = '';
+        refreshAll();
+        setTimeout(() => { statusEl.textContent = '—'; }, 5000);
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+      btn.disabled = false; btn.textContent = 'Fetch Tweet';
+    });
+
+    // ── End Twitter Ingest ──────────────────────────────────────────────────
+
     // Initialize
+    loadTwitterConfig();
+    loadCommunityStatus();
     connectWebSocket();
   </script>
 </body>

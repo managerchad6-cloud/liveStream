@@ -47,6 +47,7 @@ const TVLayerManager = require('./orchestrator/tv-layer-manager');
 const OrchestratorSocket = require('./orchestrator/websocket');
 const Orchestrator = require('./orchestrator');
 const BackgroundMusicService = require('./background-music');
+const TwitterIngestService = require('./orchestrator/twitter-ingest');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
@@ -268,6 +269,7 @@ let playbackController = null;
 let chatIntake = null;
 let orchestrator = null;
 let orchestratorSocket = null;
+let twitterIngest = null;
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
@@ -1996,6 +1998,120 @@ app.post('/api/orchestrator/config', async (req, res) => {
   }
 });
 
+// ============== Twitter Ingest API ==============
+
+function broadcastTwitterStatus() {
+  if (!orchestratorSocket || !twitterIngest) return;
+  orchestratorSocket.broadcast('twitter:status-update', twitterIngest.getPollingStatus());
+}
+
+app.get('/api/orchestrator/twitter/config', (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  res.json(twitterIngest.getConfig());
+});
+
+app.post('/api/orchestrator/twitter/config', (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  const { ct0, authToken, communityUrl, pollIntervalMinutes } = req.body || {};
+  const result = twitterIngest.setConfig({ ct0, authToken, communityUrl, pollIntervalMinutes });
+  res.json(result);
+});
+
+// Single tweet → directly to pipeline
+app.post('/api/orchestrator/twitter/fetch', async (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  if (!mediaLibrary) return res.status(503).json({ error: 'Media library not initialized' });
+
+  const { tweetUrl, instruction } = req.body || {};
+  if (!tweetUrl) return res.status(400).json({ error: 'tweetUrl required' });
+
+  try {
+    const result = await twitterIngest.fetchSingleTweet({
+      tweetUrl,
+      instruction: instruction || undefined,
+      mediaLibrary,
+      scriptGenerator,
+      pipelineStore,
+      segmentRenderer,
+      orchestrator
+    });
+    broadcastPipelineUpdate();
+    res.json({ segmentId: result.segmentId });
+  } catch (err) {
+    console.error('[Twitter] Single fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Community — start polling (initializes if needed)
+app.post('/api/orchestrator/twitter/community/start', async (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  if (!scriptGenerator || !mediaLibrary || !pipelineStore || !segmentRenderer) {
+    return res.status(503).json({ error: 'Pipeline not initialized' });
+  }
+
+  const { communityUrl, pollIntervalMinutes } = req.body || {};
+  if (communityUrl || pollIntervalMinutes) {
+    twitterIngest.setConfig({ communityUrl, pollIntervalMinutes });
+  }
+
+  try {
+    await twitterIngest.startPolling(
+      { mediaLibrary, scriptGenerator, pipelineStore, segmentRenderer, orchestrator },
+      () => { broadcastPipelineUpdate(); broadcastTwitterStatus(); }
+    );
+    broadcastTwitterStatus();
+    res.json(twitterIngest.getPollingStatus());
+  } catch (err) {
+    console.error('[Twitter] Start polling error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Community — stop polling
+app.post('/api/orchestrator/twitter/community/stop', (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  twitterIngest.stopPolling();
+  broadcastTwitterStatus();
+  res.json(twitterIngest.getPollingStatus());
+});
+
+// Community — status
+app.get('/api/orchestrator/twitter/community/status', (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  res.json(twitterIngest.getPollingStatus());
+});
+
+// Historical tweets list
+app.get('/api/orchestrator/twitter/historical', (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  res.json({ tweets: twitterIngest.getHistoricalTweets() });
+});
+
+// Queue a historical tweet → pipeline
+app.post('/api/orchestrator/twitter/historical/:id/queue', async (req, res) => {
+  if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
+  if (!scriptGenerator || !mediaLibrary || !pipelineStore || !segmentRenderer) {
+    return res.status(503).json({ error: 'Pipeline not initialized' });
+  }
+
+  try {
+    const result = await twitterIngest.queueHistoricalTweet(
+      req.params.id,
+      { mediaLibrary, scriptGenerator, pipelineStore, segmentRenderer, orchestrator }
+    );
+    broadcastPipelineUpdate();
+    res.json({ segmentId: result.segmentId });
+  } catch (err) {
+    if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+    console.error('[Twitter] Queue historical error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============== End Twitter Ingest API ==============
+
 // ============== End Orchestrator Script API ==============
 
 // Health check
@@ -2396,6 +2512,10 @@ async function start() {
   playbackController = orchestrator.playbackController;
   chatIntake = orchestrator.chatIntake;
   console.log('[Orchestrator] Initialized');
+
+  // Initialize Twitter ingest service
+  twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
+  console.log('[Twitter] Ingest service initialized');
 
   // TV media cue: when a segment with attachedMediaId goes on-air, switch TV to that media
   playbackController.registerOnAirHook((segmentId, segment) => {

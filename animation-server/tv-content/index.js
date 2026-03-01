@@ -103,27 +103,75 @@ class TVContentService {
   }
 
   /**
-   * Load image item - creates frames for the duration
+   * Load image item - creates frames for the duration.
+   * Portrait images (height > width) get a looping pan animation:
+   *   [contain view, 2s] → [cover view panning top→bottom, 3s] → repeat
    */
   async _loadImage(item) {
-    // Read and resize image to viewport
+    // Read source into buffer
     let imageBuffer;
-
     if (item.source.startsWith('http://') || item.source.startsWith('https://')) {
-      // Fetch from URL
       const response = await fetch(item.source);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch image: ${response.status}`);
-      }
-      const arrayBuffer = await response.arrayBuffer();
-      imageBuffer = Buffer.from(arrayBuffer);
+      if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
+      imageBuffer = Buffer.from(await response.arrayBuffer());
     } else {
-      // Read from file
       imageBuffer = fs.readFileSync(item.source);
     }
 
-    // Resize to viewport with padding to maintain aspect ratio
-    const resizedBuffer = await sharp(imageBuffer)
+    const frameCount = Math.ceil(item.duration * this.fps);
+    const meta = await sharp(imageBuffer).metadata();
+    const isPortrait = meta.height > meta.width;
+
+    // ── Landscape / square: static contain frame ──────────────────────────
+    if (!isPortrait) {
+      const resizedBuffer = await sharp(imageBuffer)
+        .resize(this.viewportWidth, this.viewportHeight, {
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 1 }
+        })
+        .png()
+        .toBuffer();
+      item.frames = [resizedBuffer];
+      item.frameCount = frameCount;
+      item.isStaticImage = true;
+      return;
+    }
+
+    // ── Portrait: contain → cover pan animation ───────────────────────────
+    const CONTAIN_FRAMES = Math.round(5 * this.fps); // 5 s static contain view
+    // Pan speed: constant pixels-per-second regardless of image height.
+    // Taller images take proportionally longer — same visual reading speed throughout.
+    const PAN_SPEED_PPS = 20; // viewport-scale px/s — adjust for faster/slower reading
+
+    // Cover-scaled dimensions
+    const coverH = Math.round(meta.height * (this.viewportWidth / meta.width));
+    const panRange = coverH - this.viewportHeight;
+
+    // If the cover image doesn't extend beyond the viewport, fall back to static contain
+    if (panRange <= 0) {
+      const fallback = await sharp(imageBuffer)
+        .resize(this.viewportWidth, this.viewportHeight, {
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 1 }
+        })
+        .png()
+        .toBuffer();
+      item.frames = [fallback];
+      item.frameCount = frameCount;
+      item.isStaticImage = true;
+      return;
+    }
+
+    const PAN_FRAMES = Math.max(2, Math.round(panRange * this.fps / PAN_SPEED_PPS));
+
+    // Pre-scale to cover width — one Sharp op shared across all pan frames
+    const coverBuffer = await sharp(imageBuffer)
+      .resize(this.viewportWidth, coverH, { fit: 'fill' })
+      .png()
+      .toBuffer();
+
+    // Contain frame (letterboxed full image)
+    const containFrame = await sharp(imageBuffer)
       .resize(this.viewportWidth, this.viewportHeight, {
         fit: 'contain',
         background: { r: 0, g: 0, b: 0, alpha: 1 }
@@ -131,13 +179,45 @@ class TVContentService {
       .png()
       .toBuffer();
 
-    // Calculate frame count based on duration
-    const frameCount = Math.ceil(item.duration * this.fps);
+    // Render the very first pan frame (top of image) synchronously so the item
+    // can be marked loaded and start showing immediately — remaining frames load
+    // in the background and are appended as they complete.
+    const firstPanFrame = await sharp(coverBuffer)
+      .extract({ left: 0, top: 0, width: this.viewportWidth, height: this.viewportHeight })
+      .png()
+      .toBuffer();
 
-    // Store single frame (will be repeated)
-    item.frames = [resizedBuffer];
-    item.frameCount = frameCount;
-    item.isStaticImage = true;
+    item.frames = [firstPanFrame];
+    item.frameCount = frameCount; // updated once fully loaded
+    item.isStaticImage = false;
+    item.isPanImage = true;
+    item.panFramesReady = false;
+
+    // Background: generate remaining pan frames then contain frames
+    const vw = this.viewportWidth;
+    const vh = this.viewportHeight;
+    const fps = this.fps;
+    ;(async () => {
+      try {
+        for (let i = 1; i < PAN_FRAMES; i++) {
+          const yOffset = Math.round((i / (PAN_FRAMES - 1)) * panRange);
+          const frame = await sharp(coverBuffer)
+            .extract({ left: 0, top: yOffset, width: vw, height: vh })
+            .png()
+            .toBuffer();
+          item.frames.push(frame);
+        }
+        for (let i = 0; i < CONTAIN_FRAMES; i++) {
+          item.frames.push(containFrame);
+        }
+        const cycleLength = item.frames.length; // PAN_FRAMES + CONTAIN_FRAMES
+        item.frameCount = Math.max(cycleLength, Math.ceil(frameCount / cycleLength) * cycleLength);
+        item.panFramesReady = true;
+      } catch (err) {
+        console.warn('[TVContent] Portrait pan generation error:', err.message);
+        item.panFramesReady = true; // unblock getCurrentFrame even on error
+      }
+    })();
   }
 
   /**
@@ -318,12 +398,23 @@ class TVContentService {
       return null;
     }
 
-    // For static images, always return the single frame
+    // Static images: always return the single frame
     if (item.isStaticImage) {
       return item.frames[0];
     }
 
-    // For video, get frame at current index
+    // Portrait pan animation
+    if (item.isPanImage) {
+      if (!item.panFramesReady) {
+        // Still generating: clamp to latest available frame so the pan plays
+        // in real-time as frames arrive — no waiting, no visual jump
+        return item.frames[Math.min(this.frameIndex, item.frames.length - 1)] || null;
+      }
+      // Fully loaded: loop the complete cycle
+      return item.frames[this.frameIndex % item.frames.length] || null;
+    }
+
+    // Video: get frame at current index
     const frameIdx = Math.min(this.frameIndex, item.frames.length - 1);
     return item.frames[frameIdx] || null;
   }
