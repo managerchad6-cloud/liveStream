@@ -444,6 +444,17 @@
       text-overflow: ellipsis;
     }
 
+    .hype-field {
+      background: #0f1014;
+      border: 1px solid #ff4500;
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 0.85rem;
+    }
+    .hype-field::placeholder { color: #663300; }
+
     #status-bar {
       position: fixed;
       bottom: 0;
@@ -494,6 +505,17 @@
       <button class="btn-danger" id="pause-btn">Pause</button>
     </div>
   </header>
+
+  <!-- Hype panel -->
+  <div class="panel hype-panel" style="margin-bottom:16px;background:linear-gradient(135deg,#1a0a00,#1b1f2a);border:1px solid #ff6600;">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <button class="btn-primary" id="hype-btn" style="background:#ff4500;font-size:1.1rem;font-weight:700;letter-spacing:1px;padding:10px 24px;flex-shrink:0;">HYPE</button>
+      <input id="hype-mcap" placeholder="MCap (e.g. 420K)" style="width:130px;" class="hype-field" />
+      <input id="hype-volume" placeholder="Volume (e.g. 69K)" style="width:130px;" class="hype-field" />
+      <input id="hype-holders" placeholder="Holders (e.g. 420)" style="width:130px;" class="hype-field" />
+      <span id="hype-status" style="font-size:0.8rem;color:#ff6600;"></span>
+    </div>
+  </div>
 
   <div id="create-row" class="create-row">
     <div class="panel create-row-item">
@@ -1060,6 +1082,38 @@
       btn.disabled = false;
       btn.textContent = 'Create Custom';
       refreshAll();
+    });
+
+    document.getElementById('hype-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('hype-btn');
+      const statusEl = document.getElementById('hype-status');
+      const mcap    = document.getElementById('hype-mcap').value.trim();
+      const volume  = document.getElementById('hype-volume').value.trim();
+      const holders = document.getElementById('hype-holders').value.trim();
+
+      btn.disabled = true;
+      btn.textContent = 'GENERATING...';
+      statusEl.textContent = '';
+
+      try {
+        const body = {};
+        if (mcap)    body.mcap    = mcap;
+        if (volume)  body.volume  = volume;
+        if (holders) body.holders = holders;
+
+        const result = await apiPost('/api/orchestrator/hype', body);
+        if (result.error) throw new Error(result.error);
+
+        await apiPost(`/api/orchestrator/render/${result.id}`, {});
+        statusEl.textContent = 'Queued!';
+        setTimeout(() => { statusEl.textContent = ''; }, 3000);
+        refreshAll();
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+
+      btn.disabled = false;
+      btn.textContent = 'HYPE';
     });
 
     document.getElementById('clear-archive').addEventListener('click', async () => {

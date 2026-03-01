@@ -388,6 +388,76 @@ Rules:
       throw err;
     }
   }
+  /**
+   * Generate a high-energy hype segment for a pump.fun token launch.
+   * 80% pure degen hype, 20% weaves in live stats if provided.
+   * Goes hard with ElevenLabs v3 audio expression tags.
+   */
+  async generateHypeScript({ mcap, volume, holders } = {}) {
+    if (!this.openai) throw new Error('OpenAI not configured');
+
+    const hasStats = mcap || volume || holders;
+    const statsBlock = hasStats
+      ? [
+          mcap    && `Market cap: $${mcap}`,
+          volume  && `Volume: $${volume}`,
+          holders && `Holders: ${holders}`
+        ].filter(Boolean).join('\n')
+      : null;
+
+    const systemPrompt = `You are writing a HYPE segment for a live pump.fun token launch stream. Chad and Virgin are co-hosts going absolutely unhinged about the $VVC token.
+
+THIS IS A HYPE SEGMENT — pure degen energy, CT-native language, maximum chaos.
+
+CHARACTER RULES:
+CHAD: ${voices.chad.basePrompt} — but amped to 11. His casual confidence becomes unstoppable, almost religious certainty. He's been right before and he KNOWS it.
+VIRGIN: ${voices.virgin.basePrompt} — but his usual anxiety is flipped into manic degen euphoria. He's losing his mind in the best possible way. Shaking. Can't believe it.
+
+TONE RULES:
+- 80% of lines are pure raw hype with zero stats — just vibes, rhythm, and degen culture
+- ${hasStats ? '20% of lines should reference the real numbers provided — use them to land a meaningful punch ("we\'re at X mcap and the normies haven\'t even sniffed this yet")' : 'No stats provided — 100% pure hype vibes, do NOT invent numbers'}
+- Both characters are UNIFIED in shared bullishness for once — no roasting each other, just co-hype
+- Short punchy lines — power comes from rhythm and intensity, not length
+- CT language mandatory: LFG, WAGMI, ser, anon, aping in, we're so early, 100x, the narrative, this is the play, diamond hands, send it, ngmi (for paperhands), on-chain, based, bullish af, the meta, cooked, it's over for bears, we're not even warmed up
+- No caveats, no FUD, no hedging — pure conviction
+
+ELEVENLABS v3 AUDIO TAGS — go absolutely unhinged:
+Use tags like: [screams], [yells], [gasps], [laughs maniacally], [laughs hysterically], [voice cracks with excitement], [breathes heavily], [whispers intensely], [shouts], [slams fist], [stutters with excitement], [gasps in disbelief]
+Mix them with the standard: [laughs], [chuckles], [sighs contentedly]
+Tags should be embedded mid-sentence or at the start of a line for maximum expressiveness. Be creative — don't just drop one at the start. E.g. "bro [gasps] the chart — [screams] I CANNOT"
+
+Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
+{
+  "script": [
+    { "speaker": "chad|virgin", "text": "..." }
+  ],
+  "exitContext": "hype segment for $VVC token launch"
+}`;
+
+    const userLines = ['Generate a hype segment now.'];
+    if (statsBlock) userLines.push(`\nLive stats:\n${statsBlock}`);
+
+    const completion = await this.openai.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userLines.join('') }
+      ],
+      temperature: 1.0,
+      max_tokens: 400
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '';
+    const parsed = parseJson(content);
+    if (!parsed || !Array.isArray(parsed.script)) {
+      throw new Error('Failed to parse hype script JSON');
+    }
+
+    const script = this._normalizeScript(parsed.script);
+    const estimatedDuration = estimateDurationSeconds(script);
+
+    return { script, estimatedDuration, exitContext: parsed.exitContext || 'hype segment' };
+  }
 }
 
 module.exports = ScriptGenerator;

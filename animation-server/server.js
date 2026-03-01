@@ -17,16 +17,6 @@ const {
   preloadLayers,
   setTVFrame,
   getTVViewport,
-  setEmissionOpacity,
-  getEmissionOpacity,
-  setEmissionLayerBlend,
-  getEmissionLayerBlend,
-  setLightsOnOpacity,
-  getLightsOnOpacity,
-  setLightsMode,
-  getLightsMode,
-  setLightingHue,
-  getLightingHue,
   setExpressionOffset,
   getExpressionOffsets,
   resetExpressionOffsets,
@@ -130,228 +120,6 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-const lightingState = {
-  rainbow: { enabled: false, rpm: 1, timer: null, lastTick: 0, busy: false },
-  flicker: { enabled: false, opacity: 1, timer: null }
-};
-const lightingQueue = {
-  hue: { inFlight: false, pending: null },
-  emissionOpacity: { inFlight: false, pending: null },
-  emissionBlend: { inFlight: false, pendingByName: Object.create(null) }
-};
-
-function startLightingQueue(type) {
-  if (type === 'hue') {
-    if (lightingQueue.hue.inFlight) return;
-    lightingQueue.hue.inFlight = true;
-    setImmediate(async () => {
-      try {
-        while (lightingQueue.hue.pending !== null) {
-          const next = lightingQueue.hue.pending;
-          lightingQueue.hue.pending = null;
-          await setLightingHue(next);
-        }
-      } catch (err) {
-        console.error('[Lighting] Hue update failed:', err.message);
-      } finally {
-        lightingQueue.hue.inFlight = false;
-      }
-    });
-    return;
-  }
-
-  if (type === 'emissionOpacity') {
-    if (lightingQueue.emissionOpacity.inFlight) return;
-    lightingQueue.emissionOpacity.inFlight = true;
-    setImmediate(async () => {
-      try {
-        while (lightingQueue.emissionOpacity.pending !== null) {
-          const next = lightingQueue.emissionOpacity.pending;
-          lightingQueue.emissionOpacity.pending = null;
-          await setEmissionOpacity(next);
-        }
-      } catch (err) {
-        console.error('[Lighting] Emission opacity update failed:', err.message);
-      } finally {
-        lightingQueue.emissionOpacity.inFlight = false;
-      }
-    });
-    return;
-  }
-
-  if (type === 'emissionBlend') {
-    if (lightingQueue.emissionBlend.inFlight) return;
-    lightingQueue.emissionBlend.inFlight = true;
-    setImmediate(async () => {
-      try {
-        while (Object.keys(lightingQueue.emissionBlend.pendingByName).length > 0) {
-          const pending = lightingQueue.emissionBlend.pendingByName;
-          lightingQueue.emissionBlend.pendingByName = Object.create(null);
-          for (const [name, blend] of Object.entries(pending)) {
-            await setEmissionLayerBlend(name, blend);
-          }
-        }
-      } catch (err) {
-        console.error('[Lighting] Emission blend update failed:', err.message);
-      } finally {
-        lightingQueue.emissionBlend.inFlight = false;
-      }
-    });
-  }
-}
-
-function wrapHue(value) {
-  const wrapped = ((value + 180) % 360 + 360) % 360 - 180;
-  return Math.max(-180, Math.min(180, wrapped));
-}
-
-async function tickRainbow() {
-  const rainbow = lightingState.rainbow;
-  if (!rainbow.enabled) return;
-  if (rainbow.busy) return;
-  rainbow.busy = true;
-  try {
-    const now = Date.now();
-    const last = rainbow.lastTick || now;
-    const elapsed = Math.max(0, now - last);
-    rainbow.lastTick = now;
-    const rpm = Math.max(0, Number(rainbow.rpm) || 0);
-    if (rpm > 0 && elapsed > 0) {
-      const delta = (rpm * 360) * (elapsed / 60000);
-      const nextHue = wrapHue(getLightingHue() + delta);
-      // Quantize to 2-degree steps: at 1 RPM (6 deg/sec) this means actual
-      // hue updates ~every 333ms instead of every 100ms — 3x fewer rebuilds
-      const quantized = Math.round(nextHue / 2) * 2;
-      if (quantized === getLightingHue()) return;
-      await setLightingHue(quantized);
-    }
-  } finally {
-    rainbow.busy = false;
-  }
-}
-
-function startRainbow() {
-  const rainbow = lightingState.rainbow;
-  if (rainbow.timer) return;
-  rainbow.lastTick = Date.now();
-  rainbow.timer = setInterval(() => {
-    tickRainbow().catch(() => {});
-  }, 100);
-}
-
-function stopRainbow() {
-  const rainbow = lightingState.rainbow;
-  if (rainbow.timer) {
-    clearInterval(rainbow.timer);
-    rainbow.timer = null;
-  }
-}
-
-function stopFlicker() {
-  const flicker = lightingState.flicker;
-  if (flicker.timer) {
-    clearInterval(flicker.timer);
-    flicker.timer = null;
-  }
-  flicker.startTime = null;
-}
-
-function updateFlickerForFrame() {
-  const flicker = lightingState.flicker;
-  if (!flicker.enabled) return;
-  const baseOpacity = Math.max(0, Math.min(1, Number(flicker.opacity) || 0));
-  if (!flicker.startTime) {
-    flicker.startTime = Date.now();
-  }
-  const periodMs = 2000;
-  const elapsed = Date.now() - flicker.startTime;
-  const phase = (elapsed % periodMs) / periodMs;
-  const value = (Math.sin(phase * Math.PI * 2) + 1) / 2;
-  setLightsMode('on');
-  setLightsOnOpacity(baseOpacity * value);
-}
-
-app.get('/lighting', (req, res) => {
-  res.sendFile(path.join(ROOT_DIR, 'frontend', 'lighting-control.html'));
-});
-
-app.get('/lighting/status', (req, res) => {
-  res.json({
-    hue: getLightingHue(),
-    emissionOpacity: getEmissionOpacity(),
-    emissionLayerBlends: getEmissionLayerBlend(),
-    rainbow: {
-      enabled: lightingState.rainbow.enabled,
-      rpm: lightingState.rainbow.rpm
-    },
-    flicker: {
-      enabled: lightingState.flicker.enabled,
-      opacity: lightingState.flicker.opacity
-    },
-    lights: {
-      mode: getLightsMode(),
-      opacity: getLightsOnOpacity()
-    }
-  });
-});
-
-app.post('/lighting/hue', async (req, res) => {
-  const hue = req.body?.hue;
-  lightingQueue.hue.pending = hue;
-  startLightingQueue('hue');
-  res.json({ queued: true, hue: getLightingHue() });
-});
-
-app.post('/lighting/emission-opacity', async (req, res) => {
-  const opacity = req.body?.opacity;
-  lightingQueue.emissionOpacity.pending = opacity;
-  startLightingQueue('emissionOpacity');
-  res.json({ queued: true, opacity: getEmissionOpacity() });
-});
-
-app.post('/lighting/emission-layer-blend', async (req, res) => {
-  const name = req.body?.name;
-  const blend = req.body?.blend;
-  if (typeof name === 'string' && typeof blend === 'string') {
-    lightingQueue.emissionBlend.pendingByName[name] = blend;
-  }
-  startLightingQueue('emissionBlend');
-  res.json({ queued: true, blends: getEmissionLayerBlend() });
-});
-
-app.post('/lighting/rainbow', (req, res) => {
-  const enabled = Boolean(req.body?.enabled);
-  const rpm = Math.max(0, Number(req.body?.rpm) || 0);
-  lightingState.rainbow.enabled = enabled;
-  lightingState.rainbow.rpm = rpm;
-  if (enabled && rpm > 0) {
-    startRainbow();
-  } else {
-    stopRainbow();
-  }
-  res.json({ enabled, rpm });
-});
-
-app.post('/lighting/flicker', (req, res) => {
-  const enabled = Boolean(req.body?.enabled);
-  const opacity = Math.max(0, Math.min(1, Number(req.body?.opacity) || 0));
-  lightingState.flicker.enabled = enabled;
-  lightingState.flicker.opacity = opacity;
-  stopFlicker();
-  setLightsOnOpacity(opacity);
-  if (enabled) {
-    setLightsMode('on');
-    lightingState.flicker.startTime = Date.now();
-  }
-  res.json({ enabled, opacity });
-});
-
-app.post('/lighting/lights', (req, res) => {
-  const mode = req.body?.mode;
-  const value = setLightsMode(mode);
-  res.json({ mode: value });
-});
-
 // ── Background Music Routes ──────────────────────────────────────────────────
 
 app.get('/music', (req, res) => {
@@ -386,13 +154,6 @@ app.post('/music/volume', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-
-app.post('/lighting/lights-opacity', (req, res) => {
-  const opacity = Math.max(0, Math.min(1, Number(req.body?.opacity) || 0));
-  setLightsMode('on');
-  const value = setLightsOnOpacity(opacity);
-  res.json({ opacity: value });
-});
 
 // ============== Expression Control API ==============
 
@@ -830,7 +591,6 @@ syncedPlayback.onComplete = handleAudioComplete;
 // audioProgress is provided by ContinuousStreamManager: { playing, frame, total }
 async function renderFrame(frame, audioProgress = null) {
   frameCount = frame;
-  updateFlickerForFrame();
 
   let speakingCharacter = null;
   let currentPhoneme = 'A';
@@ -1893,6 +1653,38 @@ app.post('/api/orchestrator/custom-script', async (req, res) => {
   }
 });
 
+// Generate and queue a hype segment for the $VVC pump.fun launch
+app.post('/api/orchestrator/hype', async (req, res) => {
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
+
+  const { mcap, volume, holders } = req.body || {};
+
+  try {
+    const generated = await scriptGenerator.generateHypeScript({ mcap, volume, holders });
+
+    const segment = await pipelineStore.createSegment({
+      type: 'hype',
+      seed: 'hype',
+      script: generated.script,
+      estimatedDuration: generated.estimatedDuration
+    });
+
+    await pipelineStore.updateSegment(segment.id, {
+      exitContext: generated.exitContext,
+      metadata: { ...(segment.metadata || {}), source: 'hype' }
+    });
+
+    const created = pipelineStore.getSegment(segment.id);
+    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', created);
+    broadcastPipelineUpdate();
+    res.json(created);
+  } catch (err) {
+    console.error('[Orchestrator] hype generation error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Attach or detach a media library item from a segment (fires before on-air)
 app.patch('/api/orchestrator/segments/:id/media', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
@@ -2172,15 +1964,6 @@ app.get('/api/orchestrator/state', (req, res) => {
   res.json({
     pipeline: { segments: pipelineStore.getAllSegments(), bufferHealth: pipelineStore.getBufferHealth() },
     tvLayer: tvLayerManager ? tvLayerManager.getState() : null,
-    lighting: {
-      hue: getLightingHue(),
-      emissionOpacity: getEmissionOpacity(),
-      lightsMode: getLightsMode(),
-      lightsOpacity: getLightsOnOpacity(),
-      emissionBlend: getEmissionLayerBlend(),
-      rainbow: lightingState.rainbow,
-      flicker: lightingState.flicker
-    },
     playback: playbackController ? playbackController.getStatus() : null,
     chatIntake: chatIntake ? { inbox: chatIntake.getInbox(), ...chatIntake.getConfig() } : null
   });
@@ -2437,94 +2220,73 @@ async function start() {
 
     console.log(`[Meme] Generating meme: virgin="${parsed.virgin}", chad="${parsed.chad}"`);
 
+    const MEME_API = 'https://virginvschad.vip';
+    const POLL_INTERVAL_MS = 5000;
+    const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
     try {
-      const http = require('http');
-      const requestBody = JSON.stringify({
+      const axios = require('axios');
+
+      // Submit job
+      const submitRes = await axios.post(`${MEME_API}/generate/raw`, {
         virgin: parsed.virgin,
         chad: parsed.chad
+      }, { timeout: 15000 });
+
+      const jobId = submitRes.data.job_id;
+      if (!jobId) throw new Error('No job_id in response');
+      console.log(`[Meme] Job submitted: ${jobId}`);
+
+      // Poll until done
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      let status = submitRes.data.status;
+
+      while (status === 'processing') {
+        if (Date.now() > deadline) throw new Error('Polling timed out after 5 minutes');
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+        const pollRes = await axios.get(`${MEME_API}/jobs/${jobId}`, { timeout: 10000 });
+        status = pollRes.data.status;
+        console.log(`[Meme] Job ${jobId} status: ${status}`);
+
+        if (status === 'failed') {
+          throw new Error(`Job failed: ${pollRes.data.error || 'unknown error'}`);
+        }
+      }
+
+      // Fetch image
+      console.log(`[Meme] Fetching image for job ${jobId}`);
+      const imageRes = await axios.get(`${MEME_API}/jobs/${jobId}/image`, {
+        responseType: 'arraybuffer',
+        timeout: 30000
       });
 
-      const options = {
-        hostname: '127.0.0.1',
-        port: 8000,
-        path: '/generate/raw',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(requestBody)
-        },
-        timeout: 180000 // 3 minutes timeout
-      };
+      const buffer = Buffer.from(imageRes.data);
+      console.log(`[Meme] Generated successfully (${buffer.length} bytes)`);
 
-      const chunks = [];
-      const req = http.request(options, (res) => {
-        const contentType = res.headers['content-type'] || '';
+      // Save to temp file, add to media library, display on TV
+      const timestamp = Date.now();
+      const tempPath = path.join(TEMP_DIR, `meme_${timestamp}.png`);
+      await fs.promises.writeFile(tempPath, buffer);
 
-        res.on('data', (chunk) => {
-          chunks.push(chunk);
-        });
+      const filename = `winner_${parsed.virgin}_vs_${parsed.chad}_${timestamp}.png`;
+      const item = await mediaLibrary.addFile(tempPath, filename, 'image/png');
+      console.log(`[Meme] Added to media library: ${item.id}`);
 
-        res.on('end', async () => {
-          const buffer = Buffer.concat(chunks);
+      const filePath = mediaLibrary.getOriginalPath(item.id);
 
-          if (res.statusCode === 200 && contentType.includes('image/png')) {
-            // Success - got PNG image
-            console.log(`[Meme] Generated successfully (${buffer.length} bytes)`);
-
-            try {
-              // Save to temporary file
-              const timestamp = Date.now();
-              const tempPath = path.join(TEMP_DIR, `meme_${timestamp}.png`);
-              await fs.promises.writeFile(tempPath, buffer);
-
-              // Add to media library
-              const filename = `winner_${parsed.virgin}_vs_${parsed.chad}_${timestamp}.png`;
-              const item = await mediaLibrary.addFile(tempPath, filename, 'image/png');
-              console.log(`[Meme] Added to media library: ${item.id}`);
-
-              // Get local file path
-              const filePath = mediaLibrary.getOriginalPath(item.id);
-
-              // Clear TV and add new image
-              tvService.clear();
-              await tvService.addItem({
-                type: 'image',
-                source: filePath,
-                duration: 300, // 5 minutes
-                mediaId: item.id
-              });
-              tvService.play();
-
-              console.log(`[Meme] Now displaying on TV: ${filename}`);
-
-              // Clean up temp file
-              try { await fs.promises.unlink(tempPath); } catch (e) {}
-            } catch (err) {
-              console.error('[Meme] Failed to process generated image:', err.message);
-            }
-          } else {
-            // Error response - parse JSON
-            try {
-              const errorData = JSON.parse(buffer.toString());
-              console.error('[Meme] API error:', errorData.detail || errorData);
-            } catch (e) {
-              console.error('[Meme] API error:', res.statusCode, buffer.toString().slice(0, 200));
-            }
-          }
-        });
+      tvService.clear();
+      await tvService.addItem({
+        type: 'image',
+        source: filePath,
+        duration: 300, // 5 minutes
+        mediaId: item.id
       });
+      tvService.play();
 
-      req.on('error', (err) => {
-        console.error('[Meme] Request failed:', err.message);
-      });
+      console.log(`[Meme] Now displaying on TV: ${filename}`);
 
-      req.on('timeout', () => {
-        console.error('[Meme] Request timeout after 3 minutes');
-        req.destroy();
-      });
-
-      req.write(requestBody);
-      req.end();
+      try { await fs.promises.unlink(tempPath); } catch (e) {}
     } catch (err) {
       console.error('[Meme] Generation error:', err.message);
     }
