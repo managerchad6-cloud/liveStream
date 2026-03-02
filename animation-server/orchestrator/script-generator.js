@@ -18,14 +18,22 @@ class ScriptGenerator {
     return contexts;
   }
 
-  _buildSystemPrompt({ recentExitContexts }) {
-    return `You are a show director for a livestream featuring Chad and Virgin (from the Virgin vs Chad meme).
-Generate a dialogue script based on the producer's note.
+  _buildSystemPrompt({ recentExitContexts, seed }) {
+    const mandatoryBlock = seed
+      ? `MANDATORY DIRECTIVE — THE DIALOGUE MUST BE EXPLICITLY ABOUT THIS:
+"${seed}"
 
-Context:
+The characters MUST address this directly and by name. If it mentions a specific person, project, action, or event — at least one character must reference it explicitly in their line. Do NOT merely imply it, vaguely gesture at related topics, or let the character personality dilute the message. Character voice is HOW they deliver the directive, not a reason to avoid it.
+
+`
+      : '';
+
+    return `You are scripting a dialogue exchange for a 24/7 livestream featuring Chad and Virgin (Virgin vs Chad meme).
+
+${mandatoryBlock}Context:
 - Recent show history: ${recentExitContexts.length ? recentExitContexts.join(' | ') : 'none'}
 
-CHARACTER PROFILES:
+CHARACTER PROFILES (voice and tone only — the directive above takes full priority):
 CHAD: ${voices.chad.basePrompt}
 VIRGIN: ${voices.virgin.basePrompt}
 
@@ -55,7 +63,7 @@ Rules:
   }
 
   _buildUserContent(seed) {
-    return `Director note: ${seed}`;
+    return `REQUIRED SUBJECT: ${seed}\n\nWrite the dialogue now. Address the subject explicitly.`;
   }
 
   _normalizeScript(lines) {
@@ -70,7 +78,7 @@ Rules:
     if (!seed) throw new Error('Missing seed');
 
     const recentExitContexts = this._recentExitContexts(5);
-    const systemPrompt = this._buildSystemPrompt({ recentExitContexts });
+    const systemPrompt = this._buildSystemPrompt({ recentExitContexts, seed });
     const userContent = this._buildUserContent(seed);
 
     const completion = await this.openai.chat.completions.create({
@@ -254,7 +262,7 @@ Rules:
 
       // Build as actual chat messages so the LLM naturally predicts the next lines
       const messages = [
-        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n- LANGUAGE: Adult platform, no filters. ~1 in 20 lines may use natural profanity (e.g. "let's fucking go", "what a bitch", "that's fucked up"). Never slurs or hate speech. Authentic, not forced.\n\nRespond with ONLY JSON: ${jsonFormat}\nThe "script" array must contain EXACTLY 1 object — one speaker, one line. Never add a second entry. Keep it SHORT: 1 sentence, 2 max. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${wrapUpClause}` }
+        { role: 'system', content: `Livestream conversation between Chad and Virgin. Continue naturally.\n\nCHAD: ${voices.chad.basePrompt}\nVIRGIN: ${voices.virgin.basePrompt}\n\nCRITICAL RULES:\n- Chad must NEVER give advice, encouragement, or life coaching. No "just be yourself", "fake it till you make it", "just wing it", "you gotta", "try X sometime". Instead Chad ROASTS Virgin, brags about himself, or dismisses what Virgin said entirely.\n- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance of any kind.\n- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead Virgin gets DEFENSIVE about his niche interests, fires back with an obscure fact, or changes the subject to something he knows about.\n- Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.\n- Each continuation must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n- VIRGIN PHRASE BAN: Virgin must NEVER say "statistically speaking" or any variation of it. Virgin must never repeat the same hedge or filler phrase twice in a row — vary it every time.\n- LANGUAGE: Adult platform, no filters. ~1 in 20 lines may use natural profanity (e.g. "let's fucking go", "what a bitch", "that's fucked up"). Never slurs or hate speech. Authentic, not forced.\n\nRespond with ONLY JSON: ${jsonFormat}\nThe "script" array must contain EXACTLY 1 object — one speaker, one line. Never add a second entry. Keep it SHORT: 1 sentence, 2 max. No emojis, no markdown. Audio tags allowed: [laughs], [chuckles], [sighs], [nervous laugh], etc.${wrapUpClause}` }
       ];
 
       // Feed conversation history as assistant messages so LLM sees it as its own output
@@ -353,6 +361,7 @@ Rules:
         `- Chad must NEVER say "no worries", "you'll get there", "everyone starts somewhere", "you do you", "if that's your thing", or offer comfort/reassurance.\n` +
         `- Virgin must NEVER just agree with Chad or accept his frame. No "I guess", "I guess you're right", "easier said than done", "if only". Instead he gets DEFENSIVE, fires back with a niche fact, or changes the subject.\n` +
         `- Each line must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.\n` +
+        `- VIRGIN PHRASE BAN: Virgin must NEVER say "statistically speaking" or any variation of it. Virgin must never repeat the same hedge or filler phrase twice in a row.\n` +
         `- LANGUAGE: Adult platform, no filters. ~1 in 20 lines may use natural profanity (e.g. "let's fucking go", "what a bitch", "that's fucked up"). Never slurs or hate speech. Authentic, not forced.\n` +
         `Return ONLY valid JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "..." }`;
       const userPrompt = `Chat message: "${chatMessage}"`;
@@ -465,11 +474,48 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
    * @param {string} [source] - 'community' = hype/supportive, 'single' = normal in-character behaviour
    * Does NOT create a segment — caller is responsible for that.
    */
-  async generateTweetResponseScript({ tweetText, tweetAuthor, source = 'single', instruction = null }) {
+  async _describeImage(imageBase64, imageMimeType = 'image/jpeg') {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe what is in this image in 1-2 sentences. Focus on the meme format, subject matter, any visible text, and what makes it funny or notable. Be concise.' },
+            { type: 'image_url', image_url: { url: `data:${imageMimeType};base64,${imageBase64}` } }
+          ]
+        }],
+        max_tokens: 150
+      });
+      return response.choices?.[0]?.message?.content?.trim() || null;
+    } catch (err) {
+      console.warn('[ScriptGenerator] Image vision pass failed:', err.message);
+      return null;
+    }
+  }
+
+  async generateTweetResponseScript({ tweetText, tweetAuthor, source = 'single', instruction = null, imageBase64 = null, imageMimeType = 'image/jpeg' }) {
     if (!this.openai) throw new Error('OpenAI not configured');
     if (!tweetText) throw new Error('Missing tweetText');
 
+    // Vision pass — describe attached image if present
+    let imageDescription = null;
+    if (imageBase64) {
+      console.log('[ScriptGenerator] Running vision pass on tweet image...');
+      imageDescription = await this._describeImage(imageBase64, imageMimeType);
+      if (imageDescription) console.log('[ScriptGenerator] Image description:', imageDescription);
+    }
+
     const isCommunity = source === 'community';
+
+    const mandatoryOverride = instruction
+      ? `MANDATORY DIRECTOR OVERRIDE — THIS GOVERNS HOW THE CHARACTERS BEHAVE:
+"${instruction}"
+
+Execute this as behaviour, not as a line to recite. The characters must DO what this says through their words, reactions, and tone — they must NOT quote or paraphrase this instruction itself. Character voice describes HOW they deliver it. This takes priority over everything else.
+
+`
+      : '';
 
     const toneBlock = isCommunity
       ? `TONE — COMMUNITY MEMBER TWEET:
@@ -484,10 +530,10 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
 - Virgin gets defensive, counters with niche facts, or spirals into self-doubt.
 - Normal dynamic applies.`;
 
-    const systemPrompt = `You are writing a dialogue script for a 24/7 pump.fun livestream for the $VVC token on Solana.
+    const systemPrompt = `${mandatoryOverride}You are writing a dialogue script for a 24/7 pump.fun livestream for the $VVC token on Solana.
 The hosts are Chad and Virgin (from the Virgin vs Chad meme). They are reacting to a tweet on X (Twitter).
 
-CHARACTER PROFILES:
+CHARACTER PROFILES (voice/tone only — mandatory override above takes full priority):
 CHAD: ${voices.chad.basePrompt}
 VIRGIN: ${voices.virgin.basePrompt}
 
@@ -509,10 +555,11 @@ Return ONLY valid JSON:
   "exitContext": "brief topic summary"
 }`;
 
-    const instructionLine = instruction
-      ? `\n\nDIRECTOR INSTRUCTION: ${instruction}`
+    const imageContext = imageDescription
+      ? `\nATTACHED IMAGE: ${imageDescription}`
       : '';
-    const userPrompt = `Tweet by @${tweetAuthor}:\n"${tweetText}"${instructionLine}`;
+
+    const userPrompt = `Tweet by @${tweetAuthor}:\n"${tweetText}"${imageContext}`;
 
     const completion = await this.openai.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -528,6 +575,76 @@ Return ONLY valid JSON:
     const parsed = parseJson(content);
     if (!parsed || !Array.isArray(parsed.script)) {
       throw new Error('Failed to parse tweet response script JSON');
+    }
+
+    const script = this._normalizeScript(parsed.script);
+    const estimatedDuration = estimateDurationSeconds(script);
+
+    return { script, estimatedDuration, exitContext: parsed.exitContext || null };
+  }
+
+  async generateMemeReactionScript({ virginSubject, chadSubject, virginLabels, chadLabels }) {
+    if (!this.openai) throw new Error('OpenAI not configured');
+
+    const virginLabelLines = virginLabels.map((l, i) => `${i + 1}. "${l}"`).join('\n');
+    const chadLabelLines = chadLabels.map((l, i) => `${i + 1}. "${l}"`).join('\n');
+
+    const systemPrompt = `MANDATORY DIRECTIVE — THE DIALOGUE MUST REACT TO THIS SPECIFIC MEME:
+
+A "Virgin vs Chad" meme has just appeared on the TV screen. The meme is about:
+
+VIRGIN SIDE: "${virginSubject}"
+${virginLabelLines}
+
+CHAD SIDE: "${chadSubject}"
+${chadLabelLines}
+
+The characters are watching this meme. They MUST reference specific label text — at least 2 individual labels must be directly quoted or clearly paraphrased in the dialogue. Do not speak in generalities. The labels are the punchline; name them.
+
+VIRGIN'S MANDATORY REACTION:
+- He is visibly salty and defensive about his specific labels. They clearly describe him.
+- He challenges at least one label directly by text: "that's not fair", "technically...", "that's not even true, I—", etc.
+- He does NOT accept any of his labels as accurate.
+- He may try to briefly spin one as a positive before running out of steam.
+
+CHAD'S MANDATORY REACTION:
+- He casually confirms the Chad labels as obviously correct — not surprised, just vindicated.
+- He picks out a specific Chad label and owns it without effort.
+- Optional: he throws one of Virgin's labels back at him for an easy dig.
+
+CHARACTER PROFILES (delivery only — the directive above takes full priority):
+CHAD: ${voices.chad.basePrompt}
+VIRGIN: ${voices.virgin.basePrompt}
+
+RULES:
+- 3–5 lines total, punchy and specific
+- At least 2 specific label texts must be referenced by content
+- No emojis, no markdown in dialogue text
+- ElevenLabs v3 audio tags: [laughs], [chuckles], [nervous laugh], [sighs], [clears throat], etc.
+- LANGUAGE: Adult platform. ~1 in 20 lines may use natural profanity. Never slurs or hate speech.
+
+Return ONLY valid JSON:
+{
+  "script": [{ "speaker": "chad|virgin", "text": "..." }],
+  "exitContext": "brief topic summary"
+}`;
+
+    const userPrompt = `React to the meme now. Name the specific labels.`;
+
+    const completion = await this.openai.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.9,
+      max_tokens: 400
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '';
+    const parsed = parseJson(content);
+    if (!parsed || !Array.isArray(parsed.script)) {
+      throw new Error('Failed to parse meme reaction script JSON');
     }
 
     const script = this._normalizeScript(parsed.script);

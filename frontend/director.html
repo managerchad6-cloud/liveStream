@@ -636,6 +636,51 @@
 
   </div>
 
+  <!-- Meme row: Create (2/3) + Library (1/3) -->
+  <div style="display:flex;gap:16px;margin-bottom:16px;align-items:flex-start;">
+
+    <!-- Create Meme Segment -->
+    <div class="panel" style="flex:2;margin-bottom:0;">
+      <h2>Create Meme Segment</h2>
+      <div style="display:flex;gap:16px;">
+
+        <!-- Virgin side -->
+        <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
+          <label style="font-size:0.8rem;color:var(--muted);font-weight:600;letter-spacing:0.04em;">VIRGIN IS…</label>
+          <input id="meme-virgin" class="twitter-field" placeholder="e.g. python developer" />
+          <label style="font-size:0.75rem;color:var(--muted);">Labels (optional, one per line — AI fills the rest)</label>
+          <textarea id="meme-virgin-labels" placeholder="Uses print() for debugging&#10;Googles the error message&#10;Reads the docs at 3 AM" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;color:var(--text);font-family:inherit;font-size:0.85rem;padding:8px;resize:vertical;min-height:80px;width:100%;box-sizing:border-box;"></textarea>
+        </div>
+
+        <!-- Chad side -->
+        <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
+          <label style="font-size:0.8rem;color:var(--muted);font-weight:600;letter-spacing:0.04em;">CHAD IS…</label>
+          <input id="meme-chad" class="twitter-field" placeholder="e.g. rust developer" />
+          <label style="font-size:0.75rem;color:var(--muted);">Labels (optional, one per line — AI fills the rest)</label>
+          <textarea id="meme-chad-labels" placeholder="Writes unsafe code on purpose&#10;Never reads a stack trace twice&#10;Ships and moves on" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;color:var(--text);font-family:inherit;font-size:0.85rem;padding:8px;resize:vertical;min-height:80px;width:100%;box-sizing:border-box;"></textarea>
+        </div>
+
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+        <button class="btn-primary" id="meme-create-btn" style="flex:1;">Generate Meme Segment</button>
+        <div id="meme-status" style="font-size:0.82rem;color:var(--muted);">—</div>
+      </div>
+    </div>
+
+    <!-- Meme Library -->
+    <div class="panel" style="flex:1;margin-bottom:0;min-width:0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h2 style="margin:0;">Meme Library</h2>
+        <button id="meme-lib-refresh-btn" style="padding:4px 10px;border:1px solid #30363d;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:0.8rem;">↺ Refresh</button>
+      </div>
+      <div id="meme-lib-list" style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
+        <div style="color:var(--muted);font-size:0.82rem;">Loading…</div>
+      </div>
+      <div id="meme-lib-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:0.78rem;color:var(--muted);"></div>
+    </div>
+
+  </div>
+
   <!-- Historical tweets modal -->
   <div id="historical-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;overflow-y:auto;padding:40px 20px;">
     <div style="background:var(--panel);border-radius:14px;max-width:700px;margin:0 auto;padding:20px;">
@@ -1414,6 +1459,120 @@
         statusEl.textContent = `Error: ${err.message}`;
       }
       btn.disabled = false; btn.textContent = 'Fetch Tweet';
+    });
+
+    // ── Meme Library ──────────────────────────────────────────────────────────
+
+    let memeLibPage = 1;
+
+    function formatMemeId(memeId) {
+      const m = memeId.match(/^virgin_(.+?)_vs_chad_(.+)$/);
+      if (m) return m[1].replace(/_/g, ' ') + ' vs ' + m[2].replace(/_/g, ' ');
+      return memeId.replace(/_/g, ' ');
+    }
+
+    async function loadMemeLibrary(page = 1) {
+      memeLibPage = page;
+      const listEl = document.getElementById('meme-lib-list');
+      const pageEl = document.getElementById('meme-lib-pagination');
+      listEl.innerHTML = '<div style="color:var(--muted);font-size:0.82rem;">Loading…</div>';
+      pageEl.innerHTML = '';
+      try {
+        const data = await apiGet(`/api/meme-library?page=${page}&limit=10`);
+        if (!data.items || data.items.length === 0) {
+          listEl.innerHTML = '<div style="color:var(--muted);font-size:0.82rem;">No memes found.</div>';
+          return;
+        }
+        listEl.innerHTML = '';
+        for (const item of data.items) {
+          const label = formatMemeId(item.meme_id || item.job_id);
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #21262d;';
+          row.innerHTML = `
+            <span style="font-size:0.78rem;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;" title="${escHtml(item.meme_id || item.job_id)}">${escHtml(label)}</span>
+            <button data-job="${escHtml(item.job_id)}" class="meme-lib-queue-btn" style="flex-shrink:0;padding:3px 8px;border:none;border-radius:6px;background:var(--primary);color:#fff;cursor:pointer;font-family:inherit;font-size:0.75rem;">Queue</button>
+          `;
+          listEl.appendChild(row);
+        }
+        // Pagination
+        pageEl.innerHTML = `
+          <button id="meme-lib-prev" ${!data.has_prev ? 'disabled' : ''} style="padding:3px 8px;border:1px solid #30363d;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;">← Prev</button>
+          <span>Page ${data.page} · ${data.total} total</span>
+          <button id="meme-lib-next" ${!data.has_next ? 'disabled' : ''} style="padding:3px 8px;border:1px solid #30363d;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;">Next →</button>
+        `;
+        document.getElementById('meme-lib-prev')?.addEventListener('click', () => loadMemeLibrary(page - 1));
+        document.getElementById('meme-lib-next')?.addEventListener('click', () => loadMemeLibrary(page + 1));
+
+        // Queue buttons
+        listEl.querySelectorAll('.meme-lib-queue-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const jobId = btn.dataset.job;
+            btn.disabled = true;
+            btn.textContent = '…';
+            try {
+              await apiPost('/api/orchestrator/meme/queue-existing', { job_id: jobId });
+              btn.textContent = '✓';
+              btn.style.background = '#238636';
+              refreshAll();
+              setTimeout(() => { btn.textContent = 'Queue'; btn.style.background = ''; btn.disabled = false; }, 4000);
+            } catch (err) {
+              btn.textContent = 'Err';
+              btn.style.background = 'var(--danger)';
+              setTimeout(() => { btn.textContent = 'Queue'; btn.style.background = ''; btn.disabled = false; }, 3000);
+            }
+          });
+        });
+      } catch (err) {
+        listEl.innerHTML = `<div style="color:var(--danger);font-size:0.82rem;">Error: ${escHtml(err.message)}</div>`;
+      }
+    }
+
+    document.getElementById('meme-lib-refresh-btn').addEventListener('click', () => loadMemeLibrary(memeLibPage));
+    loadMemeLibrary(1);
+
+    // ── Create Meme Segment ───────────────────────────────────────────────────
+
+    document.getElementById('meme-create-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('meme-create-btn');
+      const statusEl = document.getElementById('meme-status');
+      const virgin = document.getElementById('meme-virgin').value.trim();
+      const chad = document.getElementById('meme-chad').value.trim();
+      if (!virgin || !chad) { statusEl.textContent = 'Enter both Virgin and Chad subjects'; statusEl.style.color = 'var(--danger)'; return; }
+
+      const parseLabels = id => document.getElementById(id).value
+        .split('\n').map(l => l.trim()).filter(Boolean);
+      const virgin_labels = parseLabels('meme-virgin-labels');
+      const chad_labels = parseLabels('meme-chad-labels');
+
+      btn.disabled = true;
+      btn.textContent = 'Generating…';
+      statusEl.style.color = 'var(--muted)';
+      statusEl.textContent = 'Submitting to MemeFactory…';
+
+      const pollStatus = setInterval(() => {
+        const dots = (statusEl.dataset.dots | 0) + 1;
+        statusEl.dataset.dots = dots % 4;
+        statusEl.textContent = 'Generating meme' + '.'.repeat(dots % 4 + 1);
+      }, 3000);
+
+      try {
+        const result = await apiPost('/api/orchestrator/meme/create', { virgin, chad, virgin_labels, chad_labels });
+        clearInterval(pollStatus);
+        statusEl.style.color = '#3fb950';
+        statusEl.textContent = `Queued (${result.segmentId?.slice(0, 8)}) · ${result.virginLabels?.length || 0}v + ${result.chadLabels?.length || 0}c labels`;
+        document.getElementById('meme-virgin').value = '';
+        document.getElementById('meme-chad').value = '';
+        document.getElementById('meme-virgin-labels').value = '';
+        document.getElementById('meme-chad-labels').value = '';
+        refreshAll();
+        setTimeout(() => { statusEl.textContent = '—'; statusEl.style.color = 'var(--muted)'; }, 8000);
+      } catch (err) {
+        clearInterval(pollStatus);
+        statusEl.style.color = 'var(--danger)';
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+      btn.disabled = false;
+      btn.textContent = 'Generate Meme Segment';
     });
 
     // ── End Twitter Ingest ──────────────────────────────────────────────────

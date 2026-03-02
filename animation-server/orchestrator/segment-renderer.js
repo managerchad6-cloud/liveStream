@@ -10,6 +10,58 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Ordered list of TTS text substitutions.
+// Applied in sequence before sending to ElevenLabs — does NOT affect stored text.
+// Entries with regex: use as-is. Entries with string: treated as case-insensitive whole-word match.
+const TTS_SUBSTITUTIONS = [
+  // Crypto / project-specific
+  { match: /\$VVC/gi,       replace: 'VVC' },
+  { match: /pump\.fun/gi,   replace: 'pump fun' },
+  { match: /\$SOL\b/gi,     replace: 'sol' },
+  { match: /\$BTC\b/gi,     replace: 'bitcoin' },
+  { match: /\$ETH\b/gi,     replace: 'ethereum' },
+
+  // Internet / CT slang acronyms (whole-word, case-insensitive)
+  { match: /\bLFG\b/g,      replace: "let's fucking go" },
+  { match: /\bWAGMI\b/gi,   replace: 'we are all gonna make it' },
+  { match: /\bNGMI\b/gi,    replace: 'not gonna make it' },
+  { match: /\bGM\b/g,       replace: 'good morning' },
+  { match: /\bGN\b/g,       replace: 'good night' },
+  { match: /\bOMG\b/gi,     replace: 'oh my god' },
+  { match: /\bIMO\b/gi,     replace: 'in my opinion' },
+  { match: /\bIMHO\b/gi,    replace: 'in my humble opinion' },
+  { match: /\bTBH\b/gi,     replace: 'to be honest' },
+  { match: /\bNGL\b/gi,     replace: 'not gonna lie' },
+  { match: /\bIRL\b/gi,     replace: 'in real life' },
+  { match: /\bAFK\b/gi,     replace: 'away from keyboard' },
+  { match: /\bBRB\b/gi,     replace: 'be right back' },
+  { match: /\bWTF\b/gi,     replace: 'what the fuck' },
+  { match: /\bWTH\b/gi,     replace: 'what the hell' },
+  { match: /\bFUD\b/gi,     replace: 'fud' },
+  { match: /\bROFL\b/gi,    replace: 'rolling on the floor laughing' },
+  { match: /\bLMAO\b/gi,    replace: 'laughing my ass off' },
+  { match: /\bLOL\b/gi,     replace: 'lol' },
+  { match: /\bAMA\b/gi,     replace: 'ask me anything' },
+  { match: /\bATH\b/gi,     replace: 'all time high' },
+  { match: /\bDYOR\b/gi,    replace: 'do your own research' },
+  { match: /\bGMI\b/gi,     replace: 'gonna make it' },
+  { match: /\bCT\b/g,       replace: 'crypto twitter' },
+  { match: /\bPFP\b/gi,     replace: 'profile pic' },
+  { match: /\bGG\b/g,       replace: 'good game' },
+  { match: /\bW\b/g,        replace: 'win' },
+  { match: /\bL\b/g,        replace: 'loss' },
+  { match: /\bser\b/gi,     replace: 'sir' },
+  { match: /\banon\b/gi,    replace: 'anon' },
+];
+
+function prepareForTTS(text) {
+  let out = text;
+  for (const { match, replace } of TTS_SUBSTITUTIONS) {
+    out = out.replace(match, replace);
+  }
+  return out;
+}
+
 function estimateLineDurationMs(text) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
   const minutes = words / 150;
@@ -155,9 +207,7 @@ class SegmentRenderer {
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          const ttsText = line.text
-            .replace(/\$VVC/gi, 'VVC')
-            .replace(/pump\.fun/gi, 'pump fun');
+          const ttsText = prepareForTTS(line.text);
 
           const ttsResponse = await axios.post(
             `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,

@@ -2112,6 +2112,146 @@ app.post('/api/orchestrator/twitter/historical/:id/queue', async (req, res) => {
 
 // ============== End Twitter Ingest API ==============
 
+// ── Meme Segment API ──────────────────────────────────────────────────────────
+
+app.post('/api/orchestrator/meme/create', async (req, res) => {
+  if (!scriptGenerator || !pipelineStore || !mediaLibrary) {
+    return res.status(503).json({ error: 'Pipeline not initialized' });
+  }
+
+  const { virgin, chad, virgin_labels, chad_labels } = req.body || {};
+  if (!virgin || !chad) return res.status(400).json({ error: 'virgin and chad are required' });
+
+  const virginSeedLabels = Array.isArray(virgin_labels) ? virgin_labels.filter(Boolean) : [];
+  const chadSeedLabels = Array.isArray(chad_labels) ? chad_labels.filter(Boolean) : [];
+
+  try {
+    const result = await runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels });
+    broadcastPipelineUpdate();
+    res.json({ segmentId: result.segmentId, virginLabels: result.virginLabels, chadLabels: result.chadLabels });
+  } catch (err) {
+    console.error('[Meme] Create segment error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Queue a segment from an already-generated meme in the library (skip submit/poll)
+async function runMemeFromExistingJob(jobId) {
+  if (!mediaLibrary) throw new Error('Media library not available');
+  if (!scriptGenerator) throw new Error('Script generator not available');
+  if (!pipelineStore) throw new Error('Pipeline store not available');
+
+  const MEME_API = 'https://virginvschad.vip';
+  const axios = require('axios');
+
+  console.log(`[Meme] Loading existing job: ${jobId}`);
+
+  // Fetch metadata and image in parallel
+  const [metaRes, imageRes] = await Promise.all([
+    axios.get(`${MEME_API}/jobs/${jobId}/metadata`, { timeout: 10000 }),
+    axios.get(`${MEME_API}/jobs/${jobId}/image`, { responseType: 'arraybuffer', timeout: 30000 })
+  ]);
+
+  const virginLabels = metaRes.data.virgin_labels || [];
+  const chadLabels = metaRes.data.chad_labels || [];
+  const memeId = metaRes.data.id || jobId;
+
+  // Parse virgin/chad subjects from meme_id (format: virgin_X_vs_chad_Y)
+  const subjectMatch = memeId.match(/^virgin_(.+?)_vs_chad_(.+)$/);
+  const virgin = subjectMatch ? subjectMatch[1].replace(/_/g, ' ') : memeId;
+  const chad = subjectMatch ? subjectMatch[2].replace(/_/g, ' ') : memeId;
+
+  console.log(`[Meme] Existing job: virgin="${virgin}", chad="${chad}", labels: ${virginLabels.length}v ${chadLabels.length}c`);
+
+  // Save image to media library
+  const timestamp = Date.now();
+  const tempPath = path.join(TEMP_DIR, `meme_${timestamp}.png`);
+  await fs.promises.writeFile(tempPath, Buffer.from(imageRes.data));
+  const filename = `meme_${virgin.replace(/\s+/g, '_')}_vs_${chad.replace(/\s+/g, '_')}_${timestamp}.png`;
+  const item = await mediaLibrary.addFile(tempPath, filename, 'image/png');
+  try { await fs.promises.unlink(tempPath); } catch {}
+  console.log(`[Meme] Media saved: ${item.id}`);
+
+  // Generate reaction script
+  const generated = await scriptGenerator.generateMemeReactionScript({
+    virginSubject: virgin,
+    chadSubject: chad,
+    virginLabels,
+    chadLabels
+  });
+
+  // Narrator announcement
+  generated.script.unshift({
+    speaker: 'narrator',
+    text: `New VVC meme generated: virgin ${virgin} vs chad ${chad}`
+  });
+
+  // Create pipeline segment
+  const segment = await pipelineStore.createSegment({
+    type: 'meme-reaction',
+    seed: `Meme: virgin ${virgin} vs chad ${chad}`,
+    script: generated.script,
+    estimatedDuration: generated.estimatedDuration
+  });
+
+  await pipelineStore.updateSegment(segment.id, {
+    exitContext: generated.exitContext,
+    metadata: {
+      ...(segment.metadata || {}),
+      source: 'meme',
+      virginSubject: virgin,
+      chadSubject: chad,
+      virginLabels,
+      chadLabels,
+      attachedMediaId: item.id
+    }
+  });
+
+  const queueFn = orchestrator?.queueSegmentWithBridge
+    ? id => orchestrator.queueSegmentWithBridge(id)
+    : id => segmentRenderer.queueRender(id);
+  queueFn(segment.id);
+
+  console.log(`[Meme] Existing job segment ${segment.id} queued`);
+  return { segmentId: segment.id, mediaId: item.id };
+}
+
+// Proxy meme library listing (localhost:8000 — same machine as animation server)
+const MEME_LIBRARY_URL = 'https://virginvschad.vip';
+
+app.get('/api/meme-library', async (req, res) => {
+  const axios = require('axios');
+  const { page = 1, limit = 20 } = req.query;
+  try {
+    const r = await axios.get(`${MEME_LIBRARY_URL}/memes`, {
+      params: { page: Number(page), limit: Number(limit), status: 'done' },
+      timeout: 10000
+    });
+    res.json(r.data);
+  } catch (err) {
+    console.error('[MemeLib] Fetch error:', err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// Queue a segment from an existing meme job
+app.post('/api/orchestrator/meme/queue-existing', async (req, res) => {
+  if (!scriptGenerator || !pipelineStore || !mediaLibrary) {
+    return res.status(503).json({ error: 'Pipeline not initialized' });
+  }
+  const { job_id } = req.body || {};
+  if (!job_id) return res.status(400).json({ error: 'job_id required' });
+
+  try {
+    const result = await runMemeFromExistingJob(job_id);
+    broadcastPipelineUpdate();
+    res.json({ segmentId: result.segmentId });
+  } catch (err) {
+    console.error('[Meme] Queue existing error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============== End Orchestrator Script API ==============
 
 // Health check
@@ -2126,6 +2266,103 @@ app.get('/health', (req, res) => {
     tvService: tvService ? tvService.state : 'not initialized'
   });
 });
+
+// ── Meme generation ───────────────────────────────────────────────────────────
+// Submit a job to the MemeFactory API, poll until done, fetch labels + image,
+// generate a character reaction script, create a pipeline segment, and queue it.
+async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [] }) {
+  if (!mediaLibrary) throw new Error('Media library not available');
+  if (!scriptGenerator) throw new Error('Script generator not available');
+  if (!pipelineStore) throw new Error('Pipeline store not available');
+
+  const MEME_API = 'https://virginvschad.vip';
+  const POLL_INTERVAL_MS = 5000;
+  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const axios = require('axios');
+
+  console.log(`[Meme] Submitting job: virgin="${virgin}", chad="${chad}"`);
+  const body = { virgin, chad };
+  if (virginSeedLabels.length) body.virgin_labels = virginSeedLabels;
+  if (chadSeedLabels.length) body.chad_labels = chadSeedLabels;
+
+  const submitRes = await axios.post(`${MEME_API}/generate/raw`, body, { timeout: 15000 });
+  const jobId = submitRes.data.job_id;
+  if (!jobId) throw new Error('No job_id in response');
+  console.log(`[Meme] Job submitted: ${jobId}`);
+
+  // Poll until done
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let status = submitRes.data.status;
+  while (status === 'processing') {
+    if (Date.now() > deadline) throw new Error('Meme generation timed out after 5 minutes');
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    const pollRes = await axios.get(`${MEME_API}/jobs/${jobId}`, { timeout: 10000 });
+    status = pollRes.data.status;
+    console.log(`[Meme] Job ${jobId}: ${status}`);
+    if (status === 'failed') throw new Error(`Meme job failed: ${pollRes.data.error || 'unknown'}`);
+  }
+
+  // Fetch metadata (labels) and image in parallel
+  const [metaRes, imageRes] = await Promise.all([
+    axios.get(`${MEME_API}/jobs/${jobId}/metadata`, { timeout: 10000 }),
+    axios.get(`${MEME_API}/jobs/${jobId}/image`, { responseType: 'arraybuffer', timeout: 30000 })
+  ]);
+  const virginLabels = metaRes.data.virgin_labels || [];
+  const chadLabels = metaRes.data.chad_labels || [];
+  console.log(`[Meme] Labels: ${virginLabels.length} virgin, ${chadLabels.length} chad`);
+
+  // Save image to media library
+  const timestamp = Date.now();
+  const tempPath = path.join(TEMP_DIR, `meme_${timestamp}.png`);
+  await fs.promises.writeFile(tempPath, Buffer.from(imageRes.data));
+  const filename = `meme_${virgin.replace(/\s+/g, '_')}_vs_${chad.replace(/\s+/g, '_')}_${timestamp}.png`;
+  const item = await mediaLibrary.addFile(tempPath, filename, 'image/png');
+  try { await fs.promises.unlink(tempPath); } catch {}
+  console.log(`[Meme] Media saved: ${item.id}`);
+
+  // Generate reaction script
+  const generated = await scriptGenerator.generateMemeReactionScript({
+    virginSubject: virgin,
+    chadSubject: chad,
+    virginLabels,
+    chadLabels
+  });
+
+  // Narrator announces the meme before characters react
+  generated.script.unshift({
+    speaker: 'narrator',
+    text: `New VVC meme generated: virgin ${virgin} vs chad ${chad}`
+  });
+
+  // Create pipeline segment
+  const segment = await pipelineStore.createSegment({
+    type: 'meme-reaction',
+    seed: `Meme: virgin ${virgin} vs chad ${chad}`,
+    script: generated.script,
+    estimatedDuration: generated.estimatedDuration
+  });
+
+  await pipelineStore.updateSegment(segment.id, {
+    exitContext: generated.exitContext,
+    metadata: {
+      ...(segment.metadata || {}),
+      source: 'meme',
+      virginSubject: virgin,
+      chadSubject: chad,
+      virginLabels,
+      chadLabels,
+      attachedMediaId: item.id
+    }
+  });
+
+  const queueFn = orchestrator?.queueSegmentWithBridge
+    ? id => orchestrator.queueSegmentWithBridge(id)
+    : id => segmentRenderer.queueRender(id);
+  queueFn(segment.id);
+
+  console.log(`[Meme] Segment ${segment.id} queued`);
+  return { segmentId: segment.id, mediaId: item.id, virginLabels, chadLabels };
+}
 
 // Start server
 async function start() {
@@ -2320,10 +2557,10 @@ async function start() {
   }
 
   /**
-   * Generate meme via MemeFactory API and display on TV
+   * Generate meme via MemeFactory API and queue a pipeline segment with character reactions.
    */
   async function generateAndDisplayMeme(winnerCommand) {
-    if (!winnerCommand || !mediaLibrary || !tvService) {
+    if (!winnerCommand || !mediaLibrary || !scriptGenerator || !pipelineStore) {
       console.log('[Meme] Cannot generate: missing prerequisites');
       return;
     }
@@ -2334,75 +2571,8 @@ async function start() {
       return;
     }
 
-    console.log(`[Meme] Generating meme: virgin="${parsed.virgin}", chad="${parsed.chad}"`);
-
-    const MEME_API = 'https://virginvschad.vip';
-    const POLL_INTERVAL_MS = 5000;
-    const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
     try {
-      const axios = require('axios');
-
-      // Submit job
-      const submitRes = await axios.post(`${MEME_API}/generate/raw`, {
-        virgin: parsed.virgin,
-        chad: parsed.chad
-      }, { timeout: 15000 });
-
-      const jobId = submitRes.data.job_id;
-      if (!jobId) throw new Error('No job_id in response');
-      console.log(`[Meme] Job submitted: ${jobId}`);
-
-      // Poll until done
-      const deadline = Date.now() + POLL_TIMEOUT_MS;
-      let status = submitRes.data.status;
-
-      while (status === 'processing') {
-        if (Date.now() > deadline) throw new Error('Polling timed out after 5 minutes');
-        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-
-        const pollRes = await axios.get(`${MEME_API}/jobs/${jobId}`, { timeout: 10000 });
-        status = pollRes.data.status;
-        console.log(`[Meme] Job ${jobId} status: ${status}`);
-
-        if (status === 'failed') {
-          throw new Error(`Job failed: ${pollRes.data.error || 'unknown error'}`);
-        }
-      }
-
-      // Fetch image
-      console.log(`[Meme] Fetching image for job ${jobId}`);
-      const imageRes = await axios.get(`${MEME_API}/jobs/${jobId}/image`, {
-        responseType: 'arraybuffer',
-        timeout: 30000
-      });
-
-      const buffer = Buffer.from(imageRes.data);
-      console.log(`[Meme] Generated successfully (${buffer.length} bytes)`);
-
-      // Save to temp file, add to media library, display on TV
-      const timestamp = Date.now();
-      const tempPath = path.join(TEMP_DIR, `meme_${timestamp}.png`);
-      await fs.promises.writeFile(tempPath, buffer);
-
-      const filename = `winner_${parsed.virgin}_vs_${parsed.chad}_${timestamp}.png`;
-      const item = await mediaLibrary.addFile(tempPath, filename, 'image/png');
-      console.log(`[Meme] Added to media library: ${item.id}`);
-
-      const filePath = mediaLibrary.getOriginalPath(item.id);
-
-      tvService.clear();
-      await tvService.addItem({
-        type: 'image',
-        source: filePath,
-        duration: 300, // 5 minutes
-        mediaId: item.id
-      });
-      tvService.play();
-
-      console.log(`[Meme] Now displaying on TV: ${filename}`);
-
-      try { await fs.promises.unlink(tempPath); } catch (e) {}
+      await runMemeAndCreateSegment({ virgin: parsed.virgin, chad: parsed.chad });
     } catch (err) {
       console.error('[Meme] Generation error:', err.message);
     }

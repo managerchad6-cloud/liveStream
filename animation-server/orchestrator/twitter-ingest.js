@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'twitter-config.json');
 const STORE_PATH = path.join(__dirname, '..', 'twitter-tweets.json');
@@ -197,14 +198,21 @@ class TwitterIngestService {
     });
   }
 
-  async _screenshotPage(page, outputPath) {
+  async _screenshotPage(page, outputPath, tweetId = null) {
     await this._removeBanners(page);
-    const box = await page.evaluate(() => {
-      const el = document.querySelector('article[data-testid="tweet"]');
+    const box = await page.evaluate((id) => {
+      const findArticle = () => {
+        if (id) {
+          const byLink = document.querySelector(`a[href*="/status/${id}"] time`)?.closest('article[data-testid="tweet"]');
+          if (byLink) return byLink;
+        }
+        return document.querySelector('article[data-testid="tweet"]');
+      };
+      const el = findArticle();
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return { x: r.x, y: r.y, width: r.width, height: r.height };
-    });
+    }, tweetId);
     const clip = box && box.width > 10 && box.height > 10
       ? { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
       : { x: 0, y: 0, width: 1280, height: 720 };
@@ -224,17 +232,28 @@ class TwitterIngestService {
       await page.waitForSelector('article[data-testid="tweet"]', { timeout: 8000 });
     } catch {}
 
-    const text = await page.$eval(
-      'article[data-testid="tweet"] [data-testid="tweetText"]',
-      el => el.innerText
-    ).catch(() => '');
-    const author = await page.$eval(
-      'article[data-testid="tweet"] [data-testid="User-Name"] span',
-      el => el.innerText
-    ).catch(() => 'unknown');
+    // Target the specific tweet by status ID — avoids grabbing the parent/reply-context tweet
+    // which is always the first article on a tweet detail page
+    const tweetId = url.match(/\/status\/(\d+)/)?.[1];
+
+    const { text, author } = await page.evaluate((id) => {
+      const findArticle = () => {
+        if (id) {
+          const byLink = document.querySelector(`a[href*="/status/${id}"] time`)?.closest('article[data-testid="tweet"]');
+          if (byLink) return byLink;
+        }
+        return document.querySelector('article[data-testid="tweet"]');
+      };
+      const article = findArticle();
+      if (!article) return { text: '', author: 'unknown' };
+      return {
+        text: article.querySelector('[data-testid="tweetText"]')?.innerText?.trim() || '',
+        author: article.querySelector('[data-testid="User-Name"] span')?.innerText?.trim() || 'unknown'
+      };
+    }, tweetId);
 
     const tmpRaw = path.join(this.tempDir, `tweet_raw_${Date.now()}.png`);
-    await this._screenshotPage(page, tmpRaw);
+    await this._screenshotPage(page, tmpRaw, tweetId);
 
     let mediaId = null;
     try {
@@ -244,7 +263,38 @@ class TwitterIngestService {
     }
     try { fs.unlinkSync(tmpRaw); } catch {}
 
-    return { mediaId, text, author };
+    // Extract embedded tweet image URLs (actual photo content, not avatars/icons)
+    const imageUrls = await page.evaluate((id) => {
+      const findArticle = () => {
+        if (id) {
+          const byLink = document.querySelector(`a[href*="/status/${id}"] time`)?.closest('article[data-testid="tweet"]');
+          if (byLink) return byLink;
+        }
+        return document.querySelector('article[data-testid="tweet"]');
+      };
+      const article = findArticle();
+      if (!article) return [];
+      const imgs = article.querySelectorAll(
+        '[data-testid="tweetPhoto"] img, [data-testid="card.layoutLarge.media"] img'
+      );
+      return Array.from(imgs).map(img => img.src).filter(Boolean);
+    }, tweetId);
+
+    // Download first image as base64 for LLM vision pass
+    let imageBase64 = null;
+    let imageMimeType = 'image/jpeg';
+    if (imageUrls.length > 0) {
+      try {
+        const response = await axios.get(imageUrls[0], { responseType: 'arraybuffer', timeout: 10000 });
+        imageBase64 = Buffer.from(response.data).toString('base64');
+        imageMimeType = response.headers['content-type'] || 'image/jpeg';
+        console.log(`[TwitterIngest] Downloaded tweet image for vision pass (${imageUrls[0].slice(0, 60)}...)`);
+      } catch (err) {
+        console.warn('[TwitterIngest] Failed to download tweet image:', err.message);
+      }
+    }
+
+    return { mediaId, text, author, imageBase64, imageMimeType };
   }
 
   // Create pipeline segment and queue it (shared by poll + queueHistorical + fetchSingle)
@@ -255,7 +305,9 @@ class TwitterIngestService {
       tweetText: entry.text,
       tweetAuthor: entry.author,
       source,
-      instruction
+      instruction,
+      imageBase64: entry.imageBase64 || null,
+      imageMimeType: entry.imageMimeType || 'image/jpeg'
     });
 
     const segment = await pipelineStore.createSegment({
@@ -381,7 +433,7 @@ class TwitterIngestService {
           try { await page.waitForSelector('article[data-testid="tweet"]', { timeout: 8000 }); } catch {}
 
           const tmpRaw = path.join(this.tempDir, `tweet_raw_${Date.now()}.png`);
-          await this._screenshotPage(page, tmpRaw);
+          await this._screenshotPage(page, tmpRaw, toQueue.id);
           let mediaId = null;
           try {
             mediaId = await this._processScreenshot(tmpRaw, deps.mediaLibrary);
@@ -389,6 +441,37 @@ class TwitterIngestService {
             console.warn('[TwitterIngest] Screenshot failed:', err.message);
           }
           try { fs.unlinkSync(tmpRaw); } catch {}
+
+          // Extract embedded tweet images for vision pass
+          const pollTweetId = toQueue.url.match(/\/status\/(\d+)/)?.[1];
+          const pollImageUrls = await page.evaluate((id) => {
+            const findArticle = () => {
+              if (id) {
+                const byLink = document.querySelector(`a[href*="/status/${id}"] time`)?.closest('article[data-testid="tweet"]');
+                if (byLink) return byLink;
+              }
+              return document.querySelector('article[data-testid="tweet"]');
+            };
+            const article = findArticle();
+            if (!article) return [];
+            const imgs = article.querySelectorAll(
+              '[data-testid="tweetPhoto"] img, [data-testid="card.layoutLarge.media"] img'
+            );
+            return Array.from(imgs).map(img => img.src).filter(Boolean);
+          }, pollTweetId);
+          let pollImageBase64 = null;
+          let pollImageMimeType = 'image/jpeg';
+          if (pollImageUrls.length > 0) {
+            try {
+              const resp = await axios.get(pollImageUrls[0], { responseType: 'arraybuffer', timeout: 10000 });
+              pollImageBase64 = Buffer.from(resp.data).toString('base64');
+              pollImageMimeType = resp.headers['content-type'] || 'image/jpeg';
+            } catch (err) {
+              console.warn('[TwitterIngest] Poll image download failed:', err.message);
+            }
+          }
+          toQueue.imageBase64 = pollImageBase64;
+          toQueue.imageMimeType = pollImageMimeType;
 
           const segmentId = await this._createAndQueueSegment(toQueue, mediaId, deps.scriptGenerator, deps, 'community');
           this._markQueued(toQueue.id);
@@ -455,7 +538,9 @@ class TwitterIngestService {
     const browser = await this._launchBrowser();
     try {
       const page = await this._openPage(browser);
-      const { mediaId } = await this._scrapeTweetPage(page, entry.url, deps.mediaLibrary);
+      const { mediaId, imageBase64, imageMimeType } = await this._scrapeTweetPage(page, entry.url, deps.mediaLibrary);
+      entry.imageBase64 = imageBase64;
+      entry.imageMimeType = imageMimeType;
       const segmentId = await this._createAndQueueSegment(entry, mediaId, deps.scriptGenerator, deps, 'community');
       this._markQueued(tweetId);
       this._saveStore();
@@ -473,11 +558,11 @@ class TwitterIngestService {
     const browser = await this._launchBrowser();
     try {
       const page = await this._openPage(browser);
-      const { mediaId, text, author } = await this._scrapeTweetPage(page, tweetUrl, mediaLibrary);
+      const { mediaId, text, author, imageBase64, imageMimeType } = await this._scrapeTweetPage(page, tweetUrl, mediaLibrary);
 
       const match = tweetUrl.match(/\/status\/(\d+)/);
       const tweetId = match ? match[1] : Date.now().toString();
-      const entry = { id: tweetId, url: tweetUrl, author, text };
+      const entry = { id: tweetId, url: tweetUrl, author, text, imageBase64, imageMimeType };
 
       const segmentId = await this._createAndQueueSegment(
         entry, mediaId, scriptGenerator,
