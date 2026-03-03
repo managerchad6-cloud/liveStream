@@ -660,10 +660,10 @@
   </header>
 
   <!-- Token Stats + Live Controls row -->
-  <div style="display:flex;gap:12px;margin-bottom:16px;align-items:stretch;">
+  <div style="display:flex;gap:12px;margin-bottom:16px;align-items:flex-start;">
 
     <!-- TOKEN STATS panel -->
-    <div class="panel" style="flex:1;min-width:0;background:linear-gradient(135deg,#00080f,#0a0d18);border:1px solid #1a4a7a;padding:12px 16px;">
+    <div class="panel" style="flex:1;min-width:0;align-self:stretch;background:linear-gradient(135deg,#00080f,#0a0d18);border:1px solid #1a4a7a;padding:12px 16px;">
       <!-- Header: name + price + 24h change + last updated -->
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
         <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
@@ -695,15 +695,15 @@
     </div>
 
     <!-- LIVE CONTROLS panel -->
-    <div class="panel" style="min-width:176px;background:linear-gradient(135deg,#1a0a00,#1b1f2a);border:1px solid #ff6600;display:flex;flex-direction:column;gap:10px;padding:14px 16px;flex-shrink:0;">
-      <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;color:#553300;text-transform:uppercase;">Live Controls</div>
+    <div class="panel" style="min-width:176px;background:linear-gradient(135deg,#1a0a00,#1b1f2a);border:1px solid #ff6600;display:flex;flex-direction:column;gap:6px;padding:10px 12px;flex-shrink:0;">
+      <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;color:#553300;text-transform:uppercase;margin-bottom:2px;">Live Controls</div>
       <button class="btn-primary" id="hype-btn" style="background:#ff4500;font-size:1.05rem;font-weight:700;letter-spacing:1px;padding:9px 14px;">HYPE</button>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.82rem;color:#ffaa00;font-weight:700;letter-spacing:0.04em;white-space:nowrap;user-select:none;">
         <input type="checkbox" id="hype-ath" style="accent-color:#ffaa00;width:15px;height:15px;">
         ALL TIME HIGH
       </label>
-      <span id="hype-status" style="font-size:0.78rem;color:#ff6600;min-height:1em;"></span>
-      <hr style="border:none;border-top:1px solid #2a1800;margin:0;">
+      <span id="hype-status" style="font-size:0.78rem;color:#ff6600;line-height:1;min-height:0;"></span>
+      <hr style="border:none;border-top:1px solid #2a1800;margin:2px 0;">
       <label id="crazy-label" style="display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;padding:5px 10px;border-radius:7px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
         <input type="checkbox" id="crazy-toggle" style="width:15px;height:15px;accent-color:#b44fff;cursor:pointer;">
         <span id="crazy-label-text" style="font-size:0.82rem;font-weight:700;letter-spacing:0.06em;color:#888;">CRAZY MODE</span>
@@ -1631,7 +1631,7 @@
     function renderTokenStats(data) {
       const noData = !data || data.noData || !data.marketCap;
       document.getElementById('ts-no-data').style.display = noData ? '' : 'none';
-      document.getElementById('ts-grid').style.display = noData ? 'none' : '';
+      document.getElementById('ts-grid').style.display = noData ? 'none' : 'grid';
 
       const upd = data?.lastUpdated ? 'updated ' + new Date(data.lastUpdated).toLocaleTimeString() : '';
       document.getElementById('ts-updated').textContent = upd;
