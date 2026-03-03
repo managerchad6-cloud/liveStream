@@ -491,16 +491,9 @@
     .twitter-status { font-size: 0.8rem; color: #1d9bf0; }
 
 
-    .hype-field {
-      background: #0f1014;
-      border: 1px solid #ff4500;
-      border-radius: 6px;
-      color: var(--text);
-      padding: 8px 10px;
-      font-family: inherit;
-      font-size: 0.85rem;
-    }
-    .hype-field::placeholder { color: #663300; }
+    .ts-cell { display: flex; flex-direction: column; gap: 2px; }
+    .ts-label { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em; color: #444; text-transform: uppercase; }
+    .ts-val { font-size: 0.9rem; font-weight: 600; color: #ccc; font-variant-numeric: tabular-nums; }
 
     #status-bar {
       position: fixed;
@@ -666,28 +659,63 @@
     </div>
   </header>
 
-  <!-- Hype panel -->
-  <div class="panel hype-panel" style="margin-bottom:16px;background:linear-gradient(135deg,#1a0a00,#1b1f2a);border:1px solid #ff6600;">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;row-gap:8px;">
-      <button class="btn-primary" id="hype-btn" style="background:#ff4500;font-size:1.1rem;font-weight:700;letter-spacing:1px;padding:10px 24px;flex-shrink:0;">HYPE</button>
-      <input id="hype-mcap" placeholder="MCap (e.g. 420K)" style="width:130px;" class="hype-field" />
-      <input id="hype-volume" placeholder="Volume (e.g. 69K)" style="width:130px;" class="hype-field" />
-      <input id="hype-holders" placeholder="Holders (e.g. 420)" style="width:130px;" class="hype-field" />
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ffaa00;font-weight:700;letter-spacing:0.04em;white-space:nowrap;user-select:none;">
-        <input type="checkbox" id="hype-ath" style="accent-color:#ffaa00;width:16px;height:16px;">
+  <!-- Token Stats + Live Controls row -->
+  <div style="display:flex;gap:12px;margin-bottom:16px;align-items:stretch;">
+
+    <!-- TOKEN STATS panel -->
+    <div class="panel" style="flex:1;min-width:0;background:linear-gradient(135deg,#00080f,#0a0d18);border:1px solid #1a4a7a;padding:12px 16px;">
+      <!-- Header: name + price + 24h change + last updated -->
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+          <span id="ts-name" style="font-size:0.9rem;font-weight:700;color:#5a9abf;letter-spacing:0.08em;">--</span>
+          <span id="ts-price-usd" style="font-size:1.3rem;font-weight:700;color:#e0e0e0;font-variant-numeric:tabular-nums;">--</span>
+          <span id="ts-ch24-header" style="font-size:0.95rem;font-weight:700;font-variant-numeric:tabular-nums;color:#666;">--</span>
+        </div>
+        <span id="ts-updated" style="font-size:0.68rem;color:#333;white-space:nowrap;align-self:flex-end;"></span>
+      </div>
+      <!-- Stats grid -->
+      <div id="ts-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:6px 14px;">
+        <div class="ts-cell"><div class="ts-label">MCAP</div><div class="ts-val" id="ts-mcap">--</div></div>
+        <div class="ts-cell"><div class="ts-label">FDV</div><div class="ts-val" id="ts-fdv">--</div></div>
+        <div class="ts-cell"><div class="ts-label">LIQUIDITY</div><div class="ts-val" id="ts-liq">--</div></div>
+        <div class="ts-cell"><div class="ts-label">VOL 24H</div><div class="ts-val" id="ts-vol24">--</div></div>
+        <div class="ts-cell"><div class="ts-label">VOL 1H</div><div class="ts-val" id="ts-vol1">--</div></div>
+        <div class="ts-cell"><div class="ts-label">VOL 5M</div><div class="ts-val" id="ts-vol5">--</div></div>
+        <div class="ts-cell"><div class="ts-label">CHG 1H</div><div class="ts-val" id="ts-ch1">--</div></div>
+        <div class="ts-cell"><div class="ts-label">CHG 5M</div><div class="ts-val" id="ts-ch5">--</div></div>
+        <div class="ts-cell"><div class="ts-label">BUYS 24H</div><div class="ts-val" id="ts-buys">--</div></div>
+        <div class="ts-cell"><div class="ts-label">SELLS 24H</div><div class="ts-val" id="ts-sells">--</div></div>
+        <div class="ts-cell"><div class="ts-label">PRICE SOL</div><div class="ts-val" id="ts-sol">--</div></div>
+        <div class="ts-cell"><div class="ts-label">DEX</div><div class="ts-val" id="ts-dex">--</div></div>
+      </div>
+      <!-- Session ATH bar (hidden until we have data) -->
+      <div id="ts-ath-bar" style="display:none;margin-top:8px;padding:3px 10px;border-radius:6px;background:rgba(255,170,0,0.1);border:1px solid #ffaa00;font-size:0.78rem;color:#ffaa00;font-weight:700;">
+        SESSION ATH: <span id="ts-ath-val">--</span>
+      </div>
+      <!-- No data placeholder -->
+      <div id="ts-no-data" style="color:#333;font-size:0.8rem;padding:6px 0;">Awaiting market data — token may be on bonding curve or not yet indexed by DexScreener.</div>
+    </div>
+
+    <!-- LIVE CONTROLS panel -->
+    <div class="panel" style="min-width:176px;background:linear-gradient(135deg,#1a0a00,#1b1f2a);border:1px solid #ff6600;display:flex;flex-direction:column;gap:10px;padding:14px 16px;flex-shrink:0;">
+      <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;color:#553300;text-transform:uppercase;">Live Controls</div>
+      <button class="btn-primary" id="hype-btn" style="background:#ff4500;font-size:1.05rem;font-weight:700;letter-spacing:1px;padding:9px 14px;">HYPE</button>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.82rem;color:#ffaa00;font-weight:700;letter-spacing:0.04em;white-space:nowrap;user-select:none;">
+        <input type="checkbox" id="hype-ath" style="accent-color:#ffaa00;width:15px;height:15px;">
         ALL TIME HIGH
       </label>
-      <span id="hype-status" style="font-size:0.8rem;color:#ff6600;"></span>
-      <div style="height:24px;width:1px;background:#333;flex-shrink:0;"></div>
-      <label id="crazy-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:6px 14px;border-radius:8px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
-        <input type="checkbox" id="crazy-toggle" style="width:18px;height:18px;accent-color:#b44fff;cursor:pointer;">
-        <span id="crazy-label-text" style="font-size:0.9rem;font-weight:700;letter-spacing:0.06em;color:#888;">CRAZY MODE</span>
+      <span id="hype-status" style="font-size:0.78rem;color:#ff6600;min-height:1em;"></span>
+      <hr style="border:none;border-top:1px solid #2a1800;margin:0;">
+      <label id="crazy-label" style="display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;padding:5px 10px;border-radius:7px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
+        <input type="checkbox" id="crazy-toggle" style="width:15px;height:15px;accent-color:#b44fff;cursor:pointer;">
+        <span id="crazy-label-text" style="font-size:0.82rem;font-weight:700;letter-spacing:0.06em;color:#888;">CRAZY MODE</span>
       </label>
-      <label id="idle-expr-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:6px 14px;border-radius:8px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
-        <input type="checkbox" id="idle-expr-toggle" style="width:18px;height:18px;accent-color:#00ccff;cursor:pointer;">
-        <span id="idle-expr-label-text" style="font-size:0.9rem;font-weight:700;letter-spacing:0.06em;color:#888;">IDLE EXPRS</span>
+      <label id="idle-expr-label" style="display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;padding:5px 10px;border-radius:7px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
+        <input type="checkbox" id="idle-expr-toggle" style="width:15px;height:15px;accent-color:#00ccff;cursor:pointer;">
+        <span id="idle-expr-label-text" style="font-size:0.82rem;font-weight:700;letter-spacing:0.06em;color:#888;">IDLE EXPRS</span>
       </label>
     </div>
+
   </div>
 
   <div id="create-row" class="create-row">
@@ -1581,12 +1609,101 @@
       if (d.enabled) setIdleExpressions(true);
     }).catch(() => {});
 
+    // ── Token Stats ─────────────────────────────────────────────────────────────
+    let liveTokenData = null;
+
+    function fmtUsd(n) {
+      if (n == null) return '--';
+      if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+      return '$' + Number(n).toFixed(n < 1 ? 4 : 2);
+    }
+    function fmtPct(n) {
+      if (n == null) return '--';
+      return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
+    }
+    function fmtSol(n) {
+      if (n == null) return '--';
+      const f = parseFloat(n);
+      if (isNaN(f)) return '--';
+      return f < 0.0001 ? f.toExponential(3) + ' SOL' : f.toFixed(5) + ' SOL';
+    }
+
+    function renderTokenStats(data) {
+      const noData = !data || data.noData || !data.marketCap;
+      document.getElementById('ts-no-data').style.display = noData ? '' : 'none';
+      document.getElementById('ts-grid').style.display = noData ? 'none' : '';
+
+      const upd = data?.lastUpdated ? 'updated ' + new Date(data.lastUpdated).toLocaleTimeString() : '';
+      document.getElementById('ts-updated').textContent = upd;
+
+      if (noData) {
+        document.getElementById('ts-name').textContent = data?.token ? data.token.slice(0, 8) + '…' : '--';
+        document.getElementById('ts-price-usd').textContent = '--';
+        document.getElementById('ts-ch24-header').textContent = '';
+        return;
+      }
+
+      document.getElementById('ts-name').textContent = data.symbol ? '$' + data.symbol : '--';
+
+      const p = parseFloat(data.priceUsd);
+      document.getElementById('ts-price-usd').textContent = data.priceUsd ? '$' + (p < 0.001 ? p.toExponential(3) : p.toFixed(p < 0.1 ? 6 : 4)) : '--';
+
+      const ch24 = data.priceChange?.h24;
+      const ch24El = document.getElementById('ts-ch24-header');
+      ch24El.textContent = fmtPct(ch24);
+      ch24El.style.color = ch24 == null ? '#555' : ch24 >= 0 ? '#00cc66' : '#ff4444';
+
+      document.getElementById('ts-mcap').textContent   = fmtUsd(data.marketCap);
+      document.getElementById('ts-fdv').textContent    = fmtUsd(data.fdv);
+      document.getElementById('ts-liq').textContent    = fmtUsd(data.liquidity);
+      document.getElementById('ts-vol24').textContent  = fmtUsd(data.volume?.h24);
+      document.getElementById('ts-vol1').textContent   = fmtUsd(data.volume?.h1);
+      document.getElementById('ts-vol5').textContent   = fmtUsd(data.volume?.m5);
+      document.getElementById('ts-sol').textContent    = fmtSol(data.priceSol);
+      document.getElementById('ts-dex').textContent    = data.dex || '--';
+      document.getElementById('ts-buys').textContent   = data.txns?.h24?.buys != null ? data.txns.h24.buys.toLocaleString() : '--';
+      document.getElementById('ts-sells').textContent  = data.txns?.h24?.sells != null ? data.txns.h24.sells.toLocaleString() : '--';
+
+      const ch1El = document.getElementById('ts-ch1');
+      const ch1 = data.priceChange?.h1;
+      ch1El.textContent = fmtPct(ch1);
+      ch1El.style.color = ch1 == null ? '#aaa' : ch1 >= 0 ? '#00cc66' : '#ff4444';
+
+      const ch5El = document.getElementById('ts-ch5');
+      const ch5 = data.priceChange?.m5;
+      ch5El.textContent = fmtPct(ch5);
+      ch5El.style.color = ch5 == null ? '#aaa' : ch5 >= 0 ? '#00cc66' : '#ff4444';
+
+      const athBar = document.getElementById('ts-ath-bar');
+      if (data.sessionHigh > 0) {
+        athBar.style.display = '';
+        athBar.style.background = data.isAtSessionHigh ? 'rgba(255,170,0,0.25)' : 'rgba(255,170,0,0.08)';
+        document.getElementById('ts-ath-val').textContent = fmtUsd(data.sessionHigh);
+      } else {
+        athBar.style.display = 'none';
+      }
+    }
+
+    async function refreshTokenStats() {
+      try {
+        const data = await apiGet('/token/stats');
+        window.liveTokenData = data;
+        liveTokenData = data;
+        renderTokenStats(data);
+      } catch (err) {
+        console.warn('[Token] Stats fetch failed:', err.message);
+      }
+    }
+
+    refreshTokenStats();
+    setInterval(refreshTokenStats, 60000);
+    // ── End Token Stats ──────────────────────────────────────────────────────────
+
     document.getElementById('hype-btn').addEventListener('click', async () => {
       const btn = document.getElementById('hype-btn');
       const statusEl = document.getElementById('hype-status');
-      const mcap       = document.getElementById('hype-mcap').value.trim();
-      const volume     = document.getElementById('hype-volume').value.trim();
-      const holders    = document.getElementById('hype-holders').value.trim();
       const allTimeHigh = document.getElementById('hype-ath').checked;
 
       btn.disabled = true;
@@ -1595,10 +1712,13 @@
 
       try {
         const body = {};
-        if (mcap)         body.mcap        = mcap;
-        if (volume)       body.volume      = volume;
-        if (holders)      body.holders     = holders;
-        if (allTimeHigh)  body.allTimeHigh = true;
+        if (allTimeHigh) body.allTimeHigh = true;
+        // Auto-inject live token stats so hype script has accurate figures
+        const td = window.liveTokenData;
+        if (td && !td.noData) {
+          if (td.marketCap) body.mcap   = fmtUsd(td.marketCap);
+          if (td.volume?.h24) body.volume = fmtUsd(td.volume.h24);
+        }
 
         const result = await apiPost('/api/orchestrator/hype', body);
         if (result.error) throw new Error(result.error);

@@ -63,6 +63,7 @@ const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'g
 const USE_LLM_EXPRESSIONS = process.env.EXPRESSION_LLM === '1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+const PUMP_FUN_TOKEN = process.env.PUMP_FUN_TOKEN || '';
 
 const app = express();
 const port = process.env.ANIMATION_PORT || 3003;
@@ -422,6 +423,71 @@ app.post('/expression/idle', (req, res) => {
 });
 
 // ============== End Expression Control API ==============
+
+// ── Token Stats Service ───────────────────────────────────────────────────────
+let tokenStatsCache = null;
+let tokenStatsLastFetch = 0;
+let tokenStatsSessionHigh = 0;
+const TOKEN_STATS_TTL_MS = 60 * 1000;
+
+async function fetchTokenStatsFromDex() {
+  if (!PUMP_FUN_TOKEN) return null;
+  const url = `https://api.dexscreener.com/latest/dex/tokens/${PUMP_FUN_TOKEN}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`DexScreener HTTP ${res.status}`);
+    const data = await res.json();
+
+    const pairs = data.pairs;
+    if (!pairs || pairs.length === 0) {
+      return { token: PUMP_FUN_TOKEN, noData: true, lastUpdated: Date.now() };
+    }
+
+    // Pick the pair with highest liquidity as the canonical one
+    const pair = pairs.slice().sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+    const mcap = pair.marketCap || 0;
+    if (mcap > tokenStatsSessionHigh) tokenStatsSessionHigh = mcap;
+
+    return {
+      token: PUMP_FUN_TOKEN,
+      name: pair.baseToken?.name || null,
+      symbol: pair.baseToken?.symbol || null,
+      priceUsd: pair.priceUsd || null,
+      priceSol: pair.priceNative || null,
+      marketCap: mcap || null,
+      fdv: pair.fdv || null,
+      liquidity: pair.liquidity?.usd || null,
+      volume: pair.volume || null,
+      priceChange: pair.priceChange || null,
+      txns: pair.txns || null,
+      dex: pair.dexId || null,
+      imageUrl: pair.info?.imageUrl || null,
+      sessionHigh: tokenStatsSessionHigh,
+      isAtSessionHigh: mcap > 0 && mcap >= tokenStatsSessionHigh,
+      lastUpdated: Date.now()
+    };
+  } catch (err) {
+    clearTimeout(timer);
+    console.warn('[Token] DexScreener fetch failed:', err.message);
+    return tokenStatsCache; // return stale on error
+  }
+}
+
+app.get('/token/stats', async (req, res) => {
+  const now = Date.now();
+  if (!tokenStatsCache || now - tokenStatsLastFetch > TOKEN_STATS_TTL_MS) {
+    tokenStatsCache = await fetchTokenStatsFromDex();
+    tokenStatsLastFetch = now;
+  }
+  if (!tokenStatsCache) {
+    return res.json({ token: PUMP_FUN_TOKEN || null, noData: true, lastUpdated: now });
+  }
+  res.json(tokenStatsCache);
+});
+// ── End Token Stats Service ───────────────────────────────────────────────────
 
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
