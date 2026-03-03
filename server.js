@@ -44,14 +44,7 @@ if (process.platform === 'win32') {
     // If parsing fails, keep the original URL
   }
 }
-const dataDir = path.join(__dirname, 'data');
 const logsDir = path.join(__dirname, 'logs');
-const commandsFile = path.join(dataDir, 'commands.json');
-const commandsStore = {
-  counts: Object.create(null),
-  total: 0,
-  updatedAt: null
-};
 
 try {
   fs.mkdirSync(logsDir, { recursive: true });
@@ -260,14 +253,25 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Message is required and must be a string' });
     }
 
-    if (isSlashCommand(message)) {
-      const result = await recordCommand(message);
-      return res.json({
-        ok: true,
-        command: result.command,
-        count: result.count,
-        total: commandsStore.total
-      });
+    // /meme command: forward to animation server, skip LLM entirely
+    const memeMatch = message.match(/^\/meme\s+(.+)/is);
+    if (memeMatch) {
+      const memeText = memeMatch[1].trim();
+      console.log(`[Chat] /meme forwarding to animation server: "${memeText.slice(0, 80)}"`);
+      try {
+        const animRes = await axios.post(
+          `${animationServerUrl}/api/orchestrator/meme/freestyle`,
+          { text: memeText },
+          { timeout: 8000 }
+        );
+        console.log('[Chat] /meme animation server accepted:', animRes.data);
+        return res.json({ ok: true, queued: true, type: 'meme' });
+      } catch (err) {
+        const status = err.response?.status;
+        const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        console.error(`[Chat] /meme forward failed (${status || 'no response'}): ${detail}`);
+        return res.status(502).json({ error: `Meme server error: ${detail}` });
+      }
     }
 
     // Router mode: LLM picks which character responds
@@ -341,72 +345,6 @@ app.post('/chat', async (req, res) => {
   app.handle(req, res);
 });
 
-// API: Record a slash command (vote)
-app.post('/api/commands', async (req, res) => {
-  try {
-    const rawCommand = typeof req.body.command === 'string' ? req.body.command : req.body.message;
-    if (!rawCommand || typeof rawCommand !== 'string') {
-      return res.status(400).json({ error: 'Command is required and must be a string' });
-    }
-    if (!isSlashCommand(rawCommand)) {
-      return res.status(400).json({ error: 'Command must start with "/"' });
-    }
-    const result = await recordCommand(rawCommand);
-    res.json({
-      ok: true,
-      command: result.command,
-      count: result.count,
-      total: commandsStore.total
-    });
-  } catch (error) {
-    console.error('[Commands] Error:', error.message);
-    res.status(500).json({ error: 'Failed to record command' });
-  }
-});
-
-// API: Get leaderboard
-app.get('/api/leaderboard', (req, res) => {
-  const limit = Math.max(1, Math.min(100, parseInt(req.query.limit || '20', 10) || 20));
-  const entries = Object.entries(commandsStore.counts)
-    .map(([command, count]) => ({ command, count }))
-    .sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count;
-      return a.command.localeCompare(b.command);
-    })
-    .slice(0, limit);
-
-  res.json({
-    ok: true,
-    total: commandsStore.total,
-    updatedAt: commandsStore.updatedAt,
-    entries
-  });
-});
-
-// API: Clear leaderboard (reset all votes)
-app.post('/api/leaderboard/clear', async (req, res) => {
-  try {
-    commandsStore.counts = Object.create(null);
-    commandsStore.total = 0;
-    commandsStore.updatedAt = new Date().toISOString();
-    await persistCommandStore();
-    console.log('[Commands] Leaderboard cleared');
-    res.json({
-      ok: true,
-      message: 'Leaderboard cleared',
-      total: 0
-    });
-  } catch (error) {
-    console.error('[Commands] Clear error:', error.message);
-    res.status(500).json({ error: 'Failed to clear leaderboard' });
-  }
-});
-
-// Leaderboard page
-app.get('/leaderboard', (req, res) => {
-  res.sendFile(path.join(__dirname, 'frontend', 'leaderboard.html'));
-});
-
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', platform: process.platform });
@@ -425,24 +363,18 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend', 'index.html'));
 });
 
-initCommandStore()
-  .catch(err => {
-    console.error('[Commands] Failed to initialize store:', err.message);
-  })
-  .finally(() => {
-    app.listen(port, () => {
-      appendLogFile('chat.jsonl', { event: 'server_start', server: 'main' });
-      console.log(`API server running on http://localhost:${port}`);
-      console.log(`Platform: ${process.platform}`);
-      // Auto-conversation env (presence only, for diagnostics)
-      console.log('[Auto] Env: ELEVENLABS_API_KEY=' + (process.env.ELEVENLABS_API_KEY ? 'set' : 'MISSING') +
-        ', OPENAI_API_KEY=' + (process.env.OPENAI_API_KEY ? 'set' : 'MISSING') +
-        ', ANIMATION_SERVER_URL=' + (process.env.ANIMATION_SERVER_URL ? 'set' : 'default') +
-        ', AUTO_MODEL=' + (process.env.AUTO_MODEL ? 'set' : 'default') +
-        ', AUTO_TTS_MODEL=' + (process.env.AUTO_TTS_MODEL ? 'set' : 'default'));
-      console.log('[Auto] animationServerUrl=' + animationServerUrl);
-    });
-  });
+app.listen(port, () => {
+  appendLogFile('chat.jsonl', { event: 'server_start', server: 'main' });
+  console.log(`API server running on http://localhost:${port}`);
+  console.log(`Platform: ${process.platform}`);
+  // Auto-conversation env (presence only, for diagnostics)
+  console.log('[Auto] Env: ELEVENLABS_API_KEY=' + (process.env.ELEVENLABS_API_KEY ? 'set' : 'MISSING') +
+    ', OPENAI_API_KEY=' + (process.env.OPENAI_API_KEY ? 'set' : 'MISSING') +
+    ', ANIMATION_SERVER_URL=' + (process.env.ANIMATION_SERVER_URL ? 'set' : 'default') +
+    ', AUTO_MODEL=' + (process.env.AUTO_MODEL ? 'set' : 'default') +
+    ', AUTO_TTS_MODEL=' + (process.env.AUTO_TTS_MODEL ? 'set' : 'default'));
+  console.log('[Auto] animationServerUrl=' + animationServerUrl);
+});
 
 function pruneRouterTimestamps(now) {
   while (routerTimestamps.length > 0 && now - routerTimestamps[0] > 60000) {
@@ -472,66 +404,6 @@ function shouldFilterRouterMessage() {
     counts: { perSecond: perSecondCount, perMinute: perMinuteCount },
     reason: filtered ? 'Router throttled due to high message volume.' : undefined
   };
-}
-
-function isSlashCommand(message) {
-  const text = typeof message === 'string' ? message.trim() : '';
-  return text.startsWith('/') && text.length > 1;
-}
-
-function normalizeCommand(command) {
-  const trimmed = command.trim();
-  if (!trimmed.startsWith('/')) return null;
-  const normalized = trimmed.replace(/\s+/g, ' ').toLowerCase();
-  if (normalized.length > 200) return null;
-  return normalized;
-}
-
-async function initCommandStore() {
-  await fs.promises.mkdir(dataDir, { recursive: true });
-  try {
-    const raw = await fs.promises.readFile(commandsFile, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      commandsStore.counts = parsed.counts && typeof parsed.counts === 'object'
-        ? parsed.counts
-        : Object.create(null);
-      commandsStore.total = Number.isFinite(parsed.total) ? parsed.total : 0;
-      commandsStore.updatedAt = parsed.updatedAt || null;
-      return;
-    }
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn('[Commands] Resetting store due to read error:', err.message);
-    }
-  }
-  await persistCommandStore();
-}
-
-async function persistCommandStore() {
-  const payload = JSON.stringify({
-    counts: commandsStore.counts,
-    total: commandsStore.total,
-    updatedAt: commandsStore.updatedAt
-  }, null, 2);
-  const tmpPath = `${commandsFile}.tmp`;
-  await fs.promises.writeFile(tmpPath, payload, 'utf8');
-  await fs.promises.rename(tmpPath, commandsFile);
-}
-
-async function recordCommand(command) {
-  const normalized = normalizeCommand(command);
-  if (!normalized) {
-    throw new Error('Invalid command');
-  }
-  if (!Object.prototype.hasOwnProperty.call(commandsStore.counts, normalized)) {
-    commandsStore.counts[normalized] = 0;
-  }
-  commandsStore.counts[normalized] += 1;
-  commandsStore.total += 1;
-  commandsStore.updatedAt = new Date().toISOString();
-  await persistCommandStore();
-  return { command: normalized, count: commandsStore.counts[normalized] };
 }
 
 async function routeMessageToVoice(message) {

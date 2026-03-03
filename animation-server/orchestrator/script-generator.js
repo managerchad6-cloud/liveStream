@@ -62,7 +62,21 @@ Rules:
 - The exitContext must be a brief TOPIC SUMMARY (e.g. "discussed parties and going out"), NOT a transcript of what was said`;
   }
 
-  _buildUserContent(seed) {
+  _buildUserContent(seed, imageDescription = null) {
+    if (imageDescription && seed) {
+      return `ATTACHED IMAGE (on the TV screen behind the characters, visible to the live audience):
+${imageDescription}
+
+DIRECTOR DIRECTIVE: ${seed}
+
+The characters are reacting to this image. They are self-aware — if Chad or Virgin appear in the image, they recognise themselves and each other immediately. Execute the directive against the image content. Write the dialogue now.`;
+    }
+    if (imageDescription) {
+      return `ATTACHED IMAGE (on the TV screen behind the characters, visible to the live audience):
+${imageDescription}
+
+The characters are reacting to this image. They are self-aware — if Chad or Virgin appear in the image, they recognise themselves and each other immediately. React naturally to what you see — no specific directive, just respond in character. Write the dialogue now.`;
+    }
     return `REQUIRED SUBJECT: ${seed}\n\nWrite the dialogue now. Address the subject explicitly.`;
   }
 
@@ -73,13 +87,13 @@ Rules:
     })).filter(line => line.speaker && line.text);
   }
 
-  async _generateScript(seed) {
+  async _generateScript(seed, imageDescription = null) {
     if (!this.openai) throw new Error('OpenAI not configured');
-    if (!seed) throw new Error('Missing seed');
+    if (!seed && !imageDescription) throw new Error('Missing seed');
 
     const recentExitContexts = this._recentExitContexts(5);
     const systemPrompt = this._buildSystemPrompt({ recentExitContexts, seed });
-    const userContent = this._buildUserContent(seed);
+    const userContent = this._buildUserContent(seed, imageDescription);
 
     const completion = await this.openai.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -106,8 +120,16 @@ Rules:
     };
   }
 
-  async expandDirectorNote(seed) {
-    // Create segment first to reserve position in pipeline
+  async expandDirectorNote(seed, { imageBase64 = null, imageMimeType = 'image/jpeg', attachedMediaId = null } = {}) {
+    // Vision pass before reserving a pipeline slot — no segment created yet
+    let imageDescription = null;
+    if (imageBase64) {
+      console.log('[ScriptGenerator] Running vision pass on attached media...');
+      imageDescription = await this._describeImage(imageBase64, imageMimeType);
+      if (imageDescription) console.log('[ScriptGenerator] Image description:', imageDescription);
+    }
+
+    // Create segment to reserve position in pipeline
     const segment = await this.pipelineStore.createSegment({
       type: 'auto-convo',
       seed,
@@ -116,12 +138,17 @@ Rules:
     });
 
     try {
-      const generated = await this._generateScript(seed);
+      const generated = await this._generateScript(seed, imageDescription);
 
       await this.pipelineStore.updateSegment(segment.id, {
         script: generated.script,
         estimatedDuration: generated.estimatedDuration,
-        exitContext: generated.exitContext
+        exitContext: generated.exitContext,
+        metadata: {
+          ...(segment.metadata || {}),
+          ...(attachedMediaId ? { attachedMediaId } : {}),
+          ...(imageDescription ? { imageDescription } : { imageDescription: null })
+        }
       });
 
       return this.pipelineStore.getSegment(segment.id);
@@ -481,11 +508,31 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: 'Describe what is in this image in 1-2 sentences. Focus on the meme format, subject matter, any visible text, and what makes it funny or notable. Be concise.' },
+            {
+              type: 'text',
+              text: `You are a vision assistant for a livestream show hosted by two animated characters named Chad and Virgin.
+
+CANONICAL CHARACTER DESCRIPTIONS — identify these if present in the image:
+- Chad: Extremely tall, muscular, square-jawed man. Handsome, confident posture, often smirking. May appear in any art style (realistic, anime, illustration, cartoon). Always composed and dominant-looking.
+- Virgin: Short, hunched, thin man, often with glasses, weak chin, nervous expression. May appear in any art style. Always depicted as awkward or insecure-looking.
+
+Describe this image accurately and in detail. Cover:
+- What type of image it is (photo, illustration, artwork, screenshot, meme, etc.)
+- The main subject(s) and what is happening
+- Any visible text, labels, or captions
+- The overall tone, mood, or humor if applicable
+- Any notable details a viewer would notice
+
+If Chad or Virgin (as described above) appear in the image, identify them by name explicitly.
+If this is a classic Virgin vs Chad format meme (two-column comparison with Virgin on left and Chad on right), describe both sides and what entities or behaviours they represent.
+If it is any other kind of image, describe it accurately — do not force a meme lens onto it.
+
+Be thorough. 3–5 sentences.`
+            },
             { type: 'image_url', image_url: { url: `data:${imageMimeType};base64,${imageBase64}` } }
           ]
         }],
-        max_tokens: 150
+        max_tokens: 300
       });
       return response.choices?.[0]?.message?.content?.trim() || null;
     } catch (err) {

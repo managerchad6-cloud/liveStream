@@ -25,12 +25,17 @@ const {
   setEyebrowRotationLimits,
   setEyebrowAsymmetry,
   setSpeakingCharacter,
-  setLeaderboard,
-  getLeaderboard,
-  getLeaderboardVersion,
-  setLeaderboardTimer,
-  getLeaderboardTimer,
-  addChatMessage
+  addChatMessage,
+  setTickerMessages,
+  getTickerMessages,
+  getTickerCurrentIndex,
+  setFireState,
+  setLightingState,
+  advanceFireFrame,
+  setDayCycle,
+  tickDayCycle,
+  getSceneState,
+  setMemeQueue
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -69,6 +74,7 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 const AUDIO_DIR = path.join(STREAMS_DIR, 'audio');
 const TV_CONTENT_DIR = path.join(__dirname, 'tv-content', 'content');
 const ORCHESTRATOR_CONFIG_PATH = path.join(ROOT_DIR, 'data', 'orchestrator-config.json');
+const SCENE_SETTINGS_PATH = path.join(__dirname, 'scene-settings.json');
 const LOGS_DIR = path.join(ROOT_DIR, 'logs');
 const LOGS_AUDIO_DIR = path.join(LOGS_DIR, 'audio');
 
@@ -91,12 +97,73 @@ const DEFAULT_ORCHESTRATOR_CONFIG = {
   scriptGeneration: { model: 'gpt-4o', defaultExchanges: 8, maxExchanges: 30, wordsPerMinute: 150 }
 };
 
+// Meme queue overlay — maps segment ID → display title for meme-reaction segments
+const memeSegmentTitles = new Map(); // segmentId → "virgin X vs chad Y"
+
+function syncMemeQueueToCompositor() {
+  const all = pipelineStore ? pipelineStore.getAllSegments() : [];
+  // Remove titles for segments that have aired or been deleted
+  for (const [id] of memeSegmentTitles) {
+    const seg = all.find(s => s.id === id);
+    if (!seg || seg.status === 'aired' || seg.status === 'deleted') {
+      memeSegmentTitles.delete(id);
+    }
+  }
+  // Pipeline items in pipeline order (will play soonest — appear at top)
+  const pipelineItems = all
+    .filter(s => s.type === 'meme-reaction'
+      && s.status !== 'aired'
+      && s.status !== 'deleted'
+      && memeSegmentTitles.has(s.id))
+    .map(s => ({ segmentId: s.id, title: memeSegmentTitles.get(s.id) }));
+  // Still-generating items (not yet in pipeline — appear below)
+  const generatingItems = Array.from(memeGenerationQueue.values())
+    .filter(job => job.status !== 'failed')
+    .map(job => ({ segmentId: null, title: job.description }));
+  setMemeQueue([...pipelineItems, ...generatingItems]);
+}
+
 function broadcastPipelineUpdate() {
+  syncMemeQueueToCompositor();
   if (!orchestratorSocket || !pipelineStore) return;
   orchestratorSocket.broadcast('pipeline:update', {
     segments: pipelineStore.getAllSegments(),
     bufferHealth: pipelineStore.getBufferHealth()
   });
+}
+
+// Meme generation job tracking
+const memeGenerationQueue = new Map(); // id -> { id, description, status, startedAt, error? }
+let memeJobCounter = 0;
+
+function broadcastMemeQueueUpdate() {
+  syncMemeQueueToCompositor();
+  if (!orchestratorSocket) return;
+  const jobs = Array.from(memeGenerationQueue.values());
+  orchestratorSocket.broadcast('meme:queue-update', { jobs });
+}
+
+function trackMemeJob(description) {
+  const id = `meme-${++memeJobCounter}-${Date.now()}`;
+  const job = { id, description, status: 'generating', startedAt: Date.now() };
+  memeGenerationQueue.set(id, job);
+  broadcastMemeQueueUpdate();
+  return {
+    done() {
+      memeGenerationQueue.delete(id);
+      broadcastMemeQueueUpdate();
+    },
+    fail(errMsg) {
+      job.status = 'failed';
+      job.error = errMsg;
+      memeGenerationQueue.set(id, job);
+      broadcastMemeQueueUpdate();
+      setTimeout(() => {
+        memeGenerationQueue.delete(id);
+        broadcastMemeQueueUpdate();
+      }, 10000);
+    }
+  };
 }
 
 function loadOrchestratorConfig() {
@@ -152,6 +219,84 @@ app.post('/music/volume', (req, res) => {
   if (volume === undefined) return res.status(400).json({ error: 'volume required' });
   backgroundMusic.setVolume(volume);
   res.json(backgroundMusic.getStatus());
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Scene Control (Fire + Lighting) ──────────────────────────────────────────
+
+let fireTimer = null;
+let dayCycleTimer = null;
+// Cycle ticks at 200ms — smooth enough for gradual blends without over-stressing Sharp
+const DAY_CYCLE_TICK_MS = 200;
+
+function restartFireTimer() {
+  clearInterval(fireTimer);
+  fireTimer = null;
+  const { fps, playing } = getSceneState().fire;
+  if (playing) {
+    fireTimer = setInterval(() => advanceFireFrame(), Math.round(1000 / fps));
+  }
+}
+
+function restartDayCycleTimer() {
+  clearInterval(dayCycleTimer);
+  dayCycleTimer = null;
+  const { cycle } = getSceneState();
+  if (cycle.enabled) {
+    dayCycleTimer = setInterval(() => tickDayCycle(), DAY_CYCLE_TICK_MS);
+  }
+}
+
+function saveSceneSettings() {
+  try {
+    const state = getSceneState();
+    fs.writeFileSync(SCENE_SETTINGS_PATH, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Scene] Failed to save scene settings:', err.message);
+  }
+}
+
+app.get('/scene', (req, res) => {
+  res.sendFile(path.join(ROOT_DIR, 'frontend', 'scene-control.html'));
+});
+
+app.get('/scene/status', (req, res) => {
+  res.json(getSceneState());
+});
+
+app.post('/scene/fire', (req, res) => {
+  const { playing, mode, fps } = req.body || {};
+  const config = {};
+  if (playing !== undefined) config.playing = Boolean(playing);
+  if (mode !== undefined && ['circular', 'pingpong', 'random'].includes(mode)) config.mode = mode;
+  if (typeof fps === 'number' && fps >= 1 && fps <= 30) config.fps = fps;
+  setFireState(config);
+  restartFireTimer();
+  saveSceneSettings();
+  res.json(getSceneState());
+});
+
+app.post('/scene/lighting', (req, res) => {
+  const { nightOpacity, dayOpacity } = req.body || {};
+  const config = {};
+  if (typeof nightOpacity === 'number') config.nightOpacity = Math.max(0, Math.min(1, nightOpacity));
+  if (typeof dayOpacity === 'number') config.dayOpacity = Math.max(0, Math.min(1, dayOpacity));
+  setLightingState(config);
+  saveSceneSettings();
+  res.json(getSceneState());
+});
+
+app.post('/scene/cycle', (req, res) => {
+  const { enabled, rpm, angle } = req.body || {};
+  const config = {};
+  if (enabled !== undefined) config.enabled = Boolean(enabled);
+  if (typeof rpm === 'number') config.rpm = rpm;
+  if (typeof angle === 'number') config.angle = angle;
+  setDayCycle(config);
+  restartDayCycleTimer();
+  saveSceneSettings();
+  res.json(getSceneState());
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -338,7 +483,9 @@ function handleAudioComplete() {
   // or stays null if the queue was empty. If it changed, the previous segment is done.
   if (completedSegId && completedSegId !== currentPlayingSegmentId) {
     if (playbackController) {
-      playbackController.segmentDone(completedSegId).catch(err => {
+      playbackController.segmentDone(completedSegId).then(() => {
+        syncMemeQueueToCompositor();
+      }).catch(err => {
         console.warn('[Server] segmentDone error:', err.message);
       });
     }
@@ -1542,14 +1689,31 @@ app.post('/api/tv-layer/clear-manual', async (req, res) => {
 app.post('/api/orchestrator/seed', async (req, res) => {
   if (!scriptGenerator || !playbackController || !segmentRenderer) return res.status(503).json({ error: 'Orchestrator not initialized' });
   const { topic, attachedMediaId } = req.body || {};
-  if (!topic) return res.status(400).json({ error: 'Missing topic' });
+  if (!topic && !attachedMediaId) return res.status(400).json({ error: 'Missing topic or attachedMediaId' });
   try {
-    const segment = await scriptGenerator.expandDirectorNote(topic);
-    if (attachedMediaId) {
-      await pipelineStore.updateSegment(segment.id, {
-        metadata: { ...(segment.metadata || {}), attachedMediaId }
-      });
+    // Load attached image for vision pass if present
+    let imageBase64 = null;
+    let imageMimeType = 'image/jpeg';
+    if (attachedMediaId && mediaLibrary) {
+      const mediaItem = mediaLibrary.get(attachedMediaId);
+      console.log('[Seed] attachedMediaId:', attachedMediaId, '-> mediaItem:', mediaItem ? `type=${mediaItem.type} mime=${mediaItem.mimeType}` : 'NOT FOUND');
+      if (mediaItem && mediaItem.type === 'image') {
+        try {
+          const imgPath = mediaLibrary.getOriginalPath(attachedMediaId);
+          console.log('[Seed] Loading image from:', imgPath);
+          const buf = await fs.promises.readFile(imgPath);
+          imageBase64 = buf.toString('base64');
+          imageMimeType = mediaItem.mimeType || 'image/jpeg';
+          console.log('[Seed] Image loaded, base64 length:', imageBase64.length, 'mimeType:', imageMimeType);
+        } catch (imgErr) {
+          console.warn('[Seed] Could not load attached image for vision pass:', imgErr.message);
+        }
+      }
+    } else {
+      console.log('[Seed] No attachedMediaId or mediaLibrary not ready. attachedMediaId:', attachedMediaId, 'mediaLibrary:', !!mediaLibrary);
     }
+
+    const segment = await scriptGenerator.expandDirectorNote(topic, { imageBase64, imageMimeType, attachedMediaId });
     if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
     broadcastPipelineUpdate();
     segmentRenderer.queueRender(segment.id);
@@ -2114,6 +2278,34 @@ app.post('/api/orchestrator/twitter/historical/:id/queue', async (req, res) => {
 
 // ── Meme Segment API ──────────────────────────────────────────────────────────
 
+// Accept any freeform text, send to /generate/freestyle, poll, and queue a segment.
+// Fire-and-forget from the route: responds immediately, runs in background.
+app.post('/api/orchestrator/meme/freestyle', async (req, res) => {
+  console.log('[Meme] /freestyle endpoint hit, body:', JSON.stringify(req.body).slice(0, 200));
+  if (!scriptGenerator || !pipelineStore || !mediaLibrary) {
+    console.error('[Meme] /freestyle: pipeline not initialized — scriptGenerator:', !!scriptGenerator, 'pipelineStore:', !!pipelineStore, 'mediaLibrary:', !!mediaLibrary);
+    return res.status(503).json({ error: 'Pipeline not initialized' });
+  }
+  const { text } = req.body || {};
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+  res.json({ ok: true, queued: true });
+  const memeJob = trackMemeJob(text.trim().slice(0, 60));
+  runMemeFromText(text.trim()).then(() => {
+    memeJob.done();
+    broadcastPipelineUpdate();
+  }).catch(err => {
+    console.error('[Meme] Freestyle failed:', err.message);
+    memeJob.fail(err.message);
+    if (err.response) {
+      console.error('[Meme] API response:', err.response.status, JSON.stringify(err.response.data || '').slice(0, 500));
+    } else {
+      console.error('[Meme] Stack:', err.stack);
+    }
+  });
+});
+
 app.post('/api/orchestrator/meme/create', async (req, res) => {
   if (!scriptGenerator || !pipelineStore || !mediaLibrary) {
     return res.status(503).json({ error: 'Pipeline not initialized' });
@@ -2125,12 +2317,15 @@ app.post('/api/orchestrator/meme/create', async (req, res) => {
   const virginSeedLabels = Array.isArray(virgin_labels) ? virgin_labels.filter(Boolean) : [];
   const chadSeedLabels = Array.isArray(chad_labels) ? chad_labels.filter(Boolean) : [];
 
+  const memeJob = trackMemeJob(`${virgin} vs ${chad}`.slice(0, 60));
   try {
     const result = await runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels });
+    memeJob.done();
     broadcastPipelineUpdate();
     res.json({ segmentId: result.segmentId, virginLabels: result.virginLabels, chadLabels: result.chadLabels });
   } catch (err) {
     console.error('[Meme] Create segment error:', err.message);
+    memeJob.fail(err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2254,6 +2449,54 @@ app.post('/api/orchestrator/meme/queue-existing', async (req, res) => {
 
 // ============== End Orchestrator Script API ==============
 
+// Ticker — multi-slot scrolling playlist
+app.get('/ticker', (req, res) => {
+  res.json({ messages: getTickerMessages(), currentIndex: getTickerCurrentIndex() });
+});
+
+// Set full messages array
+app.post('/ticker', (req, res) => {
+  const msgs = Array.isArray(req.body.messages) ? req.body.messages : [];
+  setTickerMessages(msgs);
+  res.json({ messages: getTickerMessages() });
+});
+
+// Add one slot
+app.post('/ticker/add', (req, res) => {
+  const msgs = getTickerMessages();
+  msgs.push((req.body.text || '').trim());
+  setTickerMessages(msgs);
+  res.json({ messages: getTickerMessages(), index: getTickerMessages().length - 1 });
+});
+
+// Update slot at index
+app.put('/ticker/:index', (req, res) => {
+  const idx = parseInt(req.params.index);
+  const msgs = getTickerMessages();
+  if (idx >= 0 && idx < msgs.length) {
+    msgs[idx] = (req.body.text || '').trim();
+    setTickerMessages(msgs);
+  }
+  res.json({ messages: getTickerMessages() });
+});
+
+// Delete slot at index
+app.delete('/ticker/:index', (req, res) => {
+  const idx = parseInt(req.params.index);
+  const msgs = getTickerMessages();
+  if (idx >= 0 && idx < msgs.length) {
+    msgs.splice(idx, 1);
+    setTickerMessages(msgs);
+  }
+  res.json({ messages: getTickerMessages() });
+});
+
+// Clear all slots
+app.delete('/ticker', (req, res) => {
+  setTickerMessages([]);
+  res.json({ messages: [] });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -2268,9 +2511,77 @@ app.get('/health', (req, res) => {
 });
 
 // ── Meme generation ───────────────────────────────────────────────────────────
+
+// Parse the standard /meme command format: "virgin X (labels) vs chad Y (labels)"
+// Labels in parentheses are optional. Returns null if the text doesn't match.
+function parseMemeText(text) {
+  const match = text.trim().match(/^virgin\s+(.+?)\s+vs\.?\s+chad\s+(.+?)$/i);
+  if (!match) return null;
+  const parseSubject = part => {
+    const lm = part.trim().match(/^(.+?)\s*\(([^)]+)\)$/);
+    return lm
+      ? { subject: lm[1].trim(), labels: lm[2].split(',').map(s => s.trim()).filter(Boolean) }
+      : { subject: part.trim(), labels: [] };
+  };
+  const v = parseSubject(match[1]);
+  const c = parseSubject(match[2]);
+  if (!v.subject || !c.subject) return null;
+  return { virgin: v.subject, chad: c.subject, virginLabels: v.labels, chadLabels: c.labels };
+}
+
+// Entry point for /meme chat command.
+// Tries /generate/freestyle first (handles any input format) to extract virgin/chad.
+// Falls back to local regex parsing of the standard "virgin X vs chad Y" format.
+// Either way, delegates to runMemeAndCreateSegment (the proven /generate/raw path).
+async function runMemeFromText(text) {
+  const MEME_API = 'https://virginvschad.vip';
+  const axios = require('axios');
+
+  let virgin = null, chad = null, virginSeedLabels = [], chadSeedLabels = [];
+
+  // Attempt 1: /generate/freestyle — quick timeout, non-blocking fallback on any failure
+  try {
+    console.log(`[Meme] Freestyle parse attempt: "${text.slice(0, 80)}"`);
+    const res = await axios.post(`${MEME_API}/generate/freestyle`, { text }, { timeout: 10000 });
+    console.log('[Meme] Freestyle response:', JSON.stringify(res.data).slice(0, 300));
+    const p = res.data?.parsed || {};
+    if (p.virgin && p.chad) {
+      virgin = p.virgin;
+      chad = p.chad;
+      console.log(`[Meme] Freestyle gave: virgin="${virgin}", chad="${chad}"`);
+    } else {
+      console.warn('[Meme] Freestyle missing parsed.virgin/chad — falling back to local parse');
+    }
+  } catch (err) {
+    const detail = err.response
+      ? `HTTP ${err.response.status}: ${JSON.stringify(err.response.data || '').slice(0, 150)}`
+      : err.message;
+    console.warn(`[Meme] Freestyle failed (${detail}) — falling back to local parse`);
+  }
+
+  // Attempt 2: local regex parse of the standard format
+  if (!virgin || !chad) {
+    const parsed = parseMemeText(text);
+    if (!parsed) {
+      throw new Error(
+        `Cannot parse meme text: "${text.slice(0, 80)}". ` +
+        `Use format: /meme virgin X vs chad Y`
+      );
+    }
+    virgin = parsed.virgin;
+    chad = parsed.chad;
+    virginSeedLabels = parsed.virginLabels;
+    chadSeedLabels = parsed.chadLabels;
+    console.log(`[Meme] Local parse: virgin="${virgin}", chad="${chad}"`);
+  }
+
+  // Delegate to proven /generate/raw pipeline
+  return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels });
+}
+
 // Submit a job to the MemeFactory API, poll until done, fetch labels + image,
 // generate a character reaction script, create a pipeline segment, and queue it.
-async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [] }) {
+async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [], _attempt = 1 }) {
   if (!mediaLibrary) throw new Error('Media library not available');
   if (!scriptGenerator) throw new Error('Script generator not available');
   if (!pipelineStore) throw new Error('Pipeline store not available');
@@ -2278,9 +2589,10 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
   const MEME_API = 'https://virginvschad.vip';
   const POLL_INTERVAL_MS = 5000;
   const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const MAX_ATTEMPTS = 2;
   const axios = require('axios');
 
-  console.log(`[Meme] Submitting job: virgin="${virgin}", chad="${chad}"`);
+  console.log(`[Meme] Submitting job (attempt ${_attempt}): virgin="${virgin}", chad="${chad}"`);
   const body = { virgin, chad };
   if (virginSeedLabels.length) body.virgin_labels = virginSeedLabels;
   if (chadSeedLabels.length) body.chad_labels = chadSeedLabels;
@@ -2299,7 +2611,15 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
     const pollRes = await axios.get(`${MEME_API}/jobs/${jobId}`, { timeout: 10000 });
     status = pollRes.data.status;
     console.log(`[Meme] Job ${jobId}: ${status}`);
-    if (status === 'failed') throw new Error(`Meme job failed: ${pollRes.data.error || 'unknown'}`);
+    if (status === 'failed') {
+      const apiErr = pollRes.data.error || 'unknown';
+      if (_attempt < MAX_ATTEMPTS) {
+        console.warn(`[Meme] Job failed (${apiErr}), retrying in 3s... (attempt ${_attempt + 1}/${MAX_ATTEMPTS})`);
+        await new Promise(r => setTimeout(r, 3000));
+        return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, _attempt: _attempt + 1 });
+      }
+      throw new Error(`Meme job failed: ${apiErr}`);
+    }
   }
 
   // Fetch metadata (labels) and image in parallel
@@ -2354,6 +2674,10 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
       attachedMediaId: item.id
     }
   });
+
+  // Register title for stream overlay (removed when segment becomes 'aired')
+  memeSegmentTitles.set(segment.id, `virgin ${virgin} vs chad ${chad}`);
+  syncMemeQueueToCompositor();
 
   const queueFn = orchestrator?.queueSegmentWithBridge
     ? id => orchestrator.queueSegmentWithBridge(id)
@@ -2441,215 +2765,20 @@ async function start() {
     streamManager.setBackgroundMusic(backgroundMusic);
   }
 
-  // Start leaderboard polling (every 2 seconds)
-  const CHAT_API_PORT = process.env.PORT || 3002;
-  const CHAT_API_HOST = 'localhost';
-  const LEADERBOARD_UPDATE_MS = 2000;
-
-  async function fetchLeaderboard() {
-    try {
-      const http = require('http');
-      const options = {
-        hostname: CHAT_API_HOST,
-        port: CHAT_API_PORT,
-        path: '/api/leaderboard?limit=3',
-        method: 'GET',
-        timeout: 1000
-      };
-
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => { data += chunk; });
-        res.on('end', () => {
-          try {
-            if (res.statusCode === 200) {
-              const parsed = JSON.parse(data);
-              if (Array.isArray(parsed.entries) && parsed.entries.length > 0) {
-                setLeaderboard(parsed.entries);
-              } else {
-                setLeaderboard(null);
-              }
-            }
-          } catch (err) {
-            // Silently fail - leaderboard is optional
-          }
-        });
-      });
-
-      req.on('error', () => {
-        // Silently fail - leaderboard is optional
-      });
-
-      req.end();
-    } catch (err) {
-      // Silently fail - leaderboard is optional
+  // Restore scene settings (fire animation + lighting) and start fire timer
+  try {
+    if (fs.existsSync(SCENE_SETTINGS_PATH)) {
+      const saved = JSON.parse(fs.readFileSync(SCENE_SETTINGS_PATH, 'utf8'));
+      if (saved.fire) setFireState(saved.fire);
+      if (saved.lighting) setLightingState(saved.lighting);
+      if (saved.cycle) setDayCycle(saved.cycle);
+      console.log('[Scene] Restored scene settings from', SCENE_SETTINGS_PATH);
     }
+  } catch (err) {
+    console.warn('[Scene] Failed to restore scene settings:', err.message);
   }
-
-  // Initial fetch and start interval
-  fetchLeaderboard();
-  setInterval(fetchLeaderboard, LEADERBOARD_UPDATE_MS);
-  console.log('[Leaderboard] Polling enabled (every 2s)');
-
-  // Start leaderboard timer (10 min voting + 5 min cooldown, aligned to clock)
-  // Cycle: 15 minutes total, starts at :00, :15, :30, :45 of each hour
-  const COUNTDOWN_DURATION_SEC = 600; // 10 minutes
-  const IDLE_DURATION_SEC = 300;      // 5 minutes
-  const CYCLE_DURATION_SEC = COUNTDOWN_DURATION_SEC + IDLE_DURATION_SEC; // 15 minutes
-
-  let timerState = {
-    capturedWinner: null, // Freeze winner name for full idle phase
-    lastPhase: null       // Track phase transitions
-  };
-
-  async function clearLeaderboardVotes() {
-    try {
-      const http = require('http');
-      const options = {
-        hostname: CHAT_API_HOST,
-        port: CHAT_API_PORT,
-        path: '/api/leaderboard/clear',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 1000
-      };
-
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode === 200) {
-            console.log('[Leaderboard] Votes cleared successfully');
-          }
-        });
-      });
-
-      req.on('error', (err) => {
-        console.warn('[Leaderboard] Failed to clear votes:', err.message);
-      });
-
-      req.end();
-    } catch (err) {
-      console.warn('[Leaderboard] Clear request error:', err.message);
-    }
-  }
-
-  /**
-   * Parse winner command to extract virgin/chad subjects
-   * Format: /virgin_X_vs_chad_Y or variations
-   */
-  function parseWinnerCommand(command) {
-    if (!command || typeof command !== 'string') return null;
-
-    // Remove leading slash and convert to lowercase
-    const normalized = command.toLowerCase().replace(/^\/+/, '');
-
-    // Match pattern: virgin_something_vs_chad_something
-    const match = normalized.match(/virgin[_\s]+(.+?)[_\s]+vs[_\s]+chad[_\s]+(.+)/i);
-    if (match) {
-      return {
-        virgin: match[1].replace(/_/g, ' ').trim(),
-        chad: match[2].replace(/_/g, ' ').trim()
-      };
-    }
-
-    return null;
-  }
-
-  /**
-   * Generate meme via MemeFactory API and queue a pipeline segment with character reactions.
-   */
-  async function generateAndDisplayMeme(winnerCommand) {
-    if (!winnerCommand || !mediaLibrary || !scriptGenerator || !pipelineStore) {
-      console.log('[Meme] Cannot generate: missing prerequisites');
-      return;
-    }
-
-    const parsed = parseWinnerCommand(winnerCommand);
-    if (!parsed) {
-      console.log(`[Meme] Could not parse winner command: ${winnerCommand}`);
-      return;
-    }
-
-    try {
-      await runMemeAndCreateSegment({ virgin: parsed.virgin, chad: parsed.chad });
-    } catch (err) {
-      console.error('[Meme] Generation error:', err.message);
-    }
-  }
-
-  function updateLeaderboardTimer() {
-    const now = Date.now();
-    const currentDate = new Date(now);
-
-    // Get minutes and seconds within current hour
-    const minutesInHour = currentDate.getMinutes();
-    const secondsInMinute = currentDate.getSeconds();
-    const totalSecondsInHour = minutesInHour * 60 + secondsInMinute;
-
-    // Calculate position within 15-minute cycle (0-899 seconds)
-    const positionInCycle = totalSecondsInHour % CYCLE_DURATION_SEC;
-
-    // Determine if we're in voting or idle phase
-    const isIdle = positionInCycle >= COUNTDOWN_DURATION_SEC;
-    const phase = isIdle ? 'idle' : 'countdown';
-
-    // Calculate remaining seconds in current phase
-    let remainingSeconds;
-    if (isIdle) {
-      // In idle phase: show time remaining until next voting starts
-      remainingSeconds = CYCLE_DURATION_SEC - positionInCycle;
-    } else {
-      // In countdown phase: show time remaining until idle starts
-      remainingSeconds = COUNTDOWN_DURATION_SEC - positionInCycle;
-    }
-
-    // Detect phase transitions
-    if (timerState.lastPhase !== phase) {
-      if (phase === 'idle') {
-        // Just transitioned to idle - capture winner and clear votes
-        const leaderboard = getLeaderboard();
-        const winner = (leaderboard && leaderboard.length > 0)
-          ? leaderboard[0].command
-          : null;
-        timerState.capturedWinner = winner;
-        console.log(`[Leaderboard Timer] Idle phase started, winner: ${winner || 'none'}`);
-        clearLeaderboardVotes();
-
-        // Generate and display winning meme on TV
-        if (winner) {
-          generateAndDisplayMeme(winner).catch(err => {
-            console.error('[Meme] Background generation failed:', err.message);
-          });
-        }
-      } else {
-        // Just transitioned to countdown
-        timerState.capturedWinner = null;
-        console.log('[Leaderboard Timer] Countdown phase started');
-      }
-      timerState.lastPhase = phase;
-    }
-
-    // Update timer display
-    if (isIdle) {
-      setLeaderboardTimer(remainingSeconds, true, timerState.capturedWinner);
-    } else {
-      setLeaderboardTimer(remainingSeconds, false, null);
-    }
-  }
-
-  // Initial timer setup - sync with clock immediately
-  updateLeaderboardTimer();
-  // Update timer every second
-  setInterval(updateLeaderboardTimer, 1000);
-
-  const now = new Date();
-  const mins = now.getMinutes();
-  const secs = now.getSeconds();
-  const posInCycle = (mins * 60 + secs) % CYCLE_DURATION_SEC;
-  const nextCycleStart = new Date(now.getTime() + (CYCLE_DURATION_SEC - posInCycle) * 1000);
-  console.log(`[Leaderboard Timer] Started (10min voting + 5min cooldown, clock-aligned)`);
-  console.log(`[Leaderboard Timer] Next cycle starts at ${nextCycleStart.toLocaleTimeString()}`);
+  restartFireTimer();
+  restartDayCycleTimer();
 
   const server = app.listen(port, host, () => {
     const startLine = JSON.stringify({ at: new Date().toISOString(), event: 'server_start', server: 'animation' }) + '\n';

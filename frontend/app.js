@@ -178,16 +178,11 @@ function playAudio(audioUrl) {
   };
 }
 
-function isSlashCommand(text) {
-  return typeof text === 'string' && text.trim().startsWith('/') && text.trim().length > 1;
-}
-
 async function sendMessage() {
   const message = chatbox.value.trim();
   if (!message) return;
   const isRouterMode = modeSelect.value === 'router';
   const isAutoMode = modeSelect.value === 'auto';
-  const isCommand = isSlashCommand(message);
 
   if (!isRouterMode && !isAutoMode) {
     chatbox.disabled = true;
@@ -196,35 +191,8 @@ async function sendMessage() {
   chatbox.value = '';
 
   addMessage(message, 'user');
-  const statusMsg = addMessage(isCommand ? 'Recording vote...' : 'Generating response...');
-
-  if (isCommand) {
-    try {
-      const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/commands` : '/api/commands';
-      const commandResponse = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: message })
-      });
-      const data = await commandResponse.json().catch(() => ({}));
-      if (!commandResponse.ok) {
-        throw new Error(data.error || 'Failed to record command');
-      }
-      removeStatus(statusMsg);
-      addMessage(`Vote registered: ${data.command} (${data.count})`, 'status');
-    } catch (error) {
-      console.error('Error:', error);
-      removeStatus(statusMsg);
-      addMessage(`Error: ${error.message}`, 'error');
-    } finally {
-      if (!isRouterMode) {
-        chatbox.disabled = false;
-        submitBtn.disabled = false;
-      }
-      chatbox.focus();
-    }
-    return;
-  }
+  const isMemeCommand = /^\/meme\s+/i.test(message);
+  const statusMsg = addMessage(isMemeCommand ? 'Submitting meme...' : 'Generating response...');
 
   if (isAutoMode) {
     try {
@@ -258,15 +226,38 @@ async function sendMessage() {
     return;
   }
 
-  // Fire-and-forget: send to director inbox, no confirmation needed
   const apiUrl = CONFIG.API_BASE_URL ? `${CONFIG.API_BASE_URL}/api/chat` : '/api/chat';
+
+  if (isMemeCommand) {
+    // Await response so we can surface errors from the animation server
+    try {
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, mode: modeSelect.value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      removeStatus(statusMsg);
+      if (!res.ok) {
+        addMessage(`Meme error: ${data.error || res.status}`, 'error');
+      } else {
+        addMessage('Meme submitted — generating on the server...', 'status');
+      }
+    } catch (err) {
+      removeStatus(statusMsg);
+      addMessage(`Meme error: ${err.message}`, 'error');
+    }
+    chatbox.disabled = false;
+    submitBtn.disabled = false;
+    chatbox.focus();
+    return;
+  }
+
+  // Fire-and-forget for normal chat messages
   fetch(apiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message,
-      mode: modeSelect.value
-    }),
+    body: JSON.stringify({ message, mode: modeSelect.value }),
   }).catch(() => {});
 
   removeStatus(statusMsg);

@@ -13,6 +13,7 @@ const LAYERS_DIR = path.join(ROOT_DIR, 'exported-layers');
 const MANIFEST_PATH = path.join(LAYERS_DIR, 'manifest.json');
 const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 const EXPRESSION_LIMITS_PATH = path.join(ROOT_DIR, 'expression-limits.json');
+const TICKER_SETTINGS_PATH = path.join(__dirname, 'ticker-settings.json');
 
 let manifest = null;
 let scaledLayerBuffers = {};
@@ -51,19 +52,48 @@ let staticBaseVersion = 0;
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
 let currentTVFrame = null; // Current TV frame buffer for compositing
+let tvContentVersion = 0;  // Stable content version: same buffer ref → same version (WeakMap-based)
+let _lastTVFrameRef = null; // Last buffer passed to setTVFrame
+const _tvFrameVersionMap = new WeakMap(); // Buffer → stable version number (GC-safe)
+let _tvVersionCounter = 0; // Monotonic counter for assigning new version numbers
 let tvReflectionBuffer = null; // TV reflection layer (composited above TV content)
 let tvReflectionPos = { x: 0, y: 0 }; // Position of TV reflection layer
-
-// Leaderboard state
-let currentLeaderboard = null; // Array of {command, count} or null
-let leaderboardVersion = 0;     // Incremented when leaderboard changes
-let leaderboardTimer = { remainingSeconds: 180, isIdle: false, winner: null }; // Timer state
 
 // Chat overlay state (Twitch-style message log)
 let chatMessages = [];       // Array of { character, text, addedAt }
 let chatVersion = 0;         // Bumped on add/expire (cache invalidation)
 const CHAT_MAX_MESSAGES = 8;
 const CHAT_EXPIRE_MS = 45000; // 45 seconds
+
+// Ticker state — scrolling bottom strip (multi-slot playlist)
+let tickerMessages = [];       // array of strings, plays in order
+let tickerCurrentIndex = 0;    // index into tickerMessages of currently playing slot
+let tickerSlotStartMs = 0;     // when the current slot started scrolling
+const TICKER_SPEED = 120;     // px/sec, right to left
+const TICKER_FONT_SIZE = 20;  // px
+const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
+
+// Meme queue overlay (top-right corner)
+let memeQueueItems = [];  // Array of { segmentId, title }
+let memeQueueVersion = 0; // Bumped on change (cache invalidation)
+
+// Fire animation state
+let fireState = { frame: 0, mode: 'circular', fps: 8, playing: true, pingPongDir: 1 };
+let lightingState = { nightOpacity: 1.0, dayOpacity: 0.0 };
+// Day/night auto cycle: advances a cosine angle to smoothly blend between night and day.
+// dayOpacity = (1 - cos(angle)) / 2  →  angle=0 → night, angle=π → day, angle=2π → night again.
+// advance rate = rpm * π / 60 rad/sec, so 2 RPM = one full day/night cycle per minute.
+let dayCycleState = { enabled: false, rpm: 2, angle: 0, lastTickMs: 0 };
+const fireFramePairs = [];       // [{ fire: entry, reflection: entry }, ...] x5
+const lightingLayerBuffers = {}; // { No_Light, Night_Light, Day_Light } → { buffer, x, y, zIndex, scaledWidth, scaledHeight }
+const lightingOpacityCache = {}; // { 'Night_Light': { opacity, buffer }, 'Day_Light': { opacity, buffer } }
+let _baseRebuildInFlight = false;
+let _baseRebuildDirty = false;
+// Split static base: lowerStaticBase = Fondo only (raw RGBA, built once)
+//                    upperStaticBuffer = TV + chars + props (transparent PNG, built once)
+// Fire rebuild only composites ~6 layers instead of all 25+
+let lowerStaticBase = null;
+let upperStaticBuffer = null;
 
 // Expression limits (loaded from expression-limits.json if it exists)
 let expressionLimits = null;
@@ -74,6 +104,16 @@ try {
   }
 } catch (err) {
   console.warn('[Compositor] Failed to load expression limits:', err.message);
+}
+
+try {
+  if (fs.existsSync(TICKER_SETTINGS_PATH)) {
+    const saved = JSON.parse(fs.readFileSync(TICKER_SETTINGS_PATH, 'utf8'));
+    tickerMessages = (saved.messages || []).map(m => (m || '').trim());
+    console.log('[Compositor] Loaded ticker messages from', TICKER_SETTINGS_PATH);
+  }
+} catch (err) {
+  console.warn('[Compositor] Failed to load ticker settings:', err.message);
 }
 
 // Expression control (eye and eyebrow positions)
@@ -137,6 +177,15 @@ const EXPRESSION_LAYER_MAP = {
 
 // Nose layers are composited above eye_cover (drawn after expression layers)
 const NOSE_LAYER_IDS = new Set(['static_virgin_nose', 'static_chad_nose']);
+
+// Fire animation layers (managed separately, not in staticLayerEntries)
+const FIRE_IDS = new Set([
+  'Fire_1', 'Fire_2', 'Fire_3', 'Fire_4', 'Fire_5',
+  'Fire_Reflection_1', 'Fire_Reflection_2', 'Fire_Reflection_3', 'Fire_Reflection_4', 'Fire_Reflection_5'
+]);
+
+// Background lighting layers (managed separately with per-opacity compositing)
+const LIGHTING_IDS = new Set(['No_Light', 'Night_Light', 'Day_Light']);
 
 // Eyebrow rotation: vertical-only movement with rotation derived from calibrated limits
 const DEFAULT_EXPRESSION_RANGE = 20; // fallback symmetric range (pixels)
@@ -280,6 +329,11 @@ async function preloadLayers() {
   staticLayerEntries = [];
   expressionLayerEntries = [];
   noseLayerEntries = [];
+  fireFramePairs.length = 0;
+  for (const k of Object.keys(lightingLayerBuffers)) delete lightingLayerBuffers[k];
+  for (const k of Object.keys(lightingOpacityCache)) delete lightingOpacityCache[k];
+  lowerStaticBase = null;
+  upperStaticBuffer = null;
 
   for (const layer of m.layers) {
     const layerPath = path.join(LAYERS_DIR, ...layer.path.split('/'));
@@ -364,6 +418,20 @@ async function preloadLayers() {
             scaledHeight
           });
           console.log(`[Compositor] Nose layer stored (above eye_cover): ${layer.id}`);
+        } else if (FIRE_IDS.has(layer.id)) {
+          // Fire animation layers — stored in scaledLayerBuffers only; fireFramePairs built below
+          console.log(`[Compositor] Fire layer loaded: ${layer.id}`);
+        } else if (LIGHTING_IDS.has(layer.id)) {
+          // Background lighting layers — managed separately for per-opacity compositing
+          lightingLayerBuffers[layer.id] = {
+            buffer,
+            x: layer.x,
+            y: layer.y,
+            zIndex: layer.zIndex,
+            scaledWidth,
+            scaledHeight
+          };
+          console.log(`[Compositor] Lighting layer stored: ${layer.id}`);
         } else if (layer.type === 'static' && layer.visible !== false) {
           staticLayers.push({ ...layer, buffer });
         } else {
@@ -377,10 +445,49 @@ async function preloadLayers() {
 
   console.log(`Loaded ${staticLayers.length} static, ${dynamicLayers.length} dynamic layers`);
 
-  // Pre-composite static layers into base image
-  console.log('Pre-compositing static base image...');
+  // Build fire frame pairs (Fire_1..5 + Fire_Reflection_1..5)
+  for (let i = 1; i <= 5; i++) {
+    const fireBuf = scaledLayerBuffers[`Fire_${i}`];
+    const refBuf = scaledLayerBuffers[`Fire_Reflection_${i}`];
+    const fireLayer = m.layers.find(l => l.id === `Fire_${i}`);
+    const refLayer = m.layers.find(l => l.id === `Fire_Reflection_${i}`);
+    fireFramePairs.push({
+      fire: fireLayer && fireBuf ? { buffer: fireBuf, x: fireLayer.x, y: fireLayer.y, zIndex: fireLayer.zIndex } : null,
+      reflection: refLayer && refBuf ? { buffer: refBuf, x: refLayer.x, y: refLayer.y, zIndex: refLayer.zIndex } : null
+    });
+  }
+  if (fireFramePairs.length === 5) {
+    console.log('[Compositor] Fire animation: 5 frame pairs loaded');
+  }
+
   staticLayerEntries = staticLayers;
-  staticBaseBuffer = await buildStaticBaseFromEntries(staticLayerEntries);
+
+  // Split staticLayerEntries into lower (below fire, zIndex < 4) and upper (above fire, zIndex > 13).
+  // Lower = just Fondo (background). Upper = TV, characters, props.
+  // These are each pre-composited ONCE and never rebuilt, making fire-frame updates cheap.
+  console.log('Pre-compositing split static bases...');
+  const lowerEntries = staticLayerEntries.filter(l => l.zIndex < 4);
+  const upperEntries = staticLayerEntries.filter(l => l.zIndex > 13);
+
+  lowerStaticBase = await buildStaticBaseFromEntries(lowerEntries);
+
+  // Upper base uses a TRANSPARENT background so fire shows through any gaps
+  const upperSorted = [...upperEntries].sort((a, b) => a.zIndex - b.zIndex);
+  upperStaticBuffer = await sharp({
+    create: { width: outputWidth, height: outputHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+  })
+    .composite(upperSorted.map(layer => ({
+      input: layer.buffer,
+      left: Math.round(layer.x * OUTPUT_SCALE),
+      top: Math.round(layer.y * OUTPUT_SCALE),
+      blend: 'over'
+    })))
+    .png()
+    .toBuffer();
+  console.log(`[Compositor] lowerEntries: ${lowerEntries.length}, upperEntries: ${upperEntries.length}`);
+
+  // Build initial staticBaseBuffer from the split components (cheap path)
+  staticBaseBuffer = await _buildBaseFromParts();
   staticBaseVersion += 1;
   frameCache = {};
   lastOutputKey = null;
@@ -462,145 +569,148 @@ function buildCaptionSvg(text) {
   const textX = bannerX + padding;
   const textY = bannerY + padding + fontSize;
 
+  // Coordinates relative to the SVG's own origin (top-left = bannerX, bannerY in output)
+  const relTextX = padding;
+  const relTextY = padding + fontSize;
   const textLines = lines.map((line, index) => {
-    const y = textY + index * lineHeight;
-    return `<text x="${textX}" y="${y}">${escapeSvgText(line)}</text>`;
+    const y = relTextY + index * lineHeight;
+    return `<text x="${relTextX}" y="${y}">${escapeSvgText(line)}</text>`;
   }).join('');
 
   const svg = `
-    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
-      <rect x="${bannerX}" y="${bannerY}" width="${bannerWidth}" height="${bannerHeight}" rx="16" ry="16" fill="rgba(0,0,0,0.6)"/>
+    <svg width="${bannerWidth}" height="${bannerHeight}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="${bannerWidth}" height="${bannerHeight}" rx="16" ry="16" fill="rgba(0,0,0,0.6)"/>
       <g fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif" font-size="${fontSize}" font-weight="600">
         ${textLines}
       </g>
     </svg>
   `;
 
-  return Buffer.from(svg);
+  // Return composite op directly — caller uses { input, left, top } to position in output
+  return { input: Buffer.from(svg), left: bannerX, top: bannerY };
 }
 
 /**
- * Build timer SVG overlay (top-center, slightly right)
- * @returns {Buffer|null} - SVG buffer or null
+ * Parse ticker text into segments, splitting on <h>...</h> highlight tags.
+ * Returns [{ text, highlight }]
  */
-function buildTimerSvg() {
-  if (!outputWidth || !outputHeight) {
-    return null;
+function parseTickerSegments(raw) {
+  const segments = [];
+  const regex = /<h>(.*?)<\/h>/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(raw)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ text: raw.slice(lastIndex, match.index), highlight: false });
+    }
+    segments.push({ text: match[1], highlight: true });
+    lastIndex = regex.lastIndex;
   }
-
-  const baseTimerFontSize = 48;
-  const margin = 20;
-  const rightOffset = 60; // Shift right from center
-
-  // Timer display text
-  let timerText = '';
-  let fontSize = baseTimerFontSize;
-
-  if (leaderboardTimer.isIdle && leaderboardTimer.winner) {
-    // During idle minute, show winner name at half size
-    timerText = String(leaderboardTimer.winner).slice(0, 50);
-    fontSize = baseTimerFontSize / 2;
-  } else if (leaderboardTimer.isIdle) {
-    // Idle with no winner (no memes submitted) - show nothing
-    return null;
-  } else {
-    // During countdown, show timer at full size
-    const minutes = Math.floor(leaderboardTimer.remainingSeconds / 60);
-    const seconds = leaderboardTimer.remainingSeconds % 60;
-    timerText = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  if (lastIndex < raw.length) {
+    segments.push({ text: raw.slice(lastIndex), highlight: false });
   }
-
-  // Center positioning with right offset
-  const textWidth = timerText.length * fontSize * 0.55; // Rough approximation
-  const textX = (outputWidth - textWidth) / 2 + rightOffset;
-  const textY = margin + fontSize;
-
-  const svg = `
-    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
-      <g fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif" font-size="${fontSize}" font-weight="700">
-        <text x="${textX}" y="${textY}">${escapeSvgText(timerText)}</text>
-      </g>
-    </svg>
-  `;
-
-  return Buffer.from(svg);
+  return segments;
 }
 
 /**
- * Build leaderboard SVG overlay (top-right corner)
- * @param {Array} entries - Array of {command, count} objects
- * @returns {Buffer|null} - SVG buffer or null if no entries
+ * Build scrolling ticker SVG — black strip at bottom, text sliding right→left on loop.
+ * Supports <h>text</h> tags to highlight sections in yellow (#D99A1C).
+ * Plays tickerMessages in sequence, one full scroll cycle per slot, then advances.
  */
-function buildLeaderboardSvg(entries) {
-  if (!outputWidth || !outputHeight) {
-    return null;
+function buildTickerSvg() {
+  if (!tickerMessages.length || !outputWidth || !outputHeight) return null;
+
+  // Find the next non-empty slot starting from tickerCurrentIndex
+  const findNextActive = (start) => {
+    for (let i = 0; i < tickerMessages.length; i++) {
+      const idx = (start + i) % tickerMessages.length;
+      if (tickerMessages[idx] && tickerMessages[idx].trim()) return idx;
+    }
+    return -1;
+  };
+
+  const activeIdx = findNextActive(tickerCurrentIndex);
+  if (activeIdx === -1) return null;
+
+  // Snap to first available non-empty slot if current is empty
+  if (activeIdx !== tickerCurrentIndex) {
+    tickerCurrentIndex = activeIdx;
+    tickerSlotStartMs = 0;
   }
 
-  const margin = 20;
-  const fontSize = 16;
-  const titleFontSize = 18;
-  const subtitleFontSize = 10;
-  const lineHeight = Math.round(fontSize * 1.4);
-  const titleLineHeight = Math.round(titleFontSize * 1.3);
-  const subtitleLineHeight = Math.round(subtitleFontSize * 1.3);
-  const paddingX = 14;
-  const paddingY = 10;
-  const maxEntries = Math.min(3, entries.length);
+  const currentText = tickerMessages[tickerCurrentIndex];
+  const segments = parseTickerSegments(currentText);
+  const plainLength = segments.reduce((n, s) => n + s.text.length, 0);
+  const stripY = outputHeight - TICKER_HEIGHT;
 
-  const title = "NEXT MEME CONTENDER";
-  const subtitle = "Type /your_meme_idea to submit or vote";
+  const estimatedTextWidth = Math.ceil(plainLength * TICKER_FONT_SIZE * 0.6);
+  const cycleWidthPx = outputWidth + estimatedTextWidth;
+  const cycleDurationMs = (cycleWidthPx / TICKER_SPEED) * 1000;
 
-  // Build text lines: "🏆 /command: 42"
-  const lines = (entries && Array.isArray(entries) && entries.length > 0)
-    ? entries.slice(0, maxEntries).map((entry, idx) => {
-        const emoji = idx === 0 ? '🏆' : (idx === 1 ? '🥈' : '🥉');
-        const cmd = String(entry.command || '').slice(0, 30);
-        const count = Number(entry.count) || 0;
-        return `${emoji} ${cmd}: ${count}`;
-      })
-    : [];
+  const now = Date.now();
+  if (!tickerSlotStartMs) tickerSlotStartMs = now;
+  const elapsed = now - tickerSlotStartMs;
 
-  const textBlockHeight = titleLineHeight + subtitleLineHeight + (lines.length * lineHeight);
-  const bannerHeight = textBlockHeight + paddingY * 2;
-  const bannerWidth = Math.min(280, outputWidth - margin * 2);
-  const bannerX = outputWidth - margin - bannerWidth;
-  const bannerY = margin;
-  const textX = bannerX + paddingX;
-  let currentY = bannerY + paddingY + titleFontSize;
+  // Advance to next slot when this one completes a full scroll cycle
+  if (elapsed >= cycleDurationMs) {
+    const next = findNextActive(tickerCurrentIndex + 1);
+    if (next !== -1 && next !== tickerCurrentIndex) {
+      tickerCurrentIndex = next;
+      tickerSlotStartMs = now;
+      return buildTickerSvg(); // recurse with new slot
+    }
+    // Single active message: reset slot clock for seamless loop
+    tickerSlotStartMs = now - (elapsed % cycleDurationMs);
+  }
 
-  // Title
-  const titleText = `<text x="${textX}" y="${currentY}" font-size="${titleFontSize}" font-weight="700" letter-spacing="0.5">${escapeSvgText(title)}</text>`;
-  currentY += titleLineHeight;
+  const scrollX = Math.round(outputWidth - ((now - tickerSlotStartMs) / cycleDurationMs) * cycleWidthPx);
+  // textY is relative to the strip SVG's own origin (top of strip = y=0 in the mini SVG)
+  const textY = Math.round((TICKER_HEIGHT + TICKER_FONT_SIZE) / 2) - 2;
 
-  // Subtitle
-  const subtitleText = `<text x="${textX}" y="${currentY}" font-size="${subtitleFontSize}" font-weight="400" opacity="0.8">${escapeSvgText(subtitle)}</text>`;
-  currentY += subtitleLineHeight + 4;
-
-  // Leaderboard lines
-  const textLines = lines.map((line, index) => {
-    const y = currentY + index * lineHeight;
-    return `<text x="${textX}" y="${y}" font-size="${fontSize}">${escapeSvgText(line)}</text>`;
+  // Render each segment as a <tspan> with its own fill — they flow inline automatically.
+  // Pad highlight segments with spaces on each side where the adjacent segment doesn't already provide one.
+  const tspans = segments.map((s, i) => {
+    const fill = s.highlight ? '#D99A1C' : 'white';
+    let text = s.text;
+    if (s.highlight) {
+      const prev = segments[i - 1];
+      const next = segments[i + 1];
+      if (!text.startsWith(' ') && !(prev && prev.text.endsWith(' '))) text = '\u00A0' + text;
+      if (!text.endsWith(' ') && !(next && next.text.startsWith(' '))) text = text + '\u00A0';
+    }
+    return `<tspan fill="${fill}">${escapeSvgText(text)}</tspan>`;
   }).join('');
 
-  const svg = `
-    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
-      <g fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif" font-weight="500">
-        ${titleText}
-        ${subtitleText}
-        ${textLines}
-      </g>
-    </svg>
-  `;
+  // SVG is only TICKER_HEIGHT px tall — ~20x fewer pixels for librsvg to rasterize.
+  // Positioned at stripY in the output via the composite op's `top` field.
+  const svg = `<svg width="${outputWidth}" height="${TICKER_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="${outputWidth}" height="${TICKER_HEIGHT}" fill="black"/>
+  <text x="${scrollX}" y="${textY}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="600" xml:space="preserve">${tspans}</text>
+</svg>`;
 
-  return Buffer.from(svg);
+  // Return composite op: input SVG + output position
+  return { input: Buffer.from(svg), left: 0, top: stripY };
 }
 
+/**
 /**
  * Set the current TV frame buffer for compositing
  * @param {Buffer|null} buffer - PNG buffer scaled to viewport size, or null to clear
  */
 function setTVFrame(buffer) {
+  if (buffer === _lastTVFrameRef) return; // identical ref — no change
   currentTVFrame = buffer;
+  _lastTVFrameRef = buffer;
+  if (buffer === null) {
+    tvContentVersion = -1;
+  } else if (_tvFrameVersionMap.has(buffer)) {
+    // Buffer seen before (e.g. pan animation looping back to frame 0) — reuse stable version.
+    // This lets the output cache hit on the 2nd+ cycle of a pan animation.
+    tvContentVersion = _tvFrameVersionMap.get(buffer);
+  } else {
+    tvContentVersion = _tvVersionCounter++;
+    _tvFrameVersionMap.set(buffer, tvContentVersion);
+  }
 }
 
 /**
@@ -617,72 +727,6 @@ function getTVFrame() {
  */
 function getTVViewport() {
   return TV_VIEWPORT;
-}
-
-/**
- * Set the current leaderboard data for overlay
- * @param {Array|null} entries - Array of {command, count} objects, or null to clear
- */
-function setLeaderboard(entries) {
-  if (!entries || !Array.isArray(entries) || entries.length === 0) {
-    if (currentLeaderboard !== null) {
-      currentLeaderboard = null;
-      leaderboardVersion++;
-    }
-    return;
-  }
-
-  // Check if data actually changed (avoid version bumps on identical data)
-  const newHash = JSON.stringify(entries.slice(0, 3).map(e => ({ c: e.command, n: e.count })));
-  const oldHash = currentLeaderboard
-    ? JSON.stringify(currentLeaderboard.slice(0, 3).map(e => ({ c: e.command, n: e.count })))
-    : '';
-
-  if (newHash !== oldHash) {
-    currentLeaderboard = entries.slice(0, 3); // Keep top 3
-    leaderboardVersion++;
-  }
-}
-
-/**
- * Get current leaderboard data
- * @returns {Array|null}
- */
-function getLeaderboard() {
-  return currentLeaderboard;
-}
-
-/**
- * Get current leaderboard version (for cache key)
- * @returns {number}
- */
-function getLeaderboardVersion() {
-  return leaderboardVersion;
-}
-
-/**
- * Set the leaderboard timer state
- * @param {number} remainingSeconds - Seconds remaining in countdown
- * @param {boolean} isIdle - Whether timer is in idle/winner display mode
- * @param {string|null} winner - Winner command to display during idle
- */
-function setLeaderboardTimer(remainingSeconds, isIdle, winner) {
-  const changed = leaderboardTimer.remainingSeconds !== remainingSeconds ||
-                  leaderboardTimer.isIdle !== isIdle ||
-                  leaderboardTimer.winner !== winner;
-
-  if (changed) {
-    leaderboardTimer = { remainingSeconds, isIdle, winner };
-    leaderboardVersion++; // Force cache update when timer changes
-  }
-}
-
-/**
- * Get current leaderboard timer state
- * @returns {Object} - {remainingSeconds, isIdle, winner}
- */
-function getLeaderboardTimer() {
-  return { ...leaderboardTimer };
 }
 
 /**
@@ -719,6 +763,66 @@ function getChatVersion() {
 }
 
 /**
+ * Build the "Queued Memes" panel SVG — top-right corner.
+ * Shows up to 10 meme titles; last two fade to signal more may exist.
+ * Returns Buffer or null if queue is empty.
+ */
+function buildMemeQueueSvg() {
+  if (!outputWidth || !outputHeight || memeQueueItems.length === 0) return null;
+
+  const items = memeQueueItems.slice(0, 10);
+  const PANEL_W = 264;
+  const PAD_X   = 12;
+  const PAD_Y   = 8;
+  const MARGIN  = 16;
+  const TITLE_FONT = 11;
+  const TITLE_H    = 22; // height of the title row (text + gap below)
+  const ITEM_FONT  = 13;
+  const ITEM_H     = 20;
+  const MAX_CHARS  = 30; // truncate titles longer than this
+
+  const panelH = PAD_Y + TITLE_H + items.length * ITEM_H + PAD_Y;
+  const panelX = outputWidth - MARGIN - PANEL_W; // right-aligned
+  const panelY = MARGIN;
+
+  // Strip parenthetical labels like "(wise, old)" and truncate
+  const cleanTitle = (s) => {
+    const stripped = s.replace(/\s*\([^)]*\)/g, '').trim();
+    return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '\u2026' : stripped;
+  };
+
+  // Fade last 2 items only when there are 3+ items, to hint the list continues
+  const getOpacity = (i, total) => {
+    if (total <= 2) return 1.0;
+    if (i === total - 1) return 0.18;
+    if (i === total - 2) return 0.5;
+    return 1.0;
+  };
+
+  // Coordinates relative to the SVG's own origin (top-left = panelX, panelY in output)
+  const relTextX = PAD_X;
+  const relTitleY = PAD_Y + TITLE_FONT;
+  const relDividerY = PAD_Y + TITLE_H;
+
+  const itemRows = items.map((item, i) => {
+    const y = relDividerY + (i + 1) * ITEM_H - 4;
+    const op = getOpacity(i, items.length);
+    const weight = i === 0 ? '600' : '400';
+    const fill = i === 0 ? '#ffffff' : 'rgba(255,255,255,0.85)';
+    return `<text x="${relTextX}" y="${y}" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(item.title))}</text>`;
+  }).join('');
+
+  // SVG is only PANEL_W × panelH — much smaller than full 1280×720 output
+  const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <text x="${relTextX}" y="${relTitleY}" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">QUEUED MEMES</text>
+    ${itemRows}
+  </svg>`;
+
+  return { input: Buffer.from(svg), left: panelX, top: panelY };
+}
+
+/**
  * Build chat overlay SVG (bottom-left, above caption area).
  * Returns Buffer or null if no messages.
  */
@@ -736,30 +840,239 @@ function buildChatOverlaySvg() {
   const bottomReserve = 140; // Space for caption
   const margin = 16;
 
+  const bannerWidth = maxWidth + paddingX * 2;
   const bannerHeight = chatMessages.length * lineHeight + paddingY * 2;
   const bannerX = margin;
   const bannerY = outputHeight - bottomReserve - bannerHeight;
 
+  // Coordinates relative to SVG origin (bannerX, bannerY in output)
   const lines = chatMessages.map((msg, i) => {
     const age = now - msg.addedAt;
     const lifeRatio = age / CHAT_EXPIRE_MS;
     // Full opacity for first 65% of lifetime, fade to 0.2 over remaining 35%
     const opacity = lifeRatio < 0.65 ? 1.0 : Math.max(0.2, 1.0 - ((lifeRatio - 0.65) / 0.35) * 0.8);
-    const y = bannerY + paddingY + fontSize + i * lineHeight;
+    const y = paddingY + fontSize + i * lineHeight; // relative to SVG top
     const name = msg.username;
     return `<g opacity="${opacity.toFixed(2)}">` +
-      `<text x="${bannerX + paddingX}" y="${y}" font-size="${fontSize}" font-weight="700" fill="#a78bfa" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(name)}:</text>` +
-      `<text x="${bannerX + paddingX + name.length * fontSize * 0.65 + fontSize * 0.4}" y="${y}" font-size="${fontSize}" font-weight="400" fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(msg.text)}</text>` +
+      `<text x="${paddingX}" y="${y}" font-size="${fontSize}" font-weight="700" fill="#a78bfa" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(name)}:</text>` +
+      `<text x="${paddingX + name.length * fontSize * 0.65 + fontSize * 0.4}" y="${y}" font-size="${fontSize}" font-weight="400" fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(msg.text)}</text>` +
       `</g>`;
   }).join('');
 
+  // SVG is only the chat banner area — much smaller than full 1280×720 output
   const svg = `
-    <svg width="${outputWidth}" height="${outputHeight}" xmlns="http://www.w3.org/2000/svg">
+    <svg width="${bannerWidth}" height="${bannerHeight}" xmlns="http://www.w3.org/2000/svg">
       ${lines}
     </svg>
   `;
 
-  return Buffer.from(svg);
+  return { input: Buffer.from(svg), left: bannerX, top: bannerY };
+}
+
+/**
+ * Assemble the full layer list for the static base:
+ * staticLayerEntries + lighting layers (with opacity) + current fire frame
+ */
+/**
+ * Cheap base build: lowerStaticBase (Fondo, raw RGBA) + lighting ops + fire ops + upperStaticBuffer.
+ * Only ~6 Sharp composite ops regardless of how many static layers exist.
+ * Called both from preloadLayers (direct await) and _rebuildStaticBase (hot path).
+ */
+async function _buildBaseFromParts() {
+  if (!lowerStaticBase || !outputWidth) return staticBaseBuffer; // Not ready yet
+
+  const ops = [];
+
+  // Resolve night/day opacities — cycle overrides manual sliders when enabled.
+  let nightOpacity = lightingState.nightOpacity;
+  let dayOpacity   = lightingState.dayOpacity;
+  if (dayCycleState.enabled) {
+    const dayFrac = (1 - Math.cos(dayCycleState.angle)) / 2;
+    dayOpacity   = dayFrac;
+    nightOpacity = 1 - dayFrac;
+  }
+
+  // Lighting layers in intended render order: No_Light (base) → Night_Light → Day_Light.
+  // We hardcode this order rather than relying on manifest zIndex, because the PSD may have
+  // Night_Light below No_Light in z-order (the pre-req swap may not have been done).
+  const lightingRenderOrder = [
+    { id: 'No_Light',    opacity: 1.0 },
+    { id: 'Night_Light', opacity: nightOpacity },
+    { id: 'Day_Light',   opacity: dayOpacity },
+  ];
+
+  for (const { id, opacity } of lightingRenderOrder) {
+    const lb = lightingLayerBuffers[id];
+    if (!lb || opacity <= 0) continue;
+
+    let buf;
+    if (opacity >= 0.999) {
+      buf = lb.buffer;
+    } else {
+      const rounded = Math.round(opacity * 100) / 100;
+      const cached = lightingOpacityCache[id];
+      if (cached && cached.opacity === rounded) {
+        buf = cached.buffer;
+      } else {
+        buf = await applyOpacityToBuffer(lb.buffer, { width: lb.scaledWidth, height: lb.scaledHeight }, opacity);
+        lightingOpacityCache[id] = { opacity: rounded, buffer: buf };
+      }
+    }
+
+    ops.push({ input: buf, left: Math.round(lb.x * OUTPUT_SCALE), top: Math.round(lb.y * OUTPUT_SCALE), blend: 'over' });
+  }
+
+  // Current fire frame
+  if (fireState.playing && fireFramePairs.length === 5) {
+    const pair = fireFramePairs[fireState.frame];
+    if (pair?.reflection) {
+      ops.push({ input: pair.reflection.buffer, left: Math.round(pair.reflection.x * OUTPUT_SCALE), top: Math.round(pair.reflection.y * OUTPUT_SCALE), blend: 'over' });
+    }
+    if (pair?.fire) {
+      ops.push({ input: pair.fire.buffer, left: Math.round(pair.fire.x * OUTPUT_SCALE), top: Math.round(pair.fire.y * OUTPUT_SCALE), blend: 'over' });
+    }
+  }
+
+  // Upper static (TV + characters + props) as a single pre-composited transparent PNG
+  if (upperStaticBuffer) {
+    ops.push({ input: upperStaticBuffer, left: 0, top: 0, blend: 'over' });
+  }
+
+  const result = await sharp(lowerStaticBase.data, {
+    raw: { width: lowerStaticBase.info.width, height: lowerStaticBase.info.height, channels: lowerStaticBase.info.channels }
+  })
+    .composite(ops)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  return { data: result.data, info: result.info };
+}
+
+/**
+ * Rebuild staticBaseBuffer from current fire/lighting state (hot path for fire timer).
+ * Coalescing: if a rebuild is already in flight, marks dirty so it runs once more after.
+ */
+async function _rebuildStaticBase() {
+  if (_baseRebuildInFlight) {
+    _baseRebuildDirty = true;
+    return;
+  }
+  _baseRebuildInFlight = true;
+  _baseRebuildDirty = false;
+  try {
+    const newBase = await _buildBaseFromParts();
+    if (newBase) {
+      staticBaseBuffer = newBase;
+      staticBaseVersion += 1;
+      // Do NOT clear committedExprBaseBuffer or frameCache.
+      // The committed-base pattern keeps the old base serving frames while the new L1 builds.
+    }
+  } catch (err) {
+    console.warn('[Compositor] Base rebuild failed:', err.message);
+  } finally {
+    _baseRebuildInFlight = false;
+    if (_baseRebuildDirty) {
+      _baseRebuildDirty = false;
+      setImmediate(_rebuildStaticBase);
+    }
+  }
+}
+
+/**
+ * Update fire animation state (playing, mode, fps).
+ * Does NOT advance the frame — that is driven by the timer in server.js.
+ */
+function setFireState(config) {
+  Object.assign(fireState, config);
+  setImmediate(_rebuildStaticBase);
+}
+
+/**
+ * Update background lighting opacities.
+ */
+function setLightingState(config) {
+  Object.assign(lightingState, config);
+  setImmediate(_rebuildStaticBase);
+}
+
+/**
+ * Advance the fire animation frame by one step (called by fire timer in server.js).
+ * Bumps staticBaseVersion only if the frame actually changed.
+ */
+function advanceFireFrame() {
+  const prev = fireState.frame;
+  if (fireState.mode === 'circular') {
+    fireState.frame = (fireState.frame + 1) % 5;
+  } else if (fireState.mode === 'pingpong') {
+    fireState.frame += fireState.pingPongDir;
+    if (fireState.frame >= 4) {
+      fireState.frame = 4;
+      fireState.pingPongDir = -1;
+    } else if (fireState.frame <= 0) {
+      fireState.frame = 0;
+      fireState.pingPongDir = 1;
+    }
+  } else if (fireState.mode === 'random') {
+    if (fireFramePairs.length > 1) {
+      let next;
+      do { next = Math.floor(Math.random() * 5); } while (next === fireState.frame);
+      fireState.frame = next;
+    }
+  }
+  if (fireState.frame !== prev) {
+    setImmediate(_rebuildStaticBase);
+  }
+}
+
+/**
+ * Configure the day/night auto cycle (enable/disable, set RPM, set starting angle).
+ */
+function setDayCycle(config) {
+  if (config.enabled !== undefined) {
+    const enabling = Boolean(config.enabled);
+    if (enabling && !dayCycleState.enabled) {
+      // Reset lastTickMs so the first tick doesn't jump
+      dayCycleState.lastTickMs = 0;
+    }
+    dayCycleState.enabled = enabling;
+  }
+  if (typeof config.rpm === 'number') dayCycleState.rpm = Math.max(0.1, Math.min(60, config.rpm));
+  if (typeof config.angle === 'number') dayCycleState.angle = config.angle % (2 * Math.PI);
+  setImmediate(_rebuildStaticBase);
+}
+
+/**
+ * Advance the day/night cycle by elapsed time. Called by server.js on a fast interval.
+ * Only acts when dayCycleState.enabled is true.
+ */
+function tickDayCycle() {
+  if (!dayCycleState.enabled) return;
+  const now = Date.now();
+  if (dayCycleState.lastTickMs > 0) {
+    const elapsed = (now - dayCycleState.lastTickMs) / 1000; // seconds
+    dayCycleState.angle = (dayCycleState.angle + dayCycleState.rpm * Math.PI / 60 * elapsed) % (2 * Math.PI);
+    setImmediate(_rebuildStaticBase);
+  }
+  dayCycleState.lastTickMs = now;
+}
+
+/**
+ * Return current fire + lighting + cycle state snapshot (for API responses and persistence).
+ */
+function getSceneState() {
+  const dayFrac = (1 - Math.cos(dayCycleState.angle)) / 2;
+  return {
+    fire: { ...fireState },
+    lighting: { ...lightingState },
+    cycle: {
+      enabled: dayCycleState.enabled,
+      rpm: dayCycleState.rpm,
+      angle: dayCycleState.angle,
+      // Live opacities driven by cycle (null when cycle is off — manual sliders apply instead)
+      dayFrac: dayCycleState.enabled ? dayFrac : null,
+    }
+  };
 }
 
 async function buildStaticBaseFromEntries(entries) {
@@ -1112,13 +1425,17 @@ async function compositeFrame(state) {
   const captionKey = caption ? caption.slice(0, 40) : '';
   const exprSnapshot = JSON.parse(JSON.stringify(expressionOffsets));
 
-  // Expression key for L1 cache lookup (based on current expression offsets)
-  const exprKey = `ce${exprSnapshot.chad.eyes.x},${exprSnapshot.chad.eyes.y}`
-    + `cbl${exprSnapshot.chad.eyebrows.left.y}r${exprSnapshot.chad.eyebrows.left.rotation}`
-    + `cbr${exprSnapshot.chad.eyebrows.right.y}r${exprSnapshot.chad.eyebrows.right.rotation}`
-    + `ve${exprSnapshot.virgin.eyes.x},${exprSnapshot.virgin.eyes.y}`
-    + `vbl${exprSnapshot.virgin.eyebrows.left.y}r${exprSnapshot.virgin.eyebrows.left.rotation}`
-    + `vbr${exprSnapshot.virgin.eyebrows.right.y}r${exprSnapshot.virgin.eyebrows.right.rotation}`;
+  // Expression key for L1 cache lookup — quantized to match Math.round() precision used in rendering.
+  // Raw tween floats (e.g. 0.371) would create unique keys for every sub-pixel step,
+  // thrashing the cache even though the rendered output is identical.
+  const re = v => Math.round(v);           // integer pixels (eye/eyebrow position)
+  const rr = v => Math.round(v * 10) / 10; // 0.1° rotation precision
+  const exprKey = `ce${re(exprSnapshot.chad.eyes.x)},${re(exprSnapshot.chad.eyes.y)}`
+    + `cbl${re(exprSnapshot.chad.eyebrows.left.y)}r${rr(exprSnapshot.chad.eyebrows.left.rotation)}`
+    + `cbr${re(exprSnapshot.chad.eyebrows.right.y)}r${rr(exprSnapshot.chad.eyebrows.right.rotation)}`
+    + `ve${re(exprSnapshot.virgin.eyes.x)},${re(exprSnapshot.virgin.eyes.y)}`
+    + `vbl${re(exprSnapshot.virgin.eyebrows.left.y)}r${rr(exprSnapshot.virgin.eyebrows.left.rotation)}`
+    + `vbr${re(exprSnapshot.virgin.eyebrows.right.y)}r${rr(exprSnapshot.virgin.eyebrows.right.rotation)}`;
   // === Two-level compositing ===
   // Level 1: Expression base (staticBase + expression layers + nose) — cached by exprKey.
   //   Only recomputes when expression offsets change (~3-5x/sec).
@@ -1181,10 +1498,11 @@ async function compositeFrame(state) {
   // Build output key using the EFFECTIVE base key (not requested expression offsets)
   // so the fast path correctly reflects what was actually rendered
   const currentChatVersion = getChatVersion();
-  let outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvFrameIndex}-c${captionKey}-lb${leaderboardVersion}-ch${currentChatVersion}`;
+  const hasActiveTicker = tickerMessages.some(m => m);
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}`;
 
-  // Fast path: if nothing changed since last frame, return last output directly (0 pipelines)
-  if (outputKey === lastOutputKey && lastOutputBuffer) {
+  // Fast path: skip all compositing if nothing changed and ticker is inactive
+  if (!hasActiveTicker && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -1267,65 +1585,47 @@ async function compositeFrame(state) {
     }
   }
 
-  const captionSvg = caption ? buildCaptionSvg(caption) : null;
-  if (captionSvg) {
-    overlayOps.push({
-      input: captionSvg,
-      left: 0,
-      top: 0,
-      blend: 'over'
-    });
+  // SVG builders return { input, left, top } positioned to their content bounds.
+  // This reduces librsvg rasterization area vs full 1280×720 SVGs.
+  const captionOp = caption ? buildCaptionSvg(caption) : null;
+  if (captionOp) overlayOps.push({ ...captionOp, blend: 'over' });
+
+  const chatOp = buildChatOverlaySvg();
+  if (chatOp) overlayOps.push({ ...chatOp, blend: 'over' });
+
+  const memeQueueOp = buildMemeQueueSvg();
+  if (memeQueueOp) overlayOps.push({ ...memeQueueOp, blend: 'over' });
+
+  // Ticker: correctly-sized SVG (1280×TICKER_HEIGHT = 36px, ~20× less than full frame).
+  // Composited in the same single pass — rasterization cost is negligible at this size.
+  if (hasActiveTicker) {
+    const tickerOp = buildTickerSvg();
+    if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  const timerSvg = buildTimerSvg();
-  if (timerSvg) {
-    overlayOps.push({
-      input: timerSvg,
-      left: 0,
-      top: 0,
-      blend: 'over'
-    });
-  }
-
-  const leaderboardSvg = currentLeaderboard ? buildLeaderboardSvg(currentLeaderboard) : null;
-  if (leaderboardSvg) {
-    overlayOps.push({
-      input: leaderboardSvg,
-      left: 0,
-      top: 0,
-      blend: 'over'
-    });
-  }
-
-  const chatSvg = buildChatOverlaySvg();
-  if (chatSvg) {
-    overlayOps.push({
-      input: chatSvg,
-      left: 0,
-      top: 0,
-      blend: 'over'
-    });
-  }
-
+  // Check output cache (non-ticker frames only — ticker output scrolls every frame)
   let result;
-  if (overlayOps.length > 0) {
-    // Check output cache before running overlay composite
+  if (!hasActiveTicker) {
     result = outputCache[outputKey];
-    if (!result) {
+  }
+
+  if (!result) {
+    if (overlayOps.length > 0) {
       result = await sharp(charBuffer)
         .composite(overlayOps)
         .jpeg({ quality: JPEG_QUALITY })
         .toBuffer();
-      // Cache output (tvFrameIndex in key ensures TV frames are distinct)
+    } else {
+      result = charBuffer;
+    }
+
+    if (!hasActiveTicker) {
       const outKeys = Object.keys(outputCache);
       if (outKeys.length >= OUTPUT_CACHE_MAX) {
         for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
       }
       outputCache[outputKey] = result;
     }
-  } else {
-    // No TV, no caption — cached JPEG includes everything (0 pipelines)
-    result = charBuffer;
   }
 
   lastOutputKey = outputKey;
@@ -1347,6 +1647,7 @@ function clearCache() {
   committedExprBaseBuffer = null;
   lastExprBaseKey = null;
   lastExprBaseBuffer = null;
+  _lastTVFrameRef = null; // force re-registration on next setTVFrame
 }
 
 function getManifestDimensions() {
@@ -1595,10 +1896,28 @@ module.exports = {
   setEyebrowRotationLimits,
   setEyebrowAsymmetry,
   setSpeakingCharacter,
-  setLeaderboard,
-  getLeaderboard,
-  getLeaderboardVersion,
-  setLeaderboardTimer,
-  getLeaderboardTimer,
-  addChatMessage
+  addChatMessage,
+  setFireState,
+  setLightingState,
+  advanceFireFrame,
+  setDayCycle,
+  tickDayCycle,
+  getSceneState,
+  setTickerMessages: (msgs) => {
+    tickerMessages = (msgs || []).map(m => (m || '').trim());
+    tickerCurrentIndex = 0;
+    tickerSlotStartMs = 0;
+    try {
+      fs.writeFileSync(TICKER_SETTINGS_PATH, JSON.stringify({ messages: tickerMessages }, null, 2), 'utf8');
+    } catch (err) {
+      console.warn('[Compositor] Failed to save ticker settings:', err.message);
+    }
+  },
+  getTickerMessages: () => [...tickerMessages],
+  getTickerCurrentIndex: () => tickerCurrentIndex,
+  setMemeQueue: (items) => {
+    memeQueueItems = Array.isArray(items) ? items : [];
+    memeQueueVersion++;
+    lastOutputKey = null; // invalidate output fast path
+  }
 };

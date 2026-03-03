@@ -119,6 +119,28 @@
       transition: width 0.3s;
     }
 
+    /* Meme generation section */
+    #meme-gen-section {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      min-height: 50px;
+      align-items: flex-start;
+    }
+
+    .meme-gen-card {
+      background: #232838;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      min-width: 150px;
+      border: 1px solid #3a4060;
+    }
+
+    .meme-gen-card .type { font-weight: 600; color: var(--accent); }
+    .meme-gen-card .seed { color: var(--muted); font-size: 0.8rem; margin: 4px 0; }
+    .meme-gen-card.failed { border-color: #c44; opacity: 0.7; }
+
     /* Pipeline section - horizontal row, rightmost = on-air */
     #pipeline-section {
       display: flex;
@@ -486,12 +508,125 @@
       left: 0;
       right: 0;
       background: var(--panel);
-      padding: 10px 20px;
       display: flex;
-      justify-content: space-between;
+      flex-direction: column;
       font-size: 0.85rem;
       color: var(--muted);
       border-top: 1px solid #2a3040;
+    }
+
+    #ticker-panel {
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      right: 0;
+      background: var(--panel);
+      border-top: 1px solid #2a3040;
+      padding: 10px 20px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #ticker-panel.open { display: flex; }
+
+    #ticker-slots {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .ticker-slot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      font-size: 0.82rem;
+    }
+
+    .ticker-slot:hover { background: #1a1f2e; }
+    .ticker-slot.selected { border-color: #3a4060; background: #141820; }
+
+    .ticker-slot-play {
+      font-size: 0.65rem;
+      color: #4ade80;
+      opacity: 0;
+      flex-shrink: 0;
+      width: 10px;
+    }
+
+    .ticker-slot-play.active { opacity: 1; }
+
+    .ticker-slot-num {
+      font-size: 0.7rem;
+      color: var(--muted);
+      flex-shrink: 0;
+      width: 18px;
+      text-align: right;
+    }
+
+    .ticker-slot-text {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+
+    .ticker-slot-text.empty { color: var(--muted); font-style: italic; }
+
+    .ticker-slot-delete {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0 2px;
+      flex-shrink: 0;
+      opacity: 0;
+    }
+
+    .ticker-slot:hover .ticker-slot-delete { opacity: 1; }
+
+    #ticker-edit-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      border-top: 1px solid #2a3040;
+      padding-top: 8px;
+    }
+
+    #ticker-edit-input {
+      flex: 1;
+      background: #0f1014;
+      border: 1px solid #2a3040;
+      border-radius: 6px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.85rem;
+      padding: 4px 10px;
+    }
+
+    #ticker-edit-input::placeholder { color: var(--muted); }
+
+    #ticker-toggle-btn {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 3px 10px;
+    }
+
+    #status-bar-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 20px;
     }
 
     .status-indicator {
@@ -526,7 +661,7 @@
         <input type="checkbox" id="filler-toggle">
         Filler
       </label>
-      <button class="btn-primary" id="play-btn">Play</button>
+<button class="btn-primary" id="play-btn">Play</button>
       <button class="btn-danger" id="pause-btn">Pause</button>
     </div>
   </header>
@@ -637,19 +772,19 @@
   </div>
 
   <!-- Meme row: Create (2/3) + Library (1/3) -->
-  <div style="display:flex;gap:16px;margin-bottom:16px;align-items:flex-start;">
+  <div style="display:flex;gap:16px;margin-bottom:16px;align-items:stretch;">
 
     <!-- Create Meme Segment -->
-    <div class="panel" style="flex:2;margin-bottom:0;">
+    <div class="panel" style="flex:2;margin-bottom:0;display:flex;flex-direction:column;">
       <h2>Create Meme Segment</h2>
-      <div style="display:flex;gap:16px;">
+      <div style="display:flex;gap:16px;flex:1;">
 
         <!-- Virgin side -->
         <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
           <label style="font-size:0.8rem;color:var(--muted);font-weight:600;letter-spacing:0.04em;">VIRGIN IS…</label>
           <input id="meme-virgin" class="twitter-field" placeholder="e.g. python developer" />
           <label style="font-size:0.75rem;color:var(--muted);">Labels (optional, one per line — AI fills the rest)</label>
-          <textarea id="meme-virgin-labels" placeholder="Uses print() for debugging&#10;Googles the error message&#10;Reads the docs at 3 AM" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;color:var(--text);font-family:inherit;font-size:0.85rem;padding:8px;resize:vertical;min-height:80px;width:100%;box-sizing:border-box;"></textarea>
+          <textarea id="meme-virgin-labels" placeholder="Uses print() for debugging&#10;Googles the error message&#10;Reads the docs at 3 AM" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;color:var(--text);font-family:inherit;font-size:0.85rem;padding:8px;resize:none;min-height:80px;width:100%;box-sizing:border-box;flex:1;"></textarea>
         </div>
 
         <!-- Chad side -->
@@ -657,7 +792,7 @@
           <label style="font-size:0.8rem;color:var(--muted);font-weight:600;letter-spacing:0.04em;">CHAD IS…</label>
           <input id="meme-chad" class="twitter-field" placeholder="e.g. rust developer" />
           <label style="font-size:0.75rem;color:var(--muted);">Labels (optional, one per line — AI fills the rest)</label>
-          <textarea id="meme-chad-labels" placeholder="Writes unsafe code on purpose&#10;Never reads a stack trace twice&#10;Ships and moves on" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;color:var(--text);font-family:inherit;font-size:0.85rem;padding:8px;resize:vertical;min-height:80px;width:100%;box-sizing:border-box;"></textarea>
+          <textarea id="meme-chad-labels" placeholder="Writes unsafe code on purpose&#10;Never reads a stack trace twice&#10;Ships and moves on" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;color:var(--text);font-family:inherit;font-size:0.85rem;padding:8px;resize:none;min-height:80px;width:100%;box-sizing:border-box;flex:1;"></textarea>
         </div>
 
       </div>
@@ -668,12 +803,12 @@
     </div>
 
     <!-- Meme Library -->
-    <div class="panel" style="flex:1;margin-bottom:0;min-width:0;">
+    <div class="panel" style="flex:1;margin-bottom:0;min-width:0;display:flex;flex-direction:column;max-height:290px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
         <h2 style="margin:0;">Meme Library</h2>
         <button id="meme-lib-refresh-btn" style="padding:4px 10px;border:1px solid #30363d;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:0.8rem;">↺ Refresh</button>
       </div>
-      <div id="meme-lib-list" style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
+      <div id="meme-lib-list" style="display:flex;flex-direction:column;gap:6px;flex:1;overflow-y:auto;min-height:0;">
         <div style="color:var(--muted);font-size:0.82rem;">Loading…</div>
       </div>
       <div id="meme-lib-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:0.78rem;color:var(--muted);"></div>
@@ -709,6 +844,13 @@
   </div>
 
   <div class="panel">
+    <h2>Generate Meme</h2>
+    <div id="meme-gen-section">
+      <span class="empty-state">No memes generating</span>
+    </div>
+  </div>
+
+  <div class="panel">
     <h2>Rendering</h2>
     <div id="rendering-section">
       <span class="empty-state">No segments rendering</span>
@@ -730,11 +872,22 @@
   </div>
 
   <div id="status-bar">
-    <div class="status-indicator">
-      <div class="status-dot" id="status-dot"></div>
-      <span id="playback-status">Connecting...</span>
+    <div id="ticker-panel">
+      <div id="ticker-slots"></div>
+      <div id="ticker-edit-row">
+        <input type="text" id="ticker-edit-input" placeholder="Slot text — supports &lt;h&gt;highlight&lt;/h&gt; tags">
+        <button class="btn-small btn-primary" id="ticker-set-btn">Set</button>
+        <button class="btn-small" id="ticker-add-btn" title="Add slot" style="font-size:1.1rem;padding:2px 9px;">+</button>
+      </div>
     </div>
-    <span id="buffer-info">Buffer: 0s</span>
+    <div id="status-bar-row">
+      <div class="status-indicator">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="playback-status">Connecting...</span>
+      </div>
+      <span id="buffer-info">Buffer: 0s</span>
+      <button class="btn-small" id="ticker-toggle-btn">TICKER ▲</button>
+    </div>
   </div>
 
   <script>
@@ -880,6 +1033,42 @@
         body: JSON.stringify(data)
       });
       return res.json();
+    }
+
+    let currentMemeJobs = [];
+    const memeElapsedInterval = setInterval(() => {
+      currentMemeJobs.forEach(job => {
+        if (job.status === 'failed') return;
+        const el = document.querySelector(`[data-job-id="${job.id}"]`);
+        if (el) {
+          const elapsed = Math.floor((Date.now() - job.startedAt) / 1000);
+          el.textContent = `⏱ ${elapsed}s`;
+        }
+      });
+    }, 1000);
+
+    function renderMemeGen(jobs) {
+      currentMemeJobs = jobs || [];
+      const container = document.getElementById('meme-gen-section');
+      if (!currentMemeJobs.length) {
+        container.innerHTML = '<span class="empty-state">No memes generating</span>';
+        return;
+      }
+      container.innerHTML = currentMemeJobs.map(job => {
+        const elapsed = Math.floor((Date.now() - job.startedAt) / 1000);
+        const failed = job.status === 'failed';
+        const desc = (job.description || '').slice(0, 50) + ((job.description || '').length > 50 ? '...' : '');
+        return `
+          <div class="meme-gen-card${failed ? ' failed' : ''}">
+            <div class="type">🎨 Meme</div>
+            <div class="seed">${desc}</div>
+            ${failed
+              ? `<div style="font-size:0.75rem;color:#c44;margin-top:4px;">${job.error || 'Failed'}</div>`
+              : `<div style="font-size:0.75rem;color:var(--muted);margin-top:4px;" data-job-id="${job.id}">⏱ ${elapsed}s</div>`
+            }
+          </div>
+        `;
+      }).join('');
     }
 
     function renderRendering(segments) {
@@ -1107,6 +1296,9 @@
           renderArchive(data.segments || []);
           updateStatus(data.playbackStatus || {}, data.bufferHealth);
         }
+        if (payload.event === 'meme:queue-update') {
+          renderMemeGen(payload.data?.jobs || []);
+        }
         if (payload.event === 'chat:new-card') {
           refreshAll();
         }
@@ -1132,6 +1324,102 @@
       refreshAll();
     });
 
+    // ---- Ticker multi-slot system ----
+    let tickerSlots = [];
+    let tickerSelectedSlot = 0;
+    let tickerPanelOpen = false;
+    let tickerPollInterval = null;
+    let tickerInputDirty = false;
+
+    async function loadTicker() {
+      const data = await fetch(`${API_BASE}/ticker`).then(r => r.json()).catch(() => ({ messages: [], currentIndex: 0 }));
+      tickerSlots = data.messages || [];
+      renderTickerSlots(data.currentIndex || 0);
+    }
+
+    function renderTickerSlots(playingIndex) {
+      const container = document.getElementById('ticker-slots');
+      if (!tickerSlots.length) {
+        container.innerHTML = '<div style="color:var(--muted);font-size:0.8rem;padding:4px 0;">No slots — click + to add one.</div>';
+        document.getElementById('ticker-edit-input').value = '';
+        return;
+      }
+      if (tickerSelectedSlot >= tickerSlots.length) tickerSelectedSlot = tickerSlots.length - 1;
+      container.innerHTML = tickerSlots.map((text, i) => `
+        <div class="ticker-slot${i === tickerSelectedSlot ? ' selected' : ''}" data-idx="${i}">
+          <span class="ticker-slot-play${i === playingIndex && text ? ' active' : ''}">▶</span>
+          <span class="ticker-slot-num">${i + 1}.</span>
+          <span class="ticker-slot-text${!text ? ' empty' : ''}">${text || 'empty'}</span>
+          <button class="ticker-slot-delete" data-idx="${i}" title="Remove">×</button>
+        </div>
+      `).join('');
+      const editInput = document.getElementById('ticker-edit-input');
+      if (!tickerInputDirty && document.activeElement !== editInput) {
+        editInput.value = tickerSlots[tickerSelectedSlot] || '';
+      }
+      container.querySelectorAll('.ticker-slot').forEach(el => {
+        el.addEventListener('click', (e) => {
+          if (e.target.classList.contains('ticker-slot-delete')) return;
+          tickerSelectedSlot = parseInt(el.dataset.idx);
+          tickerInputDirty = false;
+          renderTickerSlots(playingIndex);
+        });
+      });
+      container.querySelectorAll('.ticker-slot-delete').forEach(el => {
+        el.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const idx = parseInt(el.dataset.idx);
+          await fetch(`${API_BASE}/ticker/${idx}`, { method: 'DELETE' });
+          if (tickerSelectedSlot >= tickerSlots.length - 1) tickerSelectedSlot = Math.max(0, tickerSlots.length - 2);
+          await loadTicker();
+        });
+      });
+    }
+
+    document.getElementById('ticker-toggle-btn').addEventListener('click', () => {
+      tickerPanelOpen = !tickerPanelOpen;
+      document.getElementById('ticker-panel').classList.toggle('open', tickerPanelOpen);
+      document.getElementById('ticker-toggle-btn').textContent = tickerPanelOpen ? 'TICKER ▼' : 'TICKER ▲';
+      if (tickerPanelOpen) {
+        loadTicker();
+        tickerPollInterval = setInterval(loadTicker, 2000);
+      } else {
+        clearInterval(tickerPollInterval);
+        tickerPollInterval = null;
+      }
+    });
+
+    document.getElementById('ticker-set-btn').addEventListener('click', async () => {
+      const text = document.getElementById('ticker-edit-input').value.trim();
+      if (!tickerSlots.length) {
+        await apiPost('/ticker/add', { text });
+        tickerSelectedSlot = 0;
+      } else {
+        await fetch(`${API_BASE}/ticker/${tickerSelectedSlot}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+      }
+      tickerInputDirty = false;
+      await loadTicker();
+    });
+
+    document.getElementById('ticker-edit-input').addEventListener('input', () => {
+      tickerInputDirty = true;
+    });
+
+    document.getElementById('ticker-edit-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('ticker-set-btn').click();
+    });
+
+    document.getElementById('ticker-add-btn').addEventListener('click', async () => {
+      await apiPost('/ticker/add', { text: '' });
+      tickerSelectedSlot = tickerSlots.length; // will be new last index after reload
+      await loadTicker();
+      document.getElementById('ticker-edit-input').focus();
+    });
+
     document.getElementById('filler-toggle').addEventListener('change', async (e) => {
       await apiPost('/api/orchestrator/filler', { enabled: e.target.checked });
     });
@@ -1142,24 +1430,28 @@
 
     document.getElementById('create-btn').addEventListener('click', async () => {
       const seed = document.getElementById('seed-input').value.trim();
-      if (!seed) return;
+      const hasAttach = !!attachState.seed;
+      if (!seed && !hasAttach) return;
 
       const btn = document.getElementById('create-btn');
       btn.disabled = true;
       btn.textContent = 'Creating...';
 
       try {
-        // Create segment + upload media in parallel
-        const [result, mediaId] = await Promise.all([
-          apiPost('/api/orchestrator/expand', { seed }),
-          resolveAttachMedia('seed').catch(err => { console.warn('Media upload failed:', err); return null; })
-        ]);
+        // Resolve media first — attachedMediaId must reach the vision pass inline
+        const mediaId = await resolveAttachMedia('seed').catch(err => {
+          console.warn('Media upload failed:', err);
+          return null;
+        });
+
+        const result = await apiPost('/api/orchestrator/seed', {
+          topic: seed || null,
+          attachedMediaId: mediaId || null
+        });
 
         if (result.error) {
           alert(result.error);
         } else {
-          await apiPost(`/api/orchestrator/render/${result.id}`, {});
-          if (mediaId) await patchSegmentMedia(result.id, mediaId);
           document.getElementById('seed-input').value = '';
           clearAttach('seed');
         }
