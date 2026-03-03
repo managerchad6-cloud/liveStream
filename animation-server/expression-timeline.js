@@ -103,16 +103,16 @@ function classifyTone(text) {
  * - Brows: One accent per sentence based on tone.
  * - Listener: Occasional reactions.
  */
-function buildExpressionPlan({ message, character, listener, durationSec, limits }) {
+function buildExpressionPlan({ message, character, listener, durationSec, limits, crazy = false }) {
   const rng = makeRng(makeSeed(`${message || ''}|${character}|${listener || ''}|plan`));
   const sentences = splitSentences(message);
   const { totalMs, perWord, wordCount } = estimateWordTimings(message, durationSec);
   const overallTone = classifyTone(message);
   let listenerReactionCount = 0;
   let lastBrowTime = -Infinity;
-  const MIN_BROW_GAP_MS = 2000;
+  const MIN_BROW_GAP_MS = crazy ? 400 : 2000;
   let lastEyeTime = -Infinity;
-  const MIN_EYE_GAP_MS = 320;
+  const MIN_EYE_GAP_MS = crazy ? 80 : 320;
 
   const plan = {
     character,
@@ -175,9 +175,9 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         t: sent.startMs,
         type: 'eye',
         target: character,
-        look: 'listener',
-        amount: randRange(rng, 0.42, 0.55),
-        durationMs: Math.round(randRange(rng, 220, 320))
+        look: crazy ? microDirs[Math.floor(rng() * microDirs.length)] : 'listener',
+        amount: crazy ? randRange(rng, 0.65, 0.95) : randRange(rng, 0.42, 0.55),
+        durationMs: Math.round(randRange(rng, crazy ? 80 : 220, crazy ? 160 : 320))
       });
       lastEyeTime = sent.startMs;
     }
@@ -279,9 +279,12 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     }
 
     // Micro saccades: small, quick eye moves to avoid staring
-    const microCount = Math.max(0, Math.floor(sent.durationMs / 400));
+    // In crazy mode: dense rapid darts across the full range
+    const microCount = crazy
+      ? Math.max(4, Math.floor(sent.durationMs / 120))
+      : Math.max(0, Math.floor(sent.durationMs / 400));
     for (let m = 0; m < microCount; m++) {
-      const t = sent.startMs + randRange(rng, 0.15, 0.85) * sent.durationMs;
+      const t = sent.startMs + randRange(rng, 0.05, 0.95) * sent.durationMs;
       const look = microDirs[Math.floor(rng() * microDirs.length)];
       if (t - lastEyeTime < MIN_EYE_GAP_MS) continue;
       plan.actions.push({
@@ -289,17 +292,19 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         type: 'eye',
         target: character,
         look,
-        amount: randRange(rng, 0.18, 0.28),
-        durationMs: Math.round(randRange(rng, 140, 220))
+        amount: crazy ? randRange(rng, 0.55, 0.95) : randRange(rng, 0.18, 0.28),
+        durationMs: Math.round(randRange(rng, crazy ? 60 : 140, crazy ? 120 : 220))
       });
       lastEyeTime = t;
     }
 
     // === SPEAKER BROWS ===
-    // One brow expression per sentence based on tone
-    // === SPEAKER BROWS ===
     // Build 2-4 brow actions per sentence for richer expression.
-    const browCount = Math.max(2, Math.min(5, Math.round(sent.durationMs / 900)));
+    // Crazy mode: many more, shorter, more extreme — rapid twitching chaos.
+    const allEmotes = ['raise', 'frown', 'skeptical_left', 'skeptical_right', ...asymEmotes];
+    const browCount = crazy
+      ? Math.max(5, Math.floor(sent.durationMs / 300))
+      : Math.max(2, Math.min(5, Math.round(sent.durationMs / 900)));
     const baseEmotes = [
       'raise',
       'frown',
@@ -308,48 +313,52 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
     ];
 
     for (let b = 0; b < browCount; b++) {
-      const t = sent.startMs + sent.durationMs * randRange(rng, 0.15, 0.85);
-      let emote = baseEmotes[b % baseEmotes.length];
-      let amount = randRange(rng, 0.45, 0.75);
-      let durationMs = randRange(rng, 1200, 2000);
+      const t = sent.startMs + sent.durationMs * randRange(rng, 0.05, 0.95);
+      let emote = crazy
+        ? allEmotes[Math.floor(rng() * allEmotes.length)]
+        : baseEmotes[b % baseEmotes.length];
+      let amount = crazy ? randRange(rng, 0.75, 1.0) : randRange(rng, 0.45, 0.75);
+      let durationMs = crazy ? randRange(rng, 300, 700) : randRange(rng, 1200, 2000);
 
-      // Tone biases
-      if (sentTone === 'angry') {
-        emote = rng() < 0.7 ? 'frown' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
-        amount = randRange(rng, 0.6, 0.9);
-        durationMs = randRange(rng, 1400, 2200);
-      } else if (sentTone === 'nervous') {
-        emote = rng() < 0.7 ? 'raise' : (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right');
-        amount = randRange(rng, 0.5, 0.8);
-        durationMs = randRange(rng, 1400, 2200);
-      } else if (sentTone === 'question') {
-        emote = rng() < 0.6 ? (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right') : asymEmotes[Math.floor(rng() * asymEmotes.length)];
-        amount = randRange(rng, 0.55, 0.85);
-        durationMs = randRange(rng, 1400, 2200);
-      } else if (sentTone === 'happy' || sentTone === 'confident') {
-        emote = rng() < 0.7 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
-        amount = randRange(rng, 0.5, 0.75);
-        durationMs = randRange(rng, 1300, 2100);
+      // Tone biases (only applied in normal mode — crazy ignores tone, just chaos)
+      if (!crazy) {
+        if (sentTone === 'angry') {
+          emote = rng() < 0.7 ? 'frown' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
+          amount = randRange(rng, 0.6, 0.9);
+          durationMs = randRange(rng, 1400, 2200);
+        } else if (sentTone === 'nervous') {
+          emote = rng() < 0.7 ? 'raise' : (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right');
+          amount = randRange(rng, 0.5, 0.8);
+          durationMs = randRange(rng, 1400, 2200);
+        } else if (sentTone === 'question') {
+          emote = rng() < 0.6 ? (rng() < 0.5 ? 'skeptical_left' : 'skeptical_right') : asymEmotes[Math.floor(rng() * asymEmotes.length)];
+          amount = randRange(rng, 0.55, 0.85);
+          durationMs = randRange(rng, 1400, 2200);
+        } else if (sentTone === 'happy' || sentTone === 'confident') {
+          emote = rng() < 0.7 ? 'raise' : asymEmotes[Math.floor(rng() * asymEmotes.length)];
+          amount = randRange(rng, 0.5, 0.75);
+          durationMs = randRange(rng, 1300, 2100);
+        }
       }
 
       addBrowAction(t, emote, amount, durationMs);
     }
 
     // Extra asymmetry pop for variety
-    if (rng() < 0.6) {
+    if (rng() < (crazy ? 1.0 : 0.6)) {
       const asymEmote = asymEmotes[Math.floor(rng() * asymEmotes.length)];
       addBrowAction(
-        sent.startMs + sent.durationMs * randRange(rng, 0.3, 0.8),
+        sent.startMs + sent.durationMs * randRange(rng, 0.1, 0.9),
         asymEmote,
-        randRange(rng, 0.4, 0.65),
-        randRange(rng, 1400, 2200)
+        crazy ? randRange(rng, 0.8, 1.0) : randRange(rng, 0.4, 0.65),
+        crazy ? randRange(rng, 200, 500) : randRange(rng, 1400, 2200)
       );
     }
 
     // === LISTENER REACTIONS ===
     if (listener) {
-      // Listener glances at speaker frequently
-      if (i % 2 === 1 || rng() < 0.6) {
+      // Listener glances at speaker frequently — crazy mode: every sentence, always
+      if (crazy || i % 2 === 1 || rng() < 0.6) {
         const gazeTime = sent.startMs + Math.round(randRange(rng, 220, 380));
         plan.actions.push({
           t: gazeTime,
@@ -361,11 +370,11 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
         });
 
         // Mouth reaction while looking at speaker
-        const reaction = pickListenerMouthReaction(sentTone, sent.text, rng);
+        const reaction = crazy ? 'SURPRISE' : pickListenerMouthReaction(sentTone, sent.text, rng);
         if (reaction) {
-          const dur = reactionDurationMs(rng);
+          const dur = crazy ? Math.round(randRange(rng, 600, 1200)) : reactionDurationMs(rng);
           plan.actions.push({
-            t: gazeTime + Math.round(randRange(rng, 80, 220)),
+            t: gazeTime + Math.round(randRange(rng, 60, crazy ? 120 : 220)),
             type: 'mouth',
             target: listener,
             shape: reaction,
@@ -409,11 +418,11 @@ function buildExpressionPlan({ message, character, listener, durationSec, limits
       }
 
       // Fallback listener mouth reaction if no gaze-triggered reaction
-      if (rng() < 0.5) {
-        const reaction = pickListenerMouthReaction(sentTone, sent.text, rng);
+      if (crazy || rng() < 0.5) {
+        const reaction = crazy ? 'SURPRISE' : pickListenerMouthReaction(sentTone, sent.text, rng);
         if (reaction) {
-          const listenerReactTime = sent.startMs + sent.durationMs * randRange(rng, 0.35, 0.65);
-          const dur = reactionDurationMs(rng);
+          const listenerReactTime = sent.startMs + sent.durationMs * randRange(rng, 0.1, 0.9);
+          const dur = crazy ? Math.round(randRange(rng, 400, 900)) : reactionDurationMs(rng);
           plan.actions.push({
             t: Math.round(listenerReactTime),
             type: 'mouth',
@@ -614,8 +623,115 @@ function resolveEyeLook(look, character, listener, range, amount) {
   return { x: 0, y: 0 };
 }
 
+/**
+ * Build a looping idle expression plan for both characters.
+ * The plan covers `durationSec` seconds of natural idle behaviour —
+ * looking at each other, at the camera, glancing away, smiling,
+ * raising eyebrows, and making occasional surprise reactions.
+ * The caller loops it by clocking `(Date.now() - startMs) % totalMs`.
+ */
+function buildIdlePlan({ durationSec = 30, limits } = {}) {
+  const totalMs = durationSec * 1000;
+  const rng = makeRng(Date.now()); // fresh randomness every call
+  const characters = ['chad', 'virgin'];
+  const actions = [];
+
+  // Gaze directions for idle — each character independently wanders
+  const gazePool = ['camera', 'listener', 'listener', 'away', 'down', 'up_left', 'up_right', 'down_left'];
+  const browPool = ['raise', 'raise', 'raise', 'frown', 'skeptical_left', 'skeptical_right', 'asym_up_left', 'asym_up_right'];
+  const mouthPool = ['SMILE', 'SURPRISE'];
+
+  for (const character of characters) {
+    const listener = character === 'chad' ? 'virgin' : 'chad';
+
+    // ── Eye movements ──────────────────────────────────────────────
+    // One gaze shift roughly every 2–4 seconds
+    const eyeCount = Math.floor(totalMs / randRange(rng, 2000, 4000));
+    const eyeInterval = totalMs / (eyeCount + 1);
+
+    for (let i = 0; i < eyeCount; i++) {
+      // Jitter the timing a bit so chad and virgin don't always move together
+      const jitter = randRange(rng, -eyeInterval * 0.3, eyeInterval * 0.3);
+      const t = Math.round(Math.max(100, Math.min(totalMs - 200, (i + 1) * eyeInterval + jitter)));
+      const look = gazePool[Math.floor(rng() * gazePool.length)];
+      const amount = look === 'listener' || look === 'camera'
+        ? randRange(rng, 0.3, 0.55)
+        : randRange(rng, 0.2, 0.4);
+
+      actions.push({
+        t,
+        type: 'eye',
+        target: character,
+        look: look === 'camera' ? 'forward' : look,
+        amount,
+        durationMs: Math.round(randRange(rng, 300, 600))
+      });
+    }
+
+    // ── Eyebrow movements ──────────────────────────────────────────
+    // One brow emote every 4–8 seconds
+    const browCount = Math.floor(totalMs / randRange(rng, 4000, 8000));
+    const browInterval = totalMs / (browCount + 1);
+
+    for (let i = 0; i < browCount; i++) {
+      const jitter = randRange(rng, -browInterval * 0.4, browInterval * 0.4);
+      const t = Math.round(Math.max(200, Math.min(totalMs - 300, (i + 1) * browInterval + jitter)));
+      const emote = browPool[Math.floor(rng() * browPool.length)];
+
+      actions.push({
+        t,
+        type: 'brow',
+        target: character,
+        emote,
+        amount: randRange(rng, 0.3, 0.6),
+        durationMs: Math.round(randRange(rng, 1200, 2800))
+      });
+    }
+
+    // ── Mouth reactions (smile / surprise) ─────────────────────────
+    // Occasional — roughly one every 8–15 seconds
+    const mouthCount = Math.floor(totalMs / randRange(rng, 8000, 15000));
+    const mouthInterval = totalMs / (mouthCount + 1);
+
+    for (let i = 0; i < mouthCount; i++) {
+      const jitter = randRange(rng, -mouthInterval * 0.35, mouthInterval * 0.35);
+      const t = Math.round(Math.max(300, Math.min(totalMs - 400, (i + 1) * mouthInterval + jitter)));
+      const shape = mouthPool[Math.floor(rng() * mouthPool.length)];
+
+      actions.push({
+        t,
+        type: 'mouth',
+        target: character,
+        shape,
+        durationMs: Math.round(randRange(rng, 800, 1800))
+      });
+    }
+
+    // ── Mutual glances ─────────────────────────────────────────────
+    // Both chars look at each other simultaneously once or twice
+    const mutualCount = Math.max(1, Math.floor(totalMs / 12000));
+    for (let i = 0; i < mutualCount; i++) {
+      const t = Math.round(totalMs * randRange(rng, 0.15, 0.85));
+      actions.push({
+        t,
+        type: 'eye',
+        target: character,
+        look: 'listener',
+        amount: randRange(rng, 0.35, 0.5),
+        durationMs: Math.round(randRange(rng, 600, 1200))
+      });
+    }
+  }
+
+  // Sort all actions chronologically
+  actions.sort((a, b) => a.t - b.t);
+
+  return { character: 'chad', listener: 'virgin', totalMs, actions };
+}
+
 module.exports = {
   buildExpressionPlan,
+  buildIdlePlan,
   augmentExpressionPlan,
   normalizePlanTiming,
   resolveEyeLook,

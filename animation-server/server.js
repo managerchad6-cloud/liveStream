@@ -43,7 +43,7 @@ const StreamManager = require('./stream-manager');
 const ContinuousStreamManager = require('./continuous-stream-manager');
 const SyncedPlayback = require('./synced-playback');
 const TVContentService = require('./tv-content');
-const { buildExpressionPlan, augmentExpressionPlan, normalizePlanTiming } = require('./expression-timeline');
+const { buildExpressionPlan, buildIdlePlan, augmentExpressionPlan, normalizePlanTiming } = require('./expression-timeline');
 const ExpressionEvaluator = require('./expression-evaluator');
 const OpenAI = require('openai');
 const MediaLibrary = require('./media-library');
@@ -388,6 +388,39 @@ app.post('/expression/auto', (req, res) => {
   res.json({ enabled: autoExpressions });
 });
 
+app.get('/expression/crazy', (req, res) => {
+  res.json({ enabled: crazyMode });
+});
+
+app.post('/expression/crazy', (req, res) => {
+  crazyMode = Boolean(req.body?.enabled);
+  console.log(`[Expression] Crazy mode: ${crazyMode}`);
+  res.json({ enabled: crazyMode });
+});
+
+app.get('/expression/idle', (req, res) => {
+  res.json({ enabled: idleExpressions });
+});
+
+app.post('/expression/idle', (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  idleExpressions = enabled;
+  if (!enabled) {
+    // Only clear idle state if we're actually in idle (not interrupting live audio)
+    if (!isAudioActive) {
+      expressionEvaluator.clear();
+      resetExpressionOffsets();
+      lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
+      lastExprState.virgin = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
+    }
+    idleExprStartMs = 0;
+  } else if (!isAudioActive) {
+    loadIdleExpressionPlan();
+  }
+  console.log(`[Expression] Idle expressions: ${enabled}`);
+  res.json({ enabled: idleExpressions });
+});
+
 // ============== End Expression Control API ==============
 
 // Global state
@@ -420,6 +453,10 @@ let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
 const expressionEvaluator = new ExpressionEvaluator();
 let autoExpressions = true; // Toggle for automatic expression system
+let crazyMode = false;      // When on, new segments get crazy: true in metadata
+let idleExpressions = false; // When on, idle periods loop a natural expression plan
+let idleExprStartMs = 0;    // Wall-clock ms when the current idle plan started
+const IDLE_PLAN_DURATION_SEC = 30;
 // Last applied expression state per character — skip compositor calls when unchanged
 let lastExprState = {
   chad: { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null },
@@ -438,6 +475,15 @@ const renderQueue = [];
 let lastFrameBuffer = null;
 let skipCompositingFrames = 0;
 const FRAME_BUDGET_MS = 33;
+
+function loadIdleExpressionPlan() {
+  if (!idleExpressions || isAudioActive) return;
+  const limits = getExpressionLimits();
+  const plan = buildIdlePlan({ durationSec: IDLE_PLAN_DURATION_SEC, limits });
+  expressionEvaluator.loadPlan(plan, limits);
+  idleExprStartMs = Date.now();
+  console.log('[Expr] Idle expression plan loaded');
+}
 
 function setCaption(text, durationSeconds) {
   if (!text) return;
@@ -478,6 +524,8 @@ function handleAudioComplete() {
   lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
   lastExprState.virgin = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
   processQueue();
+  // If queue is still empty and idle expressions are on, load an idle plan
+  if (!isAudioActive && idleExpressions) loadIdleExpressionPlan();
 
   // After processQueue: currentPlayingSegmentId is set to the next item's segment (sync),
   // or stays null if the queue was empty. If it changed, the previous segment is done.
@@ -638,6 +686,7 @@ async function startPlayback(item) {
   currentSpeaker = item.character;
   currentPlayingSegmentId = item.segmentId || null;
   playbackStartFrame = frameCount;
+  idleExprStartMs = 0; // cancel idle clock
   expressionEvaluator.clear();
 
   // Notify playback controller when a new segment starts playing
@@ -676,7 +725,8 @@ async function startPlayback(item) {
       character: item.character,
       listener,
       durationSec: item.duration,
-      limits
+      limits,
+      crazy: item.crazy || false
     });
     plan = augmentExpressionPlan(plan, {
       message: item.messageText,
@@ -773,12 +823,24 @@ async function renderFrame(frame, audioProgress = null) {
   // Virgin gets the phoneme if she's speaking, otherwise neutral
   let virginPhoneme = speakingCharacter === 'virgin' ? currentPhoneme : 'A';
 
-  // Frame-driven expression evaluation
-  if (autoExpressions && expressionEvaluator.loaded && isAudioActive) {
-    // In synced mode, use audio frame position; otherwise fall back to elapsed video frames
-    const currentTimeMs = (audioProgress && audioProgress.playing)
-      ? (audioProgress.frame / STREAM_FPS) * 1000
-      : ((frame - playbackStartFrame) / STREAM_FPS) * 1000;
+  // Frame-driven expression evaluation (active audio OR idle expressions)
+  const isIdleExpr = idleExpressions && !isAudioActive && expressionEvaluator.loaded && idleExprStartMs > 0;
+  if (autoExpressions && expressionEvaluator.loaded && (isAudioActive || isIdleExpr)) {
+    // Idle: loop the plan clock; Active: follow audio position
+    let currentTimeMs;
+    if (isIdleExpr) {
+      const elapsed = Date.now() - idleExprStartMs;
+      const planMs = IDLE_PLAN_DURATION_SEC * 1000;
+      currentTimeMs = elapsed % planMs;
+      // Reload a fresh plan at the start of each loop for variety
+      if (elapsed > 0 && Math.floor(elapsed / planMs) > Math.floor((elapsed - 33) / planMs)) {
+        loadIdleExpressionPlan();
+      }
+    } else {
+      currentTimeMs = (audioProgress && audioProgress.playing)
+        ? (audioProgress.frame / STREAM_FPS) * 1000
+        : ((frame - playbackStartFrame) / STREAM_FPS) * 1000;
+    }
     const exprState = expressionEvaluator.evaluateAtMs(currentTimeMs);
     const shouldApplyExpr = (frame % 3) === 0; // throttle expression updates to reduce cache churn
 
@@ -913,6 +975,7 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   const segmentType = req.body.segmentType || null;
   const priorityRaw = String(req.body.priority || '').toLowerCase();
   const isPriority = priorityRaw === 'high' || priorityRaw === 'true' || priorityRaw === '1';
+  const isCrazy = req.body.crazy === 'true';
   const shouldQueue = mode === 'router';
 
   if (!req.file) {
@@ -964,7 +1027,8 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         sampleRate,
         segmentId,  // Track which pipeline segment this belongs to
         segmentType,
-        priority: isPriority
+        priority: isPriority,
+        crazy: isCrazy
       };
 
       const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
@@ -1824,10 +1888,10 @@ app.post('/api/orchestrator/hype', async (req, res) => {
   if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
 
-  const { mcap, volume, holders } = req.body || {};
+  const { mcap, volume, holders, allTimeHigh } = req.body || {};
 
   try {
-    const generated = await scriptGenerator.generateHypeScript({ mcap, volume, holders });
+    const generated = await scriptGenerator.generateHypeScript({ mcap, volume, holders, allTimeHigh });
 
     const segment = await pipelineStore.createSegment({
       type: 'hype',
@@ -2735,6 +2799,15 @@ async function start() {
   };
   pipelineStore = new PipelineStore(path.join(ROOT_DIR, 'data'), { onSegmentActivity });
   await pipelineStore.init();
+
+  // Wrap createSegment to inject crazy flag when crazyMode is active
+  const _origCreateSegment = pipelineStore.createSegment.bind(pipelineStore);
+  pipelineStore.createSegment = async (data) => {
+    if (crazyMode) {
+      data = { ...data, metadata: { ...(data.metadata || {}), crazy: true } };
+    }
+    return _origCreateSegment(data);
+  };
 
   // Initialize TV layer manager
   if (tvService) {

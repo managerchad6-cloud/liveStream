@@ -431,7 +431,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
    * 80% pure degen hype, 20% weaves in live stats if provided.
    * Goes hard with ElevenLabs v3 audio expression tags.
    */
-  async generateHypeScript({ mcap, volume, holders } = {}) {
+  async generateHypeScript({ mcap, volume, holders, allTimeHigh = false } = {}) {
     if (!this.openai) throw new Error('OpenAI not configured');
 
     const hasStats = mcap || volume || holders;
@@ -443,7 +443,38 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
         ].filter(Boolean).join('\n')
       : null;
 
-    const systemPrompt = `You are writing a HYPE segment for a live pump.fun token launch stream. Chad and Virgin are co-hosts going absolutely unhinged about the $VVC token.
+    const systemPrompt = allTimeHigh
+      ? `You are writing an ALL TIME HIGH breakdown segment for a live stream. $VVC just hit a new all time high. Chad and Virgin have completely lost their minds. This is not hype — this is full psychotic breakdown from pure euphoria.
+
+THEY ARE SCREAMING. THEY CANNOT COPE. THEY ARE LOSING IT COMPLETELY.
+
+CHARACTER RULES — ATH MODE:
+CHAD: Normally effortlessly cool — but right now he is UNRAVELING. He can't keep his composure. He's yelling, slamming things, laughing like a maniac. He's been saying this would happen and it's actually happening and he can't even handle it himself.
+VIRGIN: His manic degen mode from regular hype? Multiply by 100. He is shaking, screaming, saying incoherent things, might be crying, definitely hyperventilating. He's losing his absolute mind.
+
+TONE RULES — NO LIMITS:
+- This is full unhinged chaos energy. They are not co-hosting a show, they are MELTING DOWN on camera.
+- Both characters have completely lost the plot — they can barely form sentences
+- Screaming, interrupting themselves, trailing off, starting again louder
+- Cursing freely — they don't give a fuck right now, it's ATH
+- ${hasStats ? `Stats to use: ${statsBlock} — scream these numbers like they physically hurt to say` : 'No stats provided — pure ATH euphoria, do NOT invent numbers'}
+- CT language but broken and fragmented: "BRO— BRO— I— " "WE'RE— HOLY— " "I TOLD YOU" "WAGMI I SWEAR TO GOD" "THEY SAID IT WOULDN'T" "I'M SHAKING"
+- Unfinished sentences are fine. All caps mid-line is fine. Repeating a word three times is fine.
+- No caveats. No coherence required. Just pure ATH chaos.
+
+ELEVENLABS v3 AUDIO TAGS — absolutely mandatory, use them heavily:
+REQUIRED to use multiple per line: [screams], [screams in disbelief], [yells], [gasps], [gasps in disbelief], [laughs hysterically], [laughs maniacally], [voice cracks], [voice cracks with excitement], [shouts], [breathes heavily], [stutters with excitement], [slams fist], [whispers in disbelief], [crying laughing]
+Stack them. Put them mid-sentence. Put them at the start AND middle of a line. Go insane.
+Example: "[screams] BRO— [gasps] THE CHART— I [voice cracks] I CANNOT— [laughs hysterically] WE'RE AT ATH"
+
+Generate exactly 4-6 dialogue lines total. Return ONLY valid JSON:
+{
+  "script": [
+    { "speaker": "chad|virgin", "text": "..." }
+  ],
+  "exitContext": "all time high meltdown segment"
+}`
+      : `You are writing a HYPE segment for a live pump.fun token launch stream. Chad and Virgin are co-hosts going absolutely unhinged about the $VVC token.
 
 THIS IS A HYPE SEGMENT — pure degen energy, CT-native language, maximum chaos.
 
@@ -472,8 +503,10 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
   "exitContext": "hype segment for $VVC token launch"
 }`;
 
-    const userLines = ['Generate a hype segment now.'];
-    if (statsBlock) userLines.push(`\nLive stats:\n${statsBlock}`);
+    const userLines = allTimeHigh
+      ? ['ALL TIME HIGH. Generate the breakdown now.']
+      : ['Generate a hype segment now.'];
+    if (statsBlock && !allTimeHigh) userLines.push(`\nLive stats:\n${statsBlock}`);
 
     const completion = await this.openai.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -482,7 +515,7 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
         { role: 'user', content: userLines.join('') }
       ],
       temperature: 1.0,
-      max_tokens: 400
+      max_tokens: allTimeHigh ? 600 : 400
     });
 
     const content = completion.choices?.[0]?.message?.content || '';
@@ -494,7 +527,7 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
     const script = this._normalizeScript(parsed.script);
     const estimatedDuration = estimateDurationSeconds(script);
 
-    return { script, estimatedDuration, exitContext: parsed.exitContext || 'hype segment' };
+    return { script, estimatedDuration, exitContext: parsed.exitContext || (allTimeHigh ? 'all time high meltdown' : 'hype segment') };
   }
   /**
    * Generate a 2–4 line reaction script for a tweet.

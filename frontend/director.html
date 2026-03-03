@@ -668,12 +668,25 @@
 
   <!-- Hype panel -->
   <div class="panel hype-panel" style="margin-bottom:16px;background:linear-gradient(135deg,#1a0a00,#1b1f2a);border:1px solid #ff6600;">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;row-gap:8px;">
       <button class="btn-primary" id="hype-btn" style="background:#ff4500;font-size:1.1rem;font-weight:700;letter-spacing:1px;padding:10px 24px;flex-shrink:0;">HYPE</button>
       <input id="hype-mcap" placeholder="MCap (e.g. 420K)" style="width:130px;" class="hype-field" />
       <input id="hype-volume" placeholder="Volume (e.g. 69K)" style="width:130px;" class="hype-field" />
       <input id="hype-holders" placeholder="Holders (e.g. 420)" style="width:130px;" class="hype-field" />
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ffaa00;font-weight:700;letter-spacing:0.04em;white-space:nowrap;user-select:none;">
+        <input type="checkbox" id="hype-ath" style="accent-color:#ffaa00;width:16px;height:16px;">
+        ALL TIME HIGH
+      </label>
       <span id="hype-status" style="font-size:0.8rem;color:#ff6600;"></span>
+      <div style="height:24px;width:1px;background:#333;flex-shrink:0;"></div>
+      <label id="crazy-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:6px 14px;border-radius:8px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
+        <input type="checkbox" id="crazy-toggle" style="width:18px;height:18px;accent-color:#b44fff;cursor:pointer;">
+        <span id="crazy-label-text" style="font-size:0.9rem;font-weight:700;letter-spacing:0.06em;color:#888;">CRAZY MODE</span>
+      </label>
+      <label id="idle-expr-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:6px 14px;border-radius:8px;border:2px solid #444;transition:border-color 0.2s,background 0.2s;">
+        <input type="checkbox" id="idle-expr-toggle" style="width:18px;height:18px;accent-color:#00ccff;cursor:pointer;">
+        <span id="idle-expr-label-text" style="font-size:0.9rem;font-weight:700;letter-spacing:0.06em;color:#888;">IDLE EXPRS</span>
+      </label>
     </div>
   </div>
 
@@ -1506,22 +1519,86 @@
       refreshAll();
     });
 
+    // ── Crazy mode toggle ──
+    async function setCrazyMode(enabled) {
+      await fetch(`${API_BASE}/expression/crazy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const label = document.getElementById('crazy-label');
+      const text = document.getElementById('crazy-label-text');
+      if (enabled) {
+        label.style.borderColor = '#b44fff';
+        label.style.background = 'rgba(180,79,255,0.12)';
+        text.style.color = '#d580ff';
+        text.textContent = '🤪 CRAZY MODE';
+      } else {
+        label.style.borderColor = '#444';
+        label.style.background = '';
+        text.style.color = '#888';
+        text.textContent = 'CRAZY MODE';
+      }
+    }
+
+    document.getElementById('crazy-toggle').addEventListener('change', (e) => {
+      setCrazyMode(e.target.checked);
+    });
+
+    // Sync toggle state from server on load
+    fetch(`${API_BASE}/expression/crazy`).then(r => r.json()).then(d => {
+      document.getElementById('crazy-toggle').checked = d.enabled;
+      if (d.enabled) setCrazyMode(true);
+    }).catch(() => {});
+
+    async function setIdleExpressions(enabled) {
+      await fetch(`${API_BASE}/expression/idle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const label = document.getElementById('idle-expr-label');
+      const text = document.getElementById('idle-expr-label-text');
+      if (enabled) {
+        label.style.borderColor = '#00ccff';
+        label.style.background = 'rgba(0,204,255,0.10)';
+        text.style.color = '#00ccff';
+        text.textContent = '👀 IDLE EXPRS';
+      } else {
+        label.style.borderColor = '#444';
+        label.style.background = '';
+        text.style.color = '#888';
+        text.textContent = 'IDLE EXPRS';
+      }
+    }
+
+    document.getElementById('idle-expr-toggle').addEventListener('change', (e) => {
+      setIdleExpressions(e.target.checked);
+    });
+
+    fetch(`${API_BASE}/expression/idle`).then(r => r.json()).then(d => {
+      document.getElementById('idle-expr-toggle').checked = d.enabled;
+      if (d.enabled) setIdleExpressions(true);
+    }).catch(() => {});
+
     document.getElementById('hype-btn').addEventListener('click', async () => {
       const btn = document.getElementById('hype-btn');
       const statusEl = document.getElementById('hype-status');
-      const mcap    = document.getElementById('hype-mcap').value.trim();
-      const volume  = document.getElementById('hype-volume').value.trim();
-      const holders = document.getElementById('hype-holders').value.trim();
+      const mcap       = document.getElementById('hype-mcap').value.trim();
+      const volume     = document.getElementById('hype-volume').value.trim();
+      const holders    = document.getElementById('hype-holders').value.trim();
+      const allTimeHigh = document.getElementById('hype-ath').checked;
 
       btn.disabled = true;
-      btn.textContent = 'GENERATING...';
+      btn.textContent = allTimeHigh ? '🚀 GENERATING ATH...' : 'GENERATING...';
       statusEl.textContent = '';
 
       try {
         const body = {};
-        if (mcap)    body.mcap    = mcap;
-        if (volume)  body.volume  = volume;
-        if (holders) body.holders = holders;
+        if (mcap)         body.mcap        = mcap;
+        if (volume)       body.volume      = volume;
+        if (holders)      body.holders     = holders;
+        if (allTimeHigh)  body.allTimeHigh = true;
 
         const result = await apiPost('/api/orchestrator/hype', body);
         if (result.error) throw new Error(result.error);

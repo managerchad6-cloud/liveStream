@@ -303,6 +303,7 @@ class SegmentRenderer {
       form.append('lineIndex', String(i));
       form.append('segmentType', segmentType);
       form.append('priority', isPriority ? 'high' : 'normal');
+      form.append('crazy', segment?.metadata?.crazy ? 'true' : 'false');
 
       const renderResult = await axios.post(
         `${this.animationServerUrl}/render`,
