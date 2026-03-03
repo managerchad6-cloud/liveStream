@@ -3053,8 +3053,12 @@ async function start() {
       return;
     }
     const source = mediaLibrary.getOriginalPath(mediaId);
+    // For images, keep on screen for segment duration + buffer (min 15s)
+    const duration = mediaItem.type === 'image'
+      ? Math.max(15, (segment.estimatedDuration || 0) + 5)
+      : undefined;
     tvService.clear();
-    tvService.addItem({ type: mediaItem.type, source, mediaId }).then(() => {
+    tvService.addItem({ type: mediaItem.type, source, mediaId, duration }).then(() => {
       tvService.play();
       console.log(`[TV Cue] On-air: playing media ${mediaId} for segment ${segmentId}`);
     }).catch(err => {

@@ -73,7 +73,7 @@ class PipelineStore {
     }
   }
 
-  async createSegment({ type, seed, script, estimatedDuration } = {}) {
+  async createSegment({ type, seed, script, estimatedDuration, exitContext, metadata } = {}) {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
@@ -85,8 +85,8 @@ class PipelineStore {
       script: script || null,
       estimatedDuration: estimatedDuration || 0,
       renderProgress: 0,
-      exitContext: null,
-      metadata: {},
+      exitContext: exitContext || null,
+      metadata: metadata || {},
       createdAt: now,
       updatedAt: now
     };

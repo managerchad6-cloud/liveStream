@@ -778,7 +778,7 @@ CHART COMMENTARY GUIDELINES:
 - Reference what you actually see on the chart (candles, trend, volume bars, price levels, wicks)
 - Use trader vocabulary naturally: support, resistance, accumulation, consolidation, bull flag, breakout, retest, wick rejection, volume spike, higher lows, structure
 - Weave in the live stats provided — make the numbers sound exciting
-- 4-6 rapid-fire dialogue lines
+- 3-4 rapid-fire dialogue lines total — keep it tight
 - Start mid-action, as if they're already looking: "bro look at this—", "okay the 1h is—", "wait— is that a—"
 - Short punchy lines with strong rhythm
 
@@ -816,7 +816,7 @@ Return ONLY valid JSON:
         { role: 'user', content: userContent }
       ],
       temperature: 1.0,
-      max_tokens: 550
+      max_tokens: 350
     });
 
     const content = completion.choices?.[0]?.message?.content || '';
@@ -833,7 +833,7 @@ Return ONLY valid JSON:
           { role: 'user', content: [{ type: 'text', text: userContent[0].text }] }
         ],
         temperature: 1.0,
-        max_tokens: 550
+        max_tokens: 350
       });
       const retryContent = retryCompletion.choices?.[0]?.message?.content || '';
       console.log('[ScriptGenerator] Chart analysis retry response:', retryContent.slice(0, 800));
