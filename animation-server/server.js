@@ -507,12 +507,12 @@ app.post('/token/analyze-chart', async (req, res) => {
     const chartImageMimeType = 'image/png';
     let chartMediaId = null;
 
-    // Pick best chart URL
+    // Only screenshot DexScreener when we have a real pair address.
+    // pump.fun is Cloudflare-protected server-side — skip it.
     const chartUrl = (tokenData && !tokenData.noData && tokenData.pairAddress)
       ? `https://dexscreener.com/solana/${tokenData.pairAddress}?embed=1&theme=dark&info=0`
-      : PUMP_FUN_TOKEN
-        ? `https://pump.fun/${PUMP_FUN_TOKEN}`
-        : null;
+      : null;
+    console.log('[Token] Chart URL:', chartUrl || '(none — bonding curve)');
 
     if (chartUrl) {
       let puppeteer;

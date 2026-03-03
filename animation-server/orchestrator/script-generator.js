@@ -820,9 +820,28 @@ Return ONLY valid JSON:
     });
 
     const content = completion.choices?.[0]?.message?.content || '';
-    const parsed = parseJson(content);
+    console.log('[ScriptGenerator] Chart analysis raw response:', content.slice(0, 800));
+    let parsed = parseJson(content);
+
+    // If vision pass confuses the model (e.g. Cloudflare page screenshot), retry text-only
+    if ((!parsed || !Array.isArray(parsed.script)) && imageBase64) {
+      console.warn('[ScriptGenerator] Chart parse failed with image — retrying text-only');
+      const retryCompletion = await this.openai.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: [{ type: 'text', text: userContent[0].text }] }
+        ],
+        temperature: 1.0,
+        max_tokens: 550
+      });
+      const retryContent = retryCompletion.choices?.[0]?.message?.content || '';
+      console.log('[ScriptGenerator] Chart analysis retry response:', retryContent.slice(0, 800));
+      parsed = parseJson(retryContent);
+    }
+
     if (!parsed || !Array.isArray(parsed.script)) {
-      throw new Error('Failed to parse chart analysis script JSON');
+      throw new Error(`Failed to parse chart analysis script JSON. Model returned: ${content.slice(0, 300)}`);
     }
 
     const script = this._normalizeScript(parsed.script);
