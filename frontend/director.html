@@ -676,11 +676,9 @@
       <!-- Stats grid -->
       <div id="ts-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:6px 14px;">
         <div class="ts-cell"><div class="ts-label">MCAP</div><div class="ts-val" id="ts-mcap">--</div></div>
-        <div class="ts-cell"><div class="ts-label">FDV</div><div class="ts-val" id="ts-fdv">--</div></div>
         <div class="ts-cell"><div class="ts-label">LIQUIDITY</div><div class="ts-val" id="ts-liq">--</div></div>
         <div class="ts-cell"><div class="ts-label">VOL 24H</div><div class="ts-val" id="ts-vol24">--</div></div>
         <div class="ts-cell"><div class="ts-label">VOL 1H</div><div class="ts-val" id="ts-vol1">--</div></div>
-        <div class="ts-cell"><div class="ts-label">VOL 5M</div><div class="ts-val" id="ts-vol5">--</div></div>
         <div class="ts-cell"><div class="ts-label">CHG 1H</div><div class="ts-val" id="ts-ch1">--</div></div>
         <div class="ts-cell"><div class="ts-label">CHG 5M</div><div class="ts-val" id="ts-ch5">--</div></div>
         <div class="ts-cell"><div class="ts-label">BUYS 24H</div><div class="ts-val" id="ts-buys">--</div></div>
@@ -1656,11 +1654,9 @@
       ch24El.style.color = ch24 == null ? '#555' : ch24 >= 0 ? '#00cc66' : '#ff4444';
 
       document.getElementById('ts-mcap').textContent   = fmtUsd(data.marketCap);
-      document.getElementById('ts-fdv').textContent    = fmtUsd(data.fdv);
       document.getElementById('ts-liq').textContent    = fmtUsd(data.liquidity);
       document.getElementById('ts-vol24').textContent  = fmtUsd(data.volume?.h24);
       document.getElementById('ts-vol1').textContent   = fmtUsd(data.volume?.h1);
-      document.getElementById('ts-vol5').textContent   = fmtUsd(data.volume?.m5);
       document.getElementById('ts-sol').textContent    = fmtSol(data.priceSol);
       document.getElementById('ts-dex').textContent    = data.dex || '--';
       document.getElementById('ts-buys').textContent   = data.txns?.h24?.buys != null ? data.txns.h24.buys.toLocaleString() : '--';
