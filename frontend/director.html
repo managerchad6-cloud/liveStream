@@ -692,6 +692,11 @@
       </div>
       <!-- No data placeholder -->
       <div id="ts-no-data" style="color:#333;font-size:0.8rem;padding:6px 0;">Awaiting market data — token may be on bonding curve or not yet indexed by DexScreener.</div>
+      <!-- Analyze chart button -->
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid #0d2030;">
+        <button id="analyze-chart-btn" style="background:#0a3a5a;border:1px solid #1a6a9a;color:#7fb3d3;font-size:0.8rem;font-weight:700;letter-spacing:0.08em;padding:5px 14px;border-radius:6px;cursor:pointer;font-family:inherit;transition:background 0.15s;">ANALYZE CHART</button>
+        <span id="analyze-chart-status" style="font-size:0.75rem;color:#3a7a9a;"></span>
+      </div>
     </div>
 
     <!-- LIVE CONTROLS panel -->
@@ -1695,6 +1700,25 @@
 
     refreshTokenStats();
     setInterval(refreshTokenStats, 60000);
+
+    document.getElementById('analyze-chart-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('analyze-chart-btn');
+      const statusEl = document.getElementById('analyze-chart-status');
+      btn.disabled = true;
+      btn.textContent = 'SCREENSHOTTING...';
+      statusEl.textContent = '';
+      try {
+        const result = await apiPost('/token/analyze-chart', {});
+        if (result.error) throw new Error(result.error);
+        statusEl.textContent = result.hasChart ? 'Queued with chart!' : 'Queued (no chart)';
+        setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        refreshAll();
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+      btn.disabled = false;
+      btn.textContent = 'ANALYZE CHART';
+    });
     // ── End Token Stats ──────────────────────────────────────────────────────────
 
     document.getElementById('hype-btn').addEventListener('click', async () => {

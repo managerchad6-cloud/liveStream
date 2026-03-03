@@ -732,6 +732,103 @@ Return ONLY valid JSON:
 
     return { script, estimatedDuration, exitContext: parsed.exitContext || null };
   }
+
+  /**
+   * Generate a chart analysis hype segment.
+   * Reads the chart screenshot (if provided) via vision + live token stats,
+   * always spins bullish regardless of price direction.
+   */
+  async generateChartAnalysisScript({ tokenData, imageBase64, imageMimeType = 'image/png' } = {}) {
+    if (!this.openai) throw new Error('OpenAI not configured');
+
+    const td = tokenData || {};
+
+    // Build a concise stats block the LLM can reference
+    const statLines = [
+      td.symbol    && `Token: $${td.symbol}`,
+      td.priceUsd  && `Price: $${parseFloat(td.priceUsd).toFixed(parseFloat(td.priceUsd) < 0.001 ? 6 : 4)}`,
+      td.marketCap && `Market cap: $${td.marketCap >= 1e6 ? (td.marketCap / 1e6).toFixed(2) + 'M' : td.marketCap >= 1e3 ? (td.marketCap / 1e3).toFixed(1) + 'K' : td.marketCap}`,
+      td.liquidity && `Liquidity: $${td.liquidity >= 1e6 ? (td.liquidity / 1e6).toFixed(2) + 'M' : td.liquidity >= 1e3 ? (td.liquidity / 1e3).toFixed(1) + 'K' : td.liquidity}`,
+      td.volume?.h24 && `24h volume: $${td.volume.h24 >= 1e6 ? (td.volume.h24 / 1e6).toFixed(2) + 'M' : td.volume.h24 >= 1e3 ? (td.volume.h24 / 1e3).toFixed(1) + 'K' : td.volume.h24}`,
+      td.volume?.h1  && `1h volume: $${td.volume.h1 >= 1e3 ? (td.volume.h1 / 1e3).toFixed(1) + 'K' : td.volume.h1}`,
+      td.priceChange?.h24 !== undefined && `24h change: ${td.priceChange.h24 >= 0 ? '+' : ''}${td.priceChange.h24.toFixed(2)}%`,
+      td.priceChange?.h1  !== undefined && `1h change: ${td.priceChange.h1 >= 0 ? '+' : ''}${td.priceChange.h1.toFixed(2)}%`,
+      td.priceChange?.m5  !== undefined && `5m change: ${td.priceChange.m5 >= 0 ? '+' : ''}${td.priceChange.m5.toFixed(2)}%`,
+      td.txns?.h24 && `24h txns: ${td.txns.h24.buys || 0} buys / ${td.txns.h24.sells || 0} sells`,
+      td.dex && `Listed on: ${td.dex}`,
+    ].filter(Boolean).join('\n');
+
+    const noData = !td.marketCap;
+
+    const systemPrompt = `You are writing a CHART ANALYSIS segment for a live pump.fun token launch stream. Chad and Virgin are co-hosts reacting to the $VVC price chart on their screen.
+
+YOUR PRIMARY MISSION — 20x more important than any technical accuracy — is to HYPE THE TOKEN. You are a master of bullish spin. Every scenario has a bullish narrative:
+- Price pumping: "just the beginning", "normies haven't even found this yet", "we're not even warmed up"
+- Price dipping: "perfect buy-the-dip setup", "textbook accumulation zone", "smart money loading bags quietly", "bears are cooked", "support held beautifully"
+- Price sideways: "coiling for an explosion", "diamond hands consolidation", "the calm before the pump", "this is the healthiest price action possible"
+- High volume: "volume doesn't lie — something is happening", "whales are accumulating hard"
+- Low volume: "sleeping giant", "smart money quietly positioning", "we are SO early"
+- Any candle / pattern: find the bullish reading (support levels, cup forming, bull flag, golden cross, wick rejection confirming support)
+
+CHARACTER RULES:
+CHAD: ${voices.chad.basePrompt} — reads the chart like a seasoned trader. Absolute conviction. Points out specific things on the chart. Uses trading lingo naturally and confidently.
+VIRGIN: ${voices.virgin.basePrompt} — not a chart expert but gets increasingly hyped by what Chad says. His nervousness turns into disbelief-hype. Learns as he goes. "Wait— that's a— BRO."
+
+CHART COMMENTARY GUIDELINES:
+- Reference what you actually see on the chart (candles, trend, volume bars, price levels, wicks)
+- Use trader vocabulary naturally: support, resistance, accumulation, consolidation, bull flag, breakout, retest, wick rejection, volume spike, higher lows, structure
+- Weave in the live stats provided — make the numbers sound exciting
+- 4-6 rapid-fire dialogue lines
+- Start mid-action, as if they're already looking: "bro look at this—", "okay the 1h is—", "wait— is that a—"
+- Short punchy lines with strong rhythm
+
+ELEVENLABS v3 AUDIO TAGS — use liberally mid-sentence:
+[laughs], [gasps], [gasps in disbelief], [chuckles], [screams], [yells], [voice cracks], [voice cracks with excitement], [breathes heavily], [whispers intensely], [sighs contentedly], [stutters with excitement], [laughs maniacally]
+
+Return ONLY valid JSON:
+{
+  "script": [
+    { "speaker": "chad|virgin", "text": "..." }
+  ],
+  "exitContext": "chart analysis segment"
+}`;
+
+    const userContent = [
+      {
+        type: 'text',
+        text: noData
+          ? `$VVC is in pre-launch / bonding curve phase — no DEX data yet. Generate hyped commentary about the pre-launch excitement. The chart screenshot (bonding curve) is attached.`
+          : `Live stats for $VVC:\n${statLines}\n\nAnalyze the chart screenshot and generate excited commentary based on what you see.`
+      }
+    ];
+
+    if (imageBase64) {
+      userContent.push({
+        type: 'image_url',
+        image_url: { url: `data:${imageMimeType};base64,${imageBase64}` }
+      });
+    }
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent }
+      ],
+      temperature: 1.0,
+      max_tokens: 550
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '';
+    const parsed = parseJson(content);
+    if (!parsed || !Array.isArray(parsed.script)) {
+      throw new Error('Failed to parse chart analysis script JSON');
+    }
+
+    const script = this._normalizeScript(parsed.script);
+    const estimatedDuration = estimateDurationSeconds(script);
+    return { script, estimatedDuration, exitContext: parsed.exitContext || 'chart analysis' };
+  }
 }
 
 module.exports = ScriptGenerator;

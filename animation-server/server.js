@@ -464,6 +464,7 @@ async function fetchTokenStatsFromDex() {
       priceChange: pair.priceChange || null,
       txns: pair.txns || null,
       dex: pair.dexId || null,
+      pairAddress: pair.pairAddress || null,
       imageUrl: pair.info?.imageUrl || null,
       sessionHigh: tokenStatsSessionHigh,
       isAtSessionHigh: mcap > 0 && mcap >= tokenStatsSessionHigh,
@@ -486,6 +487,93 @@ app.get('/token/stats', async (req, res) => {
     return res.json({ token: PUMP_FUN_TOKEN || null, noData: true, lastUpdated: now });
   }
   res.json(tokenStatsCache);
+});
+app.post('/token/analyze-chart', async (req, res) => {
+  if (!scriptGenerator) return res.status(503).json({ error: 'Script generator not initialized' });
+  if (!pipelineStore)    return res.status(503).json({ error: 'Pipeline not initialized' });
+  if (!mediaLibrary)     return res.status(503).json({ error: 'Media library not initialized' });
+
+  try {
+    // 1. Fresh token stats
+    const now = Date.now();
+    if (!tokenStatsCache || now - tokenStatsLastFetch > TOKEN_STATS_TTL_MS) {
+      tokenStatsCache = await fetchTokenStatsFromDex();
+      tokenStatsLastFetch = now;
+    }
+    const tokenData = tokenStatsCache;
+
+    // 2. Puppeteer screenshot of the chart
+    let chartImageBase64 = null;
+    const chartImageMimeType = 'image/png';
+    let chartMediaId = null;
+
+    // Pick best chart URL
+    const chartUrl = (tokenData && !tokenData.noData && tokenData.pairAddress)
+      ? `https://dexscreener.com/solana/${tokenData.pairAddress}?embed=1&theme=dark&info=0`
+      : PUMP_FUN_TOKEN
+        ? `https://pump.fun/${PUMP_FUN_TOKEN}`
+        : null;
+
+    if (chartUrl) {
+      let puppeteer;
+      try { puppeteer = require('puppeteer'); } catch { /* optional */ }
+
+      if (puppeteer) {
+        const browser = await puppeteer.launch({
+          headless: true,
+          args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+        try {
+          const page = await browser.newPage();
+          await page.setViewport({ width: 1280, height: 720 });
+          await page.goto(chartUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          // Wait for canvas (chart) then give it extra render time
+          try { await page.waitForSelector('canvas', { timeout: 8000 }); } catch {}
+          await new Promise(r => setTimeout(r, 2500));
+
+          const tmpPath = path.join(TEMP_DIR, `chart_${Date.now()}.png`);
+          await page.screenshot({ path: tmpPath, type: 'png' });
+
+          const mediaItem = await mediaLibrary.addFile(tmpPath, `chart_${Date.now()}.png`, 'image/png');
+          chartMediaId = mediaItem.id;
+          const buf = await fs.promises.readFile(tmpPath);
+          chartImageBase64 = buf.toString('base64');
+          try { fs.unlinkSync(tmpPath); } catch {}
+        } finally {
+          await browser.close();
+        }
+      }
+    }
+
+    // 3. LLM generates hype chart analysis script
+    const { script, estimatedDuration, exitContext } = await scriptGenerator.generateChartAnalysisScript({
+      tokenData,
+      imageBase64: chartImageBase64,
+      imageMimeType: chartImageMimeType
+    });
+
+    // 4. Create custom segment — chart screenshot shows on TV when it airs
+    const segment = await pipelineStore.createSegment({
+      type: 'custom-script',
+      seed: 'chart-analysis',
+      script,
+      estimatedDuration,
+      exitContext,
+      metadata: {
+        source: 'chart-analysis',
+        ...(chartMediaId ? { attachedMediaId: chartMediaId } : {})
+      }
+    });
+
+    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
+    broadcastPipelineUpdate();
+    segmentRenderer.queueRender(segment.id);
+
+    res.json({ success: true, segmentId: segment.id, hasChart: !!chartMediaId });
+  } catch (err) {
+    console.error('[Token] Chart analysis error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 // ── End Token Stats Service ───────────────────────────────────────────────────
 
