@@ -45,6 +45,9 @@ class ContinuousStreamManager {
     // Background music service (optional)
     this.backgroundMusicService = null;
 
+    // TV content service (optional) — provides per-frame audio from playing video
+    this.tvContentService = null;
+
     // Duck factor: lowers music to 20% while a character speaks, fades back after silence.
     // Attack: 3 frames (~100ms) to reach 0.2. Release: 500ms to return to 1.0.
     this._duckFactor = 1.0;
@@ -85,18 +88,21 @@ class ContinuousStreamManager {
     const outputPath = path.join(this.liveDir, 'stream.m3u8');
     const segmentPath = path.join(this.liveDir, 'segment_%03d.ts');
 
-    // Optional RTMP push to pump.fun (or any RTMP ingest).
-    // Set PUMP_FUN_RTMP_URL=rtmp://<server>/live/<stream-key> in .env to enable.
-    // When set, tee muxer encodes once and muxes to both HLS and RTMP.
-    const rtmpUrl = process.env.PUMP_FUN_RTMP_URL || null;
+    // Optional RTMP push — set either or both in .env to enable.
+    // PUMP_FUN_RTMP_URL=rtmp://<server>/live/<stream-key>
+    // X_RTMP_URL=rtmps://fr.pscp.tv:443/x/<stream-key>
+    // Tee muxer encodes once and fans out to all enabled destinations.
+    const pumpRtmpUrl = process.env.PUMP_FUN_RTMP_URL || null;
+    const xRtmpUrl    = process.env.X_RTMP_URL || null;
+    const rtmpTargets = [pumpRtmpUrl, xRtmpUrl].filter(Boolean);
 
     // 2-second GOP — required by pump.fun (keyframe every 2s at 30fps = 60 frames)
     const gopSize = this.fps * 2;
 
-    // Build output args: HLS only, or HLS + RTMP via tee muxer
+    // Build output args: HLS only, or HLS + RTMP(s) via tee muxer
     let outputArgs;
-    if (rtmpUrl) {
-      // Tee muxer: single encode, dual output. Forward slashes required in tee path strings.
+    if (rtmpTargets.length > 0) {
+      // Tee muxer: single encode, multiple outputs. Forward slashes required in tee path strings.
       const segPathFwd = segmentPath.replace(/\\/g, '/');
       const outPathFwd = outputPath.replace(/\\/g, '/');
       const hlsOpts = [
@@ -107,12 +113,14 @@ class ContinuousStreamManager {
         'hls_segment_type=mpegts',
         `hls_segment_filename=${segPathFwd}`
       ].join(':');
+      const rtmpParts = rtmpTargets.map(url => `[f=flv]${url}`);
+      const teeParts  = [`[${hlsOpts}]${outPathFwd}`, ...rtmpParts];
       outputArgs = [
         '-f', 'tee',
         '-map', '0:v', '-map', '1:a',
-        `[${hlsOpts}]${outPathFwd}|[f=flv]${rtmpUrl}`
+        teeParts.join('|')
       ];
-      console.log(`[ContinuousStreamManager] RTMP push enabled → ${rtmpUrl}`);
+      rtmpTargets.forEach(url => console.log(`[ContinuousStreamManager] RTMP push enabled → ${url}`));
     } else {
       outputArgs = [
         '-f', 'hls',
@@ -139,15 +147,17 @@ class ContinuousStreamManager {
       '-ar', String(this.sampleRate),
       '-ac', String(this.channels),
       '-i', 'pipe:3',
-      // Video encoding — CBR for stable RTMP ingest, veryfast for production quality
+      // Video encoding — Main/4.0 profile required for X (Twitter) RTMP ingest validation.
+      // High profile and zerolatency tune cause SPS/VUI rejection in the Periscope validator.
+      // Bitrate capped at 3500k (X's documented 720p30 max is 4000k; 3500k gives headroom).
       '-c:v', 'libx264',
       '-preset', 'veryfast',
-      '-tune', 'zerolatency',
-      '-profile:v', 'high',
+      '-profile:v', 'main',
+      '-level:v', '4.0',
       '-pix_fmt', 'yuv420p',
-      '-b:v', '4500k',
-      '-maxrate', '4500k',
-      '-bufsize', '9000k',
+      '-b:v', '3500k',
+      '-maxrate', '3500k',
+      '-bufsize', '7000k',
       '-r', String(this.fps),
       '-g', String(gopSize),         // 2-second keyframe interval
       '-keyint_min', String(gopSize),
@@ -196,6 +206,10 @@ class ContinuousStreamManager {
 
   setBackgroundMusic(service) {
     this.backgroundMusicService = service;
+  }
+
+  setTVContentService(service) {
+    this.tvContentService = service;
   }
 
   // Mix character audio with background music (s16le stereo).
@@ -355,6 +369,15 @@ class ContinuousStreamManager {
               } else {
                 // No active music — still advance duck toward 1.0 so it's ready when music resumes
                 this._duckFactor = Math.min(1.0, this._duckFactor + this._duckReleasePerFrame);
+              }
+              // Mix in TV audio when a video is playing (TV pauses during character speech,
+              // so character audio and TV audio never overlap)
+              const tvs = this.tvContentService;
+              if (tvs) {
+                const tvChunk = tvs.getAudioChunk(audioData.length);
+                if (tvChunk) {
+                  audioData = this._mixAudio(audioData, tvChunk, 1.0);
+                }
               }
               this.audioStdin.write(audioData);
             } catch (e) {}
