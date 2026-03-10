@@ -1344,14 +1344,52 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
     console.log(`[Compositor] L1 cache miss: ${l1Time}ms (${pendingTasks.length} transforms)`);
   }
 
-  // Fire L2 pre-warming in the background (never blocks frame loop)
+  // Fire L2 pre-warming in the background (never blocks frame loop).
+  // For speech: pre-warm all 6 phonemes for the speaking character.
+  // For idle: pre-warm just the A-A-0-0 (closed mouth, no blink) entry before swapping
+  //   the committed base — avoids an L2 miss on the first frame that uses the new base.
   const speakChar = currentSpeakingCharacter;
   if (speakChar) {
     setImmediate(() => preWarmL2(exprBaseCacheKey, exprBaseRaw, speakChar));
   } else {
-    // No one speaking — just swap committed base directly
-    committedExprBaseKey = exprBaseCacheKey;
-    committedExprBaseBuffer = exprBaseRaw;
+    setImmediate(async () => {
+      try {
+        const idleKey = `${exprBaseCacheKey}-A-A-0-0`;
+        if (!frameCache[idleKey]) {
+          const m = loadManifest();
+          const mouthOps = [];
+          for (const layer of m.layers) {
+            if (layer.type === 'mouth' && layer.phoneme === 'A') {
+              const buffer = scaledLayerBuffers[layer.id];
+              if (buffer) {
+                mouthOps.push({
+                  input: buffer,
+                  left: Math.round(layer.x * OUTPUT_SCALE),
+                  top: Math.round(layer.y * OUTPUT_SCALE),
+                  blend: 'over'
+                });
+              }
+            }
+          }
+          const charBuf = await sharp(exprBaseRaw.data, {
+            raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
+          })
+            .composite(mouthOps)
+            .jpeg({ quality: JPEG_QUALITY })
+            .toBuffer();
+          const frameCacheKeys = Object.keys(frameCache);
+          if (frameCacheKeys.length >= FRAME_CACHE_MAX) {
+            for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
+          }
+          frameCache[idleKey] = charBuf;
+        }
+      } catch (err) {
+        console.warn('[Compositor] Idle L2 pre-warm error:', err.message);
+      }
+      // Swap committed base only after idle L2 is warm
+      committedExprBaseKey = exprBaseCacheKey;
+      committedExprBaseBuffer = exprBaseRaw;
+    });
   }
 
   return exprBaseRaw;
