@@ -52,6 +52,44 @@ class XChatListener {
     };
   }
 
+  /**
+   * Capture a screenshot + DOM snapshot of the current page for debugging.
+   * Returns { screenshotBase64, url, title, testIds, bodyHtml }
+   */
+  async debug() {
+    if (!this.page || this.page.isClosed()) {
+      throw new Error('No active page — call connect() first');
+    }
+    const screenshotBuf = await this.page.screenshot({ type: 'png', fullPage: false });
+    const info = await this.page.evaluate(() => {
+      const testIds = [...new Set(
+        Array.from(document.querySelectorAll('[data-testid]'))
+          .map(el => el.getAttribute('data-testid'))
+          .filter(Boolean)
+      )];
+      // Grab the inner HTML of the most likely chat container (first 4000 chars)
+      const chatSelectors = [
+        '[data-testid="liveVideoChat"]', '[data-testid="liveVideo-chat"]',
+        '[data-testid="LiveVideoChat"]', '[data-testid="chat"]',
+        '[aria-label="Chat"]', '[aria-label="Live chat"]', '[role="log"]'
+      ];
+      let chatHtml = null;
+      let chatSelector = null;
+      for (const sel of chatSelectors) {
+        const el = document.querySelector(sel);
+        if (el) { chatHtml = el.innerHTML.slice(0, 4000); chatSelector = sel; break; }
+      }
+      return {
+        url: location.href,
+        title: document.title,
+        testIds,
+        chatSelector,
+        chatHtml: chatHtml || document.body.innerHTML.slice(0, 4000)
+      };
+    });
+    return { ...info, screenshotBase64: screenshotBuf.toString('base64') };
+  }
+
   // ─── Internal ──────────────────────────────────────────────────────────────
 
   async _connect() {
