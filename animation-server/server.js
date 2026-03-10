@@ -3226,7 +3226,8 @@ async function start() {
   // Initialize X live chat listener
   xChatListener = new XChatListener({
     chatIntake: orchestrator.chatIntake,
-    onMemeCommand: orchestrator.pumpChatListener?.onMemeCommand || null
+    onMemeCommand: orchestrator.pumpChatListener?.onMemeCommand || null,
+    getCredentials: () => twitterIngest?.getConfig() || null
   });
   const xBroadcastId = process.env.X_BROADCAST_ID;
   if (xBroadcastId) {
