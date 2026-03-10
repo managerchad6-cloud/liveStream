@@ -878,7 +878,7 @@ function buildChatOverlaySvg() {
  * Only ~6 Sharp composite ops regardless of how many static layers exist.
  * Called both from preloadLayers (direct await) and _rebuildStaticBase (hot path).
  */
-async function _buildBaseFromParts() {
+async function _buildBaseFromParts(fireFrame = fireState.frame) {
   if (!lowerStaticBase || !outputWidth) return staticBaseBuffer; // Not ready yet
 
   const ops = [];
@@ -922,9 +922,10 @@ async function _buildBaseFromParts() {
     ops.push({ input: buf, left: Math.round(lb.x * OUTPUT_SCALE), top: Math.round(lb.y * OUTPUT_SCALE), blend: 'over' });
   }
 
-  // Current fire frame
+  // Fire frame — use the explicitly passed frame index so callers can target a specific
+  // frame without racing against the global fireState.frame advancing mid-build.
   if (fireState.playing && fireFramePairs.length === 5) {
-    const pair = fireFramePairs[fireState.frame];
+    const pair = fireFramePairs[fireFrame];
     if (pair?.reflection) {
       ops.push({ input: pair.reflection.buffer, left: Math.round(pair.reflection.x * OUTPUT_SCALE), top: Math.round(pair.reflection.y * OUTPUT_SCALE), blend: 'over' });
     }
@@ -998,10 +999,13 @@ function setLightingState(config) {
 
 /**
  * Advance the fire animation frame by one step (called by fire timer in server.js).
- * Bumps staticBaseVersion only if the frame actually changed.
+ * Does NOT trigger a static-base rebuild — the fire frame is now encoded in the L1 cache
+ * key (v${staticBaseVersion}-f${fireFrame}-${exprKey}), so the next compositeFrame call
+ * that requests the new fire frame will get a cache miss, build its own base via
+ * _buildBaseFromParts(fireFrame), and cache it. After one full animation cycle all 5
+ * per-frame L1 entries are warm and subsequent frames are pure cache hits.
  */
 function advanceFireFrame() {
-  const prev = fireState.frame;
   if (fireState.mode === 'circular') {
     fireState.frame = (fireState.frame + 1) % 5;
   } else if (fireState.mode === 'pingpong') {
@@ -1019,9 +1023,6 @@ function advanceFireFrame() {
       do { next = Math.floor(Math.random() * 5); } while (next === fireState.frame);
       fireState.frame = next;
     }
-  }
-  if (fireState.frame !== prev) {
-    setImmediate(_rebuildStaticBase);
   }
 }
 
@@ -1143,7 +1144,7 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
  * Uses caching for common frame states (most frames are identical)
  * TV content is composited before character layers (appears behind them)
  */
-async function buildExpressionBase(exprBaseCacheKey, exprSnapshot) {
+async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = fireState.frame) {
   // Build expression layer composite ops
   const l1Start = Date.now();
   const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
@@ -1311,9 +1312,16 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot) {
     });
   }
 
-  // Composite Level 1: staticBase (raw RGBA) + expression layers + nose → raw RGBA buffer
-  const exprBaseResult = await sharp(staticBaseBuffer.data, {
-    raw: { width: staticBaseBuffer.info.width, height: staticBaseBuffer.info.height, channels: staticBaseBuffer.info.channels }
+  // Build scene base with the exact fire frame captured at dispatch time.
+  // Using _buildBaseFromParts(fireFrame) rather than the global staticBaseBuffer prevents
+  // a race where fireState.frame advances between the L1 cache-key generation and this build,
+  // which would cache a frame-N+1 buffer under a frame-N key and stall the fire animation.
+  const sceneBase = await _buildBaseFromParts(fireFrame);
+  if (!sceneBase) return null;
+
+  // Composite Level 1: sceneBase (raw RGBA) + expression layers + nose → raw RGBA buffer
+  const exprBaseResult = await sharp(sceneBase.data, {
+    raw: { width: sceneBase.info.width, height: sceneBase.info.height, channels: sceneBase.info.channels }
   })
     .composite(exprOps)
     .ensureAlpha()
@@ -1457,7 +1465,10 @@ async function compositeFrame(state) {
   //   by phoneme+blink per expression base. Composites only a few layers.
   //   On phoneme changes, the expensive expression base is served from Level 1 cache.
 
-  const exprBaseCacheKey = `${staticBaseVersion}-${exprKey}`;
+  // Capture fire frame at key-generation time so the L1 build uses the same frame
+  // the key was generated for — prevents caching a wrong-frame buffer under a stale key.
+  const capturedFireFrame = fireState.frame;
+  const exprBaseCacheKey = `v${staticBaseVersion}-f${capturedFireFrame}-${exprKey}`;
   const l1Hit = exprBaseCache[exprBaseCacheKey]; // { data, info } raw RGBA or undefined
   let exprBaseRaw;
   let effectiveExprBaseKey;
@@ -1466,7 +1477,7 @@ async function compositeFrame(state) {
     // L1 miss — fire background build (+ pre-warm → committed swap)
     if (!exprBaseInFlight.has(exprBaseCacheKey)) {
       const snapshot = JSON.parse(JSON.stringify(exprSnapshot));
-      const task = buildExpressionBase(exprBaseCacheKey, snapshot)
+      const task = buildExpressionBase(exprBaseCacheKey, snapshot, capturedFireFrame)
         .catch(err => {
           console.warn('[Compositor] L1 build failed:', err.message);
         })
