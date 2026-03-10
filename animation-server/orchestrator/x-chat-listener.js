@@ -1,61 +1,43 @@
-const axios = require('axios');
-const WebSocket = require('ws');
-
-// Twitter/X public web-app bearer token (app-level)
-const TWITTER_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I%2BxUDpqWY%3DEUo6I7TgknKM6PYKzrkFkBpREF1HrGlbVb%2FnRU9LCQN8VkfkAI';
-
 /**
- * XChatListener — connects to an X (Twitter) live broadcast chat room via the
- * Periscope WebSocket API and feeds messages into ChatIntakeAgent.
+ * XChatListener — watches an X (Twitter) live broadcast chat using Puppeteer.
  *
- * Requires X auth cookies (ct0 + authToken) — the same credentials used by
- * TwitterIngestService. Without them the Periscope API rejects the request.
+ * Navigates to https://x.com/i/broadcasts/<broadcastId> with auth cookies,
+ * injects a MutationObserver to detect new chat messages in real-time,
+ * and forwards them to ChatIntakeAgent.
  *
- * Usage:
- *   const listener = new XChatListener({
- *     chatIntake,
- *     onMemeCommand,
- *     getCredentials: () => twitterIngest.getConfig()  // { ct0, authToken }
- *   });
- *   await listener.connect('<broadcast_id>');
- *
- * The broadcast ID is the last segment of the viewer URL:
- *   https://twitter.com/i/broadcasts/<broadcast_id>
- *
- * Reconnect: exponential backoff (2s → 4s → 8s … capped at 30s).
+ * Same cookie approach as TwitterIngestService (ct0 + auth_token).
  */
 class XChatListener {
   constructor({ chatIntake, onMemeCommand, getCredentials }) {
     this.chatIntake = chatIntake;
     this.onMemeCommand = onMemeCommand || null;
     this.getCredentials = getCredentials || (() => null);
-    this.ws = null;
+    this.browser = null;
+    this.page = null;
     this.running = false;
     this.broadcastId = null;
-    this._roomId = null;
     this._reconnectAttempts = 0;
     this._restartTimer = null;
   }
 
   async connect(broadcastId) {
-    if (this.running) this.disconnect();
+    if (this.running) await this.disconnect();
     this.broadcastId = broadcastId;
-    this._roomId = null;
     this.running = true;
     this._reconnectAttempts = 0;
     await this._connect();
   }
 
-  disconnect() {
+  async disconnect() {
     this.running = false;
     if (this._restartTimer) {
       clearTimeout(this._restartTimer);
       this._restartTimer = null;
     }
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      this.ws.close();
-      this.ws = null;
+    if (this.browser) {
+      try { await this.browser.close(); } catch {}
+      this.browser = null;
+      this.page = null;
     }
     console.log('[XChat] Disconnected');
   }
@@ -65,8 +47,7 @@ class XChatListener {
     return {
       running: this.running,
       broadcastId: this.broadcastId,
-      roomId: this._roomId,
-      connected: this.ws?.readyState === WebSocket.OPEN,
+      connected: !!(this.page && !this.page.isClosed()),
       hasCredentials: !!(creds?.ct0 && creds?.authToken)
     };
   }
@@ -76,143 +57,217 @@ class XChatListener {
   async _connect() {
     if (!this.running) return;
     try {
-      this._roomId = await this._resolveRoomId(this.broadcastId);
-      this._openWebSocket(this._roomId);
+      const creds = this.getCredentials();
+      if (!creds?.ct0 || !creds?.authToken) {
+        throw new Error(
+          'No ct0/authToken credentials. Set them via POST /api/orchestrator/twitter/config'
+        );
+      }
+      await this._launchAndWatch(creds);
     } catch (err) {
       console.warn(`[XChat] Connect failed: ${err.message}`);
       this._scheduleReconnect();
     }
   }
 
-  _authHeaders(guestToken, ct0, authToken) {
-    const headers = {
-      Authorization: `Bearer ${TWITTER_BEARER}`,
-      'x-guest-token': guestToken,
-      'x-periscope-user-agent': 'Twitter/m5',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    };
-    if (ct0 && authToken) {
-      headers['Cookie'] = `ct0=${ct0}; auth_token=${authToken}`;
-      headers['X-Csrf-Token'] = ct0;
-    }
-    return headers;
-  }
+  async _launchAndWatch(creds) {
+    const puppeteer = require('puppeteer');
 
-  async _resolveRoomId(broadcastId) {
-    const creds = this.getCredentials();
-    const { ct0, authToken } = creds || {};
-
-    if (!ct0 || !authToken) {
-      console.warn(
-        '[XChat] No ct0/authToken credentials — Periscope API will likely reject the request.\n' +
-        '        Set Twitter cookies via POST /api/orchestrator/twitter/config first.'
-      );
-    }
-
-    // Step 1: guest token (always needed as a base)
-    const guestRes = await axios.post(
-      'https://api.twitter.com/1.1/guest/activate.json',
-      null,
-      {
-        headers: { Authorization: `Bearer ${TWITTER_BEARER}` },
-        timeout: 10_000
-      }
-    );
-    const guestToken = guestRes.data?.guest_token;
-    if (!guestToken) throw new Error('Failed to obtain guest token from Twitter');
-
-    const headers = this._authHeaders(guestToken, ct0, authToken);
-
-    // Step 2a: try the Twitter API live_video_stream endpoint first (more stable)
-    try {
-      const res = await axios.get(
-        `https://api.twitter.com/1.1/live_video_stream/status/${encodeURIComponent(broadcastId)}`,
-        { headers, timeout: 10_000 }
-      );
-      const roomId = res.data?.broadcast?.room_id || res.data?.room_id;
-      if (roomId) {
-        console.log(`[XChat] Resolved room_id via live_video_stream: ${roomId}`);
-        return roomId;
-      }
-      console.warn(`[XChat] live_video_stream response had no room_id: ${JSON.stringify(res.data).slice(0, 200)}`);
-    } catch (err) {
-      console.warn(`[XChat] live_video_stream lookup failed (${err.response?.status || err.message}) — trying Periscope API`);
-    }
-
-    // Step 2b: fall back to Periscope API
-    const broadcastRes = await axios.get(
-      `https://api.pscp.tv/v1/broadcastByBroadcastId?broadcastId=${encodeURIComponent(broadcastId)}&hl=en`,
-      { headers, timeout: 10_000 }
-    );
-
-    const broadcast = broadcastRes.data?.broadcast || broadcastRes.data;
-    const roomId = broadcast?.room_id || broadcast?.roomId || broadcast?.chat?.room_id;
-    if (!roomId) {
-      throw new Error(
-        `No room_id found. Ensure the broadcast is live and the ID is correct.\n` +
-        `Periscope response: ${JSON.stringify(broadcastRes.data).slice(0, 300)}`
-      );
-    }
-    console.log(`[XChat] Resolved room_id via Periscope API: ${roomId}`);
-    return roomId;
-  }
-
-  _openWebSocket(roomId) {
-    const wsUrl = `wss://chatman-us-east-1.pscp.tv/chatapi/v1/listen?room_id=${encodeURIComponent(roomId)}&cursor=`;
-
-    const creds = this.getCredentials();
-    const wsHeaders = {
-      Origin: 'https://twitter.com',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    };
-    if (creds?.ct0 && creds?.authToken) {
-      wsHeaders['Cookie'] = `ct0=${creds.ct0}; auth_token=${creds.authToken}`;
-    }
-
-    this.ws = new WebSocket(wsUrl, { headers: wsHeaders });
-
-    this.ws.on('open', () => {
-      console.log(`[XChat] Connected — broadcast ${this.broadcastId}, room ${roomId}`);
-      this._reconnectAttempts = 0;
-      this.ws.send(JSON.stringify({
-        payload: JSON.stringify({ room: roomId, cursor: '' }),
-        service: 'Social',
-        kind: 1
-      }));
+    this.browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 
-    this.ws.on('message', (raw) => {
-      try {
-        const frame = JSON.parse(raw.toString());
-        if (frame.kind !== 1) return; // kind 1 = chat message
-        const payload = typeof frame.payload === 'string'
-          ? JSON.parse(frame.payload)
-          : frame.payload;
+    this.page = await this.browser.newPage();
+    await this.page.setViewport({ width: 1280, height: 900 });
 
-        const username = String(payload.displayName || payload.username || 'anon').trim();
-        const text = String(payload.body || '').trim();
-        if (!text) return;
+    // Inject auth cookies — same pattern as TwitterIngestService
+    await this.page.setCookie(
+      { name: 'ct0',        value: creds.ct0,        domain: '.x.com', path: '/' },
+      { name: 'auth_token', value: creds.authToken,   domain: '.x.com', path: '/' }
+    );
 
-        console.log(`[XChat] ${username}: ${text.substring(0, 80)}`);
+    // Bridge: page context calls this Node function for every new chat message
+    await this.page.exposeFunction('__xChatOnMessage', (username, text) => {
+      if (!text || !username) return;
+      console.log(`[XChat] ${username}: ${text.substring(0, 80)}`);
 
-        const memeMatch = text.match(/^\/meme\s+(.+)/is);
-        if (memeMatch) {
-          if (this.onMemeCommand) this.onMemeCommand(username, memeMatch[1].trim());
-          return;
-        }
+      const memeMatch = text.match(/^\/meme\s+(.+)/is);
+      if (memeMatch) {
+        if (this.onMemeCommand) this.onMemeCommand(username, memeMatch[1].trim());
+        return;
+      }
 
-        if (this.chatIntake) this.chatIntake.addMessage(username, text);
-      } catch (_) {}
+      if (this.chatIntake) this.chatIntake.addMessage(username, text);
     });
 
-    this.ws.on('close', (code) => {
-      console.warn(`[XChat] WebSocket closed (code ${code})`);
+    const url = `https://x.com/i/broadcasts/${this.broadcastId}`;
+    console.log(`[XChat] Navigating to ${url}`);
+    await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    // Give the React app time to hydrate and render the chat panel
+    await new Promise(r => setTimeout(r, 4000));
+
+    await this._setupObserver();
+
+    this.page.on('close', () => {
+      console.warn('[XChat] Page closed unexpectedly');
+      this.page = null;
       if (this.running) this._scheduleReconnect();
     });
 
-    this.ws.on('error', (err) => {
-      console.warn(`[XChat] WebSocket error: ${err.message}`);
+    this.browser.on('disconnected', () => {
+      console.warn('[XChat] Browser disconnected');
+      this.browser = null;
+      this.page = null;
+      if (this.running) this._scheduleReconnect();
     });
+
+    this._reconnectAttempts = 0;
+    console.log(`[XChat] Watching broadcast ${this.broadcastId} for chat`);
+  }
+
+  async _setupObserver() {
+    // Log what we can see on the page to help diagnose selector issues
+    const diagnostics = await this.page.evaluate(() => {
+      const testIds = Array.from(document.querySelectorAll('[data-testid]'))
+        .map(el => el.getAttribute('data-testid'))
+        .filter(Boolean);
+      const unique = [...new Set(testIds)].slice(0, 60);
+      return {
+        title: document.title,
+        url: location.href,
+        testIds: unique,
+        bodyText: document.body.innerText.slice(0, 200)
+      };
+    });
+    console.log(`[XChat] Page loaded: "${diagnostics.title}"`);
+    console.log(`[XChat] Visible testIds: ${diagnostics.testIds.join(', ')}`);
+
+    // Ordered list of selectors to try for the chat scroll container
+    const CHAT_SELECTORS = [
+      '[data-testid="liveVideoChat"]',
+      '[data-testid="liveVideo-chat"]',
+      '[data-testid="LiveVideoChat"]',
+      '[data-testid="chat"]',
+      '[aria-label="Chat"]',
+      '[aria-label="Live chat"]',
+      '[role="log"]',
+      '[data-testid="cellInnerDiv"]'   // fallback — general feed
+    ];
+
+    // Find which selector actually matches
+    const foundSelector = await this.page.evaluate((selectors) => {
+      for (const sel of selectors) {
+        if (document.querySelector(sel)) return sel;
+      }
+      return null;
+    }, CHAT_SELECTORS);
+
+    if (foundSelector) {
+      console.log(`[XChat] Chat container matched: "${foundSelector}"`);
+    } else {
+      console.warn('[XChat] No known chat selector matched — observing <body> (may produce noise)');
+    }
+
+    // Inject MutationObserver into the live page
+    await this.page.evaluate((containerSelector) => {
+      const container = containerSelector
+        ? document.querySelector(containerSelector)
+        : document.body;
+
+      if (!container) {
+        console.warn('[XChat observer] Container not found, falling back to body');
+      }
+
+      const root = container || document.body;
+
+      // Dedup buffer: remember last 200 username:text pairs
+      const seen = new Set();
+      const addSeen = (key) => {
+        seen.add(key);
+        if (seen.size > 200) {
+          const first = seen.values().next().value;
+          seen.delete(first);
+        }
+      };
+
+      /**
+       * Try to extract { username, text } from a DOM node that represents
+       * a single chat message. Returns null if the node doesn't look like a message.
+       *
+       * X live chat messages typically have:
+       *   - A display name span (dir="ltr" or data-testid with "user"/"author")
+       *   - A message text span (dir="auto" or data-testid with "text"/"message")
+       */
+      const extractMessage = (node) => {
+        if (!(node instanceof Element)) return null;
+
+        // Strategy A: data-testid attributes (most reliable when present)
+        const usernameA = node.querySelector('[data-testid*="User-Name"] span')
+          || node.querySelector('[data-testid*="username"]')
+          || node.querySelector('[data-testid*="author"]');
+        const textA = node.querySelector('[data-testid*="tweetText"]')
+          || node.querySelector('[data-testid*="messageText"]')
+          || node.querySelector('[data-testid*="chat-message-text"]');
+
+        if (usernameA && textA) {
+          const u = usernameA.innerText.trim();
+          const t = textA.innerText.trim();
+          if (u && t && t !== u) return { username: u, text: t };
+        }
+
+        // Strategy B: dir attributes — X uses dir="ltr" for names, dir="auto" for content
+        const spans = Array.from(node.querySelectorAll('span'));
+        const ltrSpans = spans.filter(s => s.getAttribute('dir') === 'ltr' && s.innerText.trim());
+        const autoSpans = spans.filter(s => s.getAttribute('dir') === 'auto' && s.innerText.trim());
+
+        if (ltrSpans.length > 0 && autoSpans.length > 0) {
+          const u = ltrSpans[0].innerText.trim();
+          const t = autoSpans[0].innerText.trim();
+          if (u && t && t !== u && t.length > 0) return { username: u, text: t };
+        }
+
+        // Strategy C: structured children — first bold-ish span is name, rest is text
+        const allSpans = spans.filter(s => s.innerText.trim() && !s.querySelector('span'));
+        if (allSpans.length >= 2) {
+          const u = allSpans[0].innerText.trim();
+          const t = allSpans.slice(1).map(s => s.innerText.trim()).join(' ').trim();
+          if (u && t && t !== u && t.length > 1 && u.length < 60) {
+            return { username: u, text: t };
+          }
+        }
+
+        return null;
+      };
+
+      const handleNode = (node) => {
+        const msg = extractMessage(node);
+        if (!msg) return;
+        const key = `${msg.username}\x00${msg.text}`;
+        if (seen.has(key)) return;
+        addSeen(key);
+        window.__xChatOnMessage(msg.username, msg.text);
+      };
+
+      const observer = new MutationObserver((mutations) => {
+        for (const mut of mutations) {
+          for (const node of mut.addedNodes) {
+            handleNode(node);
+            if (node instanceof Element) {
+              // Walk immediate children — avoids re-walking deeply nested nodes
+              for (const child of node.children) {
+                handleNode(child);
+              }
+            }
+          }
+        }
+      });
+
+      observer.observe(root, { childList: true, subtree: true });
+      window.__xChatObserver = observer;
+      console.log('[XChat observer] MutationObserver armed on', root.tagName, containerSelector || '(body)');
+    }, foundSelector);
   }
 
   _scheduleReconnect() {
@@ -220,9 +275,14 @@ class XChatListener {
     this._reconnectAttempts++;
     const delay = Math.min(30_000, 2000 * Math.pow(2, this._reconnectAttempts - 1));
     console.log(`[XChat] Reconnecting in ${delay / 1000}s (attempt ${this._reconnectAttempts})`);
-    this._restartTimer = setTimeout(() => {
+    this._restartTimer = setTimeout(async () => {
       this._restartTimer = null;
-      this._connect();
+      if (this.browser) {
+        try { await this.browser.close(); } catch {}
+        this.browser = null;
+        this.page = null;
+      }
+      await this._connect();
     }, delay);
   }
 }

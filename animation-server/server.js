@@ -2600,9 +2600,9 @@ app.post('/api/orchestrator/x-chat/connect', async (req, res) => {
   }
 });
 
-app.post('/api/orchestrator/x-chat/disconnect', (req, res) => {
+app.post('/api/orchestrator/x-chat/disconnect', async (req, res) => {
   if (!xChatListener) return res.status(503).json({ error: 'X chat listener not initialized' });
-  xChatListener.disconnect();
+  await xChatListener.disconnect();
   res.json(xChatListener.getStatus());
 });
 
@@ -3227,7 +3227,7 @@ async function start() {
   xChatListener = new XChatListener({
     chatIntake: orchestrator.chatIntake,
     onMemeCommand: orchestrator.pumpChatListener?.onMemeCommand || null,
-    getCredentials: () => twitterIngest?.getConfig() || null
+    getCredentials: () => twitterIngest?.getCredentials() || null
   });
   const xBroadcastId = process.env.X_BROADCAST_ID;
   if (xBroadcastId) {

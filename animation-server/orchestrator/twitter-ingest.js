@@ -49,6 +49,14 @@ class TwitterIngestService {
     };
   }
 
+  /** Returns raw credentials for other services (e.g. XChatListener) that need them. */
+  getCredentials() {
+    return {
+      ct0: this._config.ct0 || null,
+      authToken: this._config.authToken || null
+    };
+  }
+
   setConfig(data) {
     const update = {};
     if (data.ct0 !== undefined) update.ct0 = data.ct0;
