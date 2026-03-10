@@ -69,6 +69,9 @@ const CHAT_EXPIRE_MS = 45000; // 45 seconds
 let tickerMessages = [];       // array of strings, plays in order
 let tickerCurrentIndex = 0;    // index into tickerMessages of currently playing slot
 let tickerSlotStartMs = 0;     // when the current slot started scrolling
+let tickerLastRenderTime = 0;  // last wall-clock time ticker was composited into output
+const TICKER_INTERVAL_MS = 80; // max ticker render rate: ~12fps (ticker scrolls at 120px/sec
+                                // so at 12fps each update shifts 10px — imperceptible to viewers)
 const TICKER_SPEED = 120;     // px/sec, right to left
 const TICKER_FONT_SIZE = 20;  // px
 const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
@@ -1564,8 +1567,18 @@ async function compositeFrame(state) {
   const hasActiveTicker = tickerMessages.some(m => m);
   const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}`;
 
-  // Fast path: skip all compositing if nothing changed and ticker is inactive
-  if (!hasActiveTicker && outputKey === lastOutputKey && lastOutputBuffer) {
+  // Ticker throttle: compositing a JPEG onto the full 1280×720 frame (decode + blend + encode)
+  // costs ~35-40ms regardless of overlay size. Since the ticker scrolls at 120px/sec it only
+  // moves ~10px between TICKER_INTERVAL_MS updates — visually imperceptible to viewers.
+  // When the ticker interval hasn't elapsed, treat the frame as ticker-free so the output
+  // cache can serve it instantly. A ticker-free composite is also cached, so base-state changes
+  // (fire frame, expression) that occur between ticker updates are served in < 5ms.
+  const now = Date.now();
+  const includeTickerThisFrame = hasActiveTicker && (now - tickerLastRenderTime >= TICKER_INTERVAL_MS);
+  if (includeTickerThisFrame) tickerLastRenderTime = now;
+
+  // Fast path: return cached output when nothing has changed and ticker isn't due
+  if (!includeTickerThisFrame && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -1659,16 +1672,18 @@ async function compositeFrame(state) {
   const memeQueueOp = buildMemeQueueSvg();
   if (memeQueueOp) overlayOps.push({ ...memeQueueOp, blend: 'over' });
 
-  // Ticker: correctly-sized SVG (1280×TICKER_HEIGHT = 36px, ~20× less than full frame).
-  // Composited in the same single pass — rasterization cost is negligible at this size.
-  if (hasActiveTicker) {
+  // Ticker: only composite when the interval has elapsed (throttled to ~12fps).
+  // On skipped frames the ticker is absent; this is invisible at video framerates.
+  if (includeTickerThisFrame) {
     const tickerOp = buildTickerSvg();
     if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  // Check output cache (non-ticker frames only — ticker output scrolls every frame)
+  // Output cache: usable whenever ticker isn't included this frame, regardless of whether
+  // the ticker is globally active. Ticker-free composites are cached and serve fast frames
+  // between ticker updates AND between fire-frame/expression changes.
   let result;
-  if (!hasActiveTicker) {
+  if (!includeTickerThisFrame) {
     result = outputCache[outputKey];
   }
 
@@ -1682,7 +1697,7 @@ async function compositeFrame(state) {
       result = charBuffer;
     }
 
-    if (!hasActiveTicker) {
+    if (!includeTickerThisFrame) {
       const outKeys = Object.keys(outputCache);
       if (outKeys.length >= OUTPUT_CACHE_MAX) {
         for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
