@@ -9,6 +9,7 @@ const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const { FFMPEG_PATH } = require('./platform');
+const { getChartScreenshot } = require('./chart-renderer');
 const { analyzeLipSync } = require('./lipsync');
 const BlinkController = require('./blink-controller');
 const {
@@ -53,6 +54,7 @@ const OrchestratorSocket = require('./orchestrator/websocket');
 const Orchestrator = require('./orchestrator');
 const BackgroundMusicService = require('./background-music');
 const TwitterIngestService = require('./orchestrator/twitter-ingest');
+const XChatListener = require('./orchestrator/x-chat-listener');
 
 // Lip sync mode: 'realtime' (new) or 'rhubarb' (legacy)
 const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
@@ -64,6 +66,7 @@ const USE_LLM_EXPRESSIONS = process.env.EXPRESSION_LLM === '1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 const PUMP_FUN_TOKEN = process.env.PUMP_FUN_TOKEN || '';
+const PUMP_FUN_PAIR  = process.env.PUMP_FUN_PAIR  || '';
 
 const app = express();
 const port = process.env.ANIMATION_PORT || 3003;
@@ -100,6 +103,46 @@ const DEFAULT_ORCHESTRATOR_CONFIG = {
 
 // Meme queue overlay — maps segment ID → display title for meme-reaction segments
 const memeSegmentTitles = new Map(); // segmentId → "virgin X vs chad Y"
+
+// ── Meme rate limiter (per-user queue-depth + strike escalation) ──────────────
+// A user may have at most MAX_PENDING memes in-flight (generating + queued but
+// not yet aired). Exceeding this issues a strike and imposes an escalating
+// personal cooldown. Strikes decay after 24 h of clean behaviour.
+
+// ── Meme Intake Queue ─────────────────────────────────────────────────────────
+// Holds /meme requests awaiting director approval. Auto-mode bypasses the queue.
+let memeIntakeAutoMode = false;
+const memeIntakeQueue = new Map(); // id → { id, userId, text, description, receivedAt }
+let memeIntakeCounter = 0;
+function broadcastMemeIntakeUpdate() {
+  if (!orchestratorSocket) return;
+  orchestratorSocket.broadcast('meme:intake-update', {
+    items: Array.from(memeIntakeQueue.values()),
+    auto: memeIntakeAutoMode
+  });
+}
+
+function addToMemeIntake(userId, text) {
+  const id = `intake-${++memeIntakeCounter}-${Date.now()}`;
+  const item = { id, userId, text, description: text.slice(0, 60), receivedAt: Date.now() };
+  memeIntakeQueue.set(id, item);
+  console.log(`[MemeIntake] Queued from ${userId.slice(0, 12)}: "${item.description}"`);
+  broadcastMemeIntakeUpdate();
+  return item;
+}
+
+function processMemeIntakeItem(item) {
+  console.log(`[MemeIntake] Generating: "${item.description}"`);
+  const memeJob = trackMemeJob(item.text.slice(0, 60), item.userId);
+  runMemeFromText(item.text, item.userId).then(() => {
+    memeJob.done();
+    broadcastPipelineUpdate();
+  }).catch(err => {
+    console.error('[Meme] Intake generation failed:', err.message);
+    memeJob.fail(err.message);
+  });
+  return true;
+}
 
 function syncMemeQueueToCompositor() {
   const all = pipelineStore ? pipelineStore.getAllSegments() : [];
@@ -144,9 +187,9 @@ function broadcastMemeQueueUpdate() {
   orchestratorSocket.broadcast('meme:queue-update', { jobs });
 }
 
-function trackMemeJob(description) {
+function trackMemeJob(description, userId = null) {
   const id = `meme-${++memeJobCounter}-${Date.now()}`;
-  const job = { id, description, status: 'generating', startedAt: Date.now() };
+  const job = { id, description, userId, status: 'generating', startedAt: Date.now() };
   memeGenerationQueue.set(id, job);
   broadcastMemeQueueUpdate();
   return {
@@ -502,46 +545,33 @@ app.post('/token/analyze-chart', async (req, res) => {
     }
     const tokenData = tokenStatsCache;
 
-    // 2. Puppeteer screenshot of the chart
+    // 2. Render local chart screenshot (OHLCV from GeckoTerminal or pump.fun trades API)
     let chartImageBase64 = null;
     const chartImageMimeType = 'image/png';
     let chartMediaId = null;
 
-    // Only screenshot DexScreener when we have a real pair address.
-    // pump.fun is Cloudflare-protected server-side — skip it.
-    const chartUrl = (tokenData && !tokenData.noData && tokenData.pairAddress)
-      ? `https://dexscreener.com/solana/${tokenData.pairAddress}?embed=1&theme=dark&info=0`
-      : null;
-    console.log('[Token] Chart URL:', chartUrl || '(none — bonding curve)');
-
-    if (chartUrl) {
-      let puppeteer;
-      try { puppeteer = require('puppeteer'); } catch { /* optional */ }
-
-      if (puppeteer) {
-        const browser = await puppeteer.launch({
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox']
+    if (PUMP_FUN_TOKEN) {
+      try {
+        const { buffer, hasChart } = await getChartScreenshot({
+          tokenAddress: PUMP_FUN_TOKEN,
+          pairAddress:  tokenData?.pairAddress || null,
+          symbol:       tokenData?.symbol || 'VVC',
+          tokenData,
+          tempDir:      TEMP_DIR,
         });
-        try {
-          const page = await browser.newPage();
-          await page.setViewport({ width: 1280, height: 720 });
-          await page.goto(chartUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-          // Wait for canvas (chart) then give it extra render time
-          try { await page.waitForSelector('canvas', { timeout: 8000 }); } catch {}
-          await new Promise(r => setTimeout(r, 2500));
-
+        if (hasChart && buffer) {
           const tmpPath = path.join(TEMP_DIR, `chart_${Date.now()}.png`);
-          await page.screenshot({ path: tmpPath, type: 'png' });
-
+          fs.writeFileSync(tmpPath, buffer);
           const mediaItem = await mediaLibrary.addFile(tmpPath, `chart_${Date.now()}.png`, 'image/png');
           chartMediaId = mediaItem.id;
-          const buf = await fs.promises.readFile(tmpPath);
-          chartImageBase64 = buf.toString('base64');
+          chartImageBase64 = buffer.toString('base64');
           try { fs.unlinkSync(tmpPath); } catch {}
-        } finally {
-          await browser.close();
+          console.log('[Token] Chart screenshot captured via local renderer');
+        } else {
+          console.log('[Token] Chart skipped — not enough candle data');
         }
+      } catch (err) {
+        console.warn('[Token] Chart renderer failed:', err.message);
       }
     }
 
@@ -602,6 +632,7 @@ let chatIntake = null;
 let orchestrator = null;
 let orchestratorSocket = null;
 let twitterIngest = null;
+let xChatListener = null;
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
 let lastLipSyncResult = { phoneme: 'A', character: null, done: true };
@@ -1633,6 +1664,58 @@ app.get('/tv/volume', (req, res) => {
   res.json({ volume: tvService.getVolume() });
 });
 
+// Seek TV playback to a specific time position
+app.post('/tv/seek', (req, res) => {
+  if (!tvService) return res.status(503).json({ error: 'TV service not initialized' });
+  const { position } = req.body;
+  if (typeof position !== 'number' || position < 0) {
+    return res.status(400).json({ error: 'position must be a non-negative number (seconds)' });
+  }
+  tvService.seekToTime(position);
+  res.json({ success: true, position });
+});
+
+// ── Video Reaction endpoints ──────────────────────────────────────────────────
+
+// Start planning a video reaction (returns sessionId immediately, planning runs async)
+app.post('/video-reaction/prepare', (req, res) => {
+  if (!orchestrator) return res.status(503).json({ error: 'Orchestrator not initialized' });
+  const { url } = req.body;
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url is required' });
+  try {
+    const sessionId = orchestrator.prepareVideoReaction(url);
+    res.json({ sessionId, state: 'preparing' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Get planning/session status
+app.get('/video-reaction/status/:sessionId', (req, res) => {
+  if (!orchestrator) return res.status(503).json({ error: 'Orchestrator not initialized' });
+  const status = orchestrator.getVideoSessionStatus(req.params.sessionId);
+  if (!status) return res.status(404).json({ error: 'Session not found' });
+  res.json(status);
+});
+
+// Start session — adds intro to pipeline, arms session
+app.post('/video-reaction/start/:sessionId', async (req, res) => {
+  if (!orchestrator) return res.status(503).json({ error: 'Orchestrator not initialized' });
+  try {
+    const result = await orchestrator.startVideoReaction(req.params.sessionId);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Cancel active session or abort a preparing one
+app.post('/video-reaction/cancel', (req, res) => {
+  if (!orchestrator) return res.status(503).json({ error: 'Orchestrator not initialized' });
+  orchestrator.cancelVideoReaction();
+  res.json({ success: true });
+});
+
 // Serve TV content audio files
 app.get('/tv/audio/:filename', (req, res) => {
   const filePath = path.join(TV_CONTENT_DIR, req.params.filename);
@@ -2494,6 +2577,37 @@ app.post('/api/orchestrator/twitter/historical/:id/queue', async (req, res) => {
 
 // ============== End Twitter Ingest API ==============
 
+// ── X Live Chat API ───────────────────────────────────────────────────────────
+
+// GET  /api/orchestrator/x-chat/status       → connection state
+// POST /api/orchestrator/x-chat/connect      → { broadcastId } — start listening
+// POST /api/orchestrator/x-chat/disconnect   → stop listening
+
+app.get('/api/orchestrator/x-chat/status', (req, res) => {
+  if (!xChatListener) return res.status(503).json({ error: 'X chat listener not initialized' });
+  res.json(xChatListener.getStatus());
+});
+
+app.post('/api/orchestrator/x-chat/connect', async (req, res) => {
+  if (!xChatListener) return res.status(503).json({ error: 'X chat listener not initialized' });
+  const { broadcastId } = req.body || {};
+  if (!broadcastId) return res.status(400).json({ error: 'broadcastId required' });
+  try {
+    await xChatListener.connect(broadcastId);
+    res.json(xChatListener.getStatus());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orchestrator/x-chat/disconnect', (req, res) => {
+  if (!xChatListener) return res.status(503).json({ error: 'X chat listener not initialized' });
+  xChatListener.disconnect();
+  res.json(xChatListener.getStatus());
+});
+
+// ============== End X Live Chat API ==============
+
 // ── Meme Segment API ──────────────────────────────────────────────────────────
 
 // Accept any freeform text, send to /generate/freestyle, poll, and queue a segment.
@@ -2504,13 +2618,21 @@ app.post('/api/orchestrator/meme/freestyle', async (req, res) => {
     console.error('[Meme] /freestyle: pipeline not initialized — scriptGenerator:', !!scriptGenerator, 'pipelineStore:', !!pipelineStore, 'mediaLibrary:', !!mediaLibrary);
     return res.status(503).json({ error: 'Pipeline not initialized' });
   }
-  const { text } = req.body || {};
+  const { text, userId } = req.body || {};
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required' });
   }
+
+  // Manual mode: route to intake queue for director approval
+  if (!memeIntakeAutoMode) {
+    const item = addToMemeIntake(userId || 'chat', text.trim());
+    return res.json({ ok: true, queued: false, intake: true, id: item?.id || null });
+  }
+
+  // Auto mode: generate immediately
   res.json({ ok: true, queued: true });
-  const memeJob = trackMemeJob(text.trim().slice(0, 60));
-  runMemeFromText(text.trim()).then(() => {
+  const memeJob = trackMemeJob(text.trim().slice(0, 60), userId || null);
+  runMemeFromText(text.trim(), userId || null).then(() => {
     memeJob.done();
     broadcastPipelineUpdate();
   }).catch(err => {
@@ -2554,7 +2676,7 @@ async function runMemeFromExistingJob(jobId) {
   if (!scriptGenerator) throw new Error('Script generator not available');
   if (!pipelineStore) throw new Error('Pipeline store not available');
 
-  const MEME_API = 'https://virginvschad.vip';
+  const MEME_API = 'http://93.127.214.75:8000';
   const axios = require('axios');
 
   console.log(`[Meme] Loading existing job: ${jobId}`);
@@ -2630,7 +2752,7 @@ async function runMemeFromExistingJob(jobId) {
 }
 
 // Proxy meme library listing (localhost:8000 — same machine as animation server)
-const MEME_LIBRARY_URL = 'https://virginvschad.vip';
+const MEME_LIBRARY_URL = 'http://93.127.214.75:8000';
 
 app.get('/api/meme-library', async (req, res) => {
   const axios = require('axios');
@@ -2645,6 +2767,44 @@ app.get('/api/meme-library', async (req, res) => {
     console.error('[MemeLib] Fetch error:', err.message);
     res.status(502).json({ error: err.message });
   }
+});
+
+// ── Meme Intake API ───────────────────────────────────────────────────────────
+
+app.get('/api/meme-intake', (req, res) => {
+  res.json({ items: Array.from(memeIntakeQueue.values()), auto: memeIntakeAutoMode });
+});
+
+app.post('/api/meme-intake/auto', (req, res) => {
+  const { enabled } = req.body || {};
+  memeIntakeAutoMode = typeof enabled === 'boolean' ? enabled : !memeIntakeAutoMode;
+  console.log(`[MemeIntake] Auto mode: ${memeIntakeAutoMode}`);
+  broadcastMemeIntakeUpdate();
+  res.json({ auto: memeIntakeAutoMode });
+});
+
+app.post('/api/meme-intake/generate-all', (req, res) => {
+  const items = Array.from(memeIntakeQueue.values());
+  memeIntakeQueue.clear();
+  broadcastMemeIntakeUpdate();
+  items.forEach(item => processMemeIntakeItem(item));
+  res.json({ ok: true, count: items.length });
+});
+
+app.post('/api/meme-intake/:id/generate', (req, res) => {
+  const item = memeIntakeQueue.get(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  memeIntakeQueue.delete(item.id);
+  broadcastMemeIntakeUpdate();
+  processMemeIntakeItem(item);
+  res.json({ ok: true });
+});
+
+app.delete('/api/meme-intake/:id', (req, res) => {
+  if (!memeIntakeQueue.has(req.params.id)) return res.status(404).json({ error: 'Not found' });
+  memeIntakeQueue.delete(req.params.id);
+  broadcastMemeIntakeUpdate();
+  res.json({ ok: true });
 });
 
 // Queue a segment from an existing meme job
@@ -2751,8 +2911,8 @@ function parseMemeText(text) {
 // Tries /generate/freestyle first (handles any input format) to extract virgin/chad.
 // Falls back to local regex parsing of the standard "virgin X vs chad Y" format.
 // Either way, delegates to runMemeAndCreateSegment (the proven /generate/raw path).
-async function runMemeFromText(text) {
-  const MEME_API = 'https://virginvschad.vip';
+async function runMemeFromText(text, userId = null) {
+  const MEME_API = 'http://93.127.214.75:8000';
   const axios = require('axios');
 
   let virgin = null, chad = null, virginSeedLabels = [], chadSeedLabels = [];
@@ -2794,17 +2954,17 @@ async function runMemeFromText(text) {
   }
 
   // Delegate to proven /generate/raw pipeline
-  return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels });
+  return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, userId });
 }
 
 // Submit a job to the MemeFactory API, poll until done, fetch labels + image,
 // generate a character reaction script, create a pipeline segment, and queue it.
-async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [], _attempt = 1 }) {
+async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [], userId = null, _attempt = 1 }) {
   if (!mediaLibrary) throw new Error('Media library not available');
   if (!scriptGenerator) throw new Error('Script generator not available');
   if (!pipelineStore) throw new Error('Pipeline store not available');
 
-  const MEME_API = 'https://virginvschad.vip';
+  const MEME_API = 'http://93.127.214.75:8000';
   const POLL_INTERVAL_MS = 5000;
   const POLL_TIMEOUT_MS = 5 * 60 * 1000;
   const MAX_ATTEMPTS = 2;
@@ -2834,7 +2994,7 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
       if (_attempt < MAX_ATTEMPTS) {
         console.warn(`[Meme] Job failed (${apiErr}), retrying in 3s... (attempt ${_attempt + 1}/${MAX_ATTEMPTS})`);
         await new Promise(r => setTimeout(r, 3000));
-        return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, _attempt: _attempt + 1 });
+        return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, userId, _attempt: _attempt + 1 });
       }
       throw new Error(`Meme job failed: ${apiErr}`);
     }
@@ -2885,6 +3045,7 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
     metadata: {
       ...(segment.metadata || {}),
       source: 'meme',
+      userId: userId || null,
       virginSubject: virgin,
       chadSubject: chad,
       virginLabels,
@@ -2991,6 +3152,9 @@ async function start() {
   if (STREAM_MODE === 'synced' && streamManager.setBackgroundMusic) {
     streamManager.setBackgroundMusic(backgroundMusic);
   }
+  if (STREAM_MODE === 'synced' && streamManager.setTVContentService && tvService) {
+    streamManager.setTVContentService(tvService);
+  }
 
   // Restore scene settings (fire animation + lighting) and start fire timer
   try {
@@ -3024,10 +3188,26 @@ async function start() {
     pipelineStore,
     mediaLibrary,
     tvLayerManager,
+    tvService,
     animationServerUrl,
     eventEmitter: orchestratorSocket,
     config: orchestratorConfig,
-    onChatMessage: addChatMessage
+    onChatMessage: addChatMessage,
+    onMemeCommand: (userId, text) => {
+      if (memeIntakeAutoMode) {
+        console.log(`[MemeIntake] Auto — generating: "${text.slice(0, 60)}"`);
+        const memeJob = trackMemeJob(text.slice(0, 60), userId);
+        runMemeFromText(text, userId).then(() => {
+          memeJob.done();
+          broadcastPipelineUpdate();
+        }).catch(err => {
+          console.error('[Meme] Auto generation failed:', err.message);
+          memeJob.fail(err.message);
+        });
+      } else {
+        addToMemeIntake(userId, text);
+      }
+    }
   });
 
   orchestrator.init();
@@ -3042,6 +3222,19 @@ async function start() {
   // Initialize Twitter ingest service
   twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
   console.log('[Twitter] Ingest service initialized');
+
+  // Initialize X live chat listener
+  xChatListener = new XChatListener({
+    chatIntake: orchestrator.chatIntake,
+    onMemeCommand: orchestrator.pumpChatListener?.onMemeCommand || null
+  });
+  const xBroadcastId = process.env.X_BROADCAST_ID;
+  if (xBroadcastId) {
+    xChatListener.connect(xBroadcastId).catch(err => {
+      console.warn(`[XChat] Auto-connect failed: ${err.message}`);
+    });
+  }
+  console.log('[XChat] Listener initialized' + (xBroadcastId ? ` — connecting to ${xBroadcastId}` : ' — no X_BROADCAST_ID set'));
 
   // TV media cue: when a segment with attachedMediaId goes on-air, switch TV to that media
   playbackController.registerOnAirHook((segmentId, segment) => {
