@@ -2604,13 +2604,19 @@ app.get('/api/orchestrator/x-chat/debug', async (req, res) => {
   if (!xChatListener) return res.status(503).json({ error: 'X chat listener not initialized' });
   try {
     const result = await xChatListener.debug();
-    // Return screenshot as image if ?screenshot=1, otherwise JSON
-    if (req.query.screenshot === '1') {
-      const buf = Buffer.from(result.screenshotBase64, 'base64');
-      res.set('Content-Type', 'image/png').send(buf);
-    } else {
-      res.json(result);
-    }
+    const buf = Buffer.from(result.screenshotBase64, 'base64');
+    res.set('Content-Type', 'image/png').set('Cache-Control', 'no-store').send(buf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/orchestrator/x-chat/debug/info', async (req, res) => {
+  if (!xChatListener) return res.status(503).json({ error: 'X chat listener not initialized' });
+  try {
+    const result = await xChatListener.debug();
+    const { screenshotBase64, ...rest } = result;
+    res.json(rest);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
