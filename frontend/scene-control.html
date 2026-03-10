@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scene Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f1014;
+      --panel: #1b1f2a;
+      --text: #f0f2f8;
+      --muted: #9aa4bf;
+      --accent: #ffb347;
+      --danger: #ff6b6b;
+      --good: #6ee7b7;
+      --active: #ffb347;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Space Grotesk', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+      padding-bottom: 60px;
+    }
+
+    #main { max-width: 700px; margin: 0 auto; }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    h1 { margin: 0; font-size: 1.5rem; }
+
+    .panel {
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .panel h2 {
+      margin: 0 0 14px 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* Button row */
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.9rem;
+      background: #2a2f3e;
+      color: var(--muted);
+      transition: background 0.15s, color 0.15s;
+    }
+
+    button:hover { background: #343a4e; color: var(--text); }
+    button.active { background: var(--active); color: #000; }
+    button.btn-play { background: var(--good); color: #000; }
+    button.btn-pause { background: var(--danger); color: #fff; }
+
+    /* Slider rows */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .slider-label {
+      font-size: 0.85rem;
+      color: var(--muted);
+      width: 110px;
+      flex-shrink: 0;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .slider-value {
+      font-size: 0.85rem;
+      font-weight: 600;
+      width: 44px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    /* Frame indicator */
+    .frame-indicator {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .frame-dot {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: #2a2f3e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-weight: 600;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .frame-dot.active {
+      background: var(--accent);
+      color: #000;
+    }
+
+    /* Preset buttons */
+    .presets-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .preset-btn {
+      flex: 1;
+      min-width: 80px;
+      padding: 10px 8px;
+      font-size: 0.85rem;
+    }
+
+    #status-bar {
+      font-size: 0.78rem;
+      color: var(--muted);
+      text-align: right;
+      margin-top: 4px;
+    }
+
+    /* Day/night cycle */
+    .cycle-toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .cycle-clock {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      flex-shrink: 0;
+    }
+
+    .cycle-clock canvas {
+      display: block;
+    }
+
+    .cycle-info {
+      flex: 1;
+    }
+
+    .cycle-phase-label {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .cycle-opacity-row {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .sliders-disabled input[type="range"] {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
+    .sliders-disabled .slider-label,
+    .sliders-disabled .slider-value {
+      opacity: 0.4;
+    }
+
+    .sliders-disabled .presets-row {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<div id="main">
+  <header>
+    <h1>Scene Control</h1>
+    <span id="status-bar">—</span>
+  </header>
+
+  <!-- Fire Section -->
+  <div class="panel">
+    <h2>Fire Animation</h2>
+
+    <div class="btn-row">
+      <button id="btn-play" class="btn-play" onclick="setFirePlaying(true)">▶ Play</button>
+      <button id="btn-pause" onclick="setFirePlaying(false)">⏸ Pause</button>
+    </div>
+
+    <div class="btn-row">
+      <span style="font-size:0.82rem;color:var(--muted);align-self:center;margin-right:4px;">Mode:</span>
+      <button id="mode-circular" onclick="setMode('circular')">Circular</button>
+      <button id="mode-pingpong" onclick="setMode('pingpong')">Ping-pong</button>
+      <button id="mode-random" onclick="setMode('random')">Random</button>
+    </div>
+
+    <div class="slider-row">
+      <span class="slider-label">Speed (FPS)</span>
+      <input type="range" id="fps-slider" min="1" max="15" step="1" value="8"
+             oninput="onFpsInput()" onchange="commitFps()">
+      <span class="slider-value" id="fps-value">8</span>
+    </div>
+
+    <div class="frame-indicator">
+      <div class="frame-dot" id="frame-0">1</div>
+      <div class="frame-dot" id="frame-1">2</div>
+      <div class="frame-dot" id="frame-2">3</div>
+      <div class="frame-dot" id="frame-3">4</div>
+      <div class="frame-dot" id="frame-4">5</div>
+    </div>
+  </div>
+
+  <!-- Lighting Section -->
+  <div class="panel" id="lighting-panel">
+    <h2>Background Lighting</h2>
+
+    <div class="slider-row">
+      <span class="slider-label">Night Light</span>
+      <input type="range" id="night-slider" min="0" max="100" step="1" value="100"
+             oninput="onNightInput()" onchange="commitNight()">
+      <span class="slider-value" id="night-value">100%</span>
+    </div>
+
+    <div class="slider-row">
+      <span class="slider-label">Day Light</span>
+      <input type="range" id="day-slider" min="0" max="100" step="1" value="0"
+             oninput="onDayInput()" onchange="commitDay()">
+      <span class="slider-value" id="day-value">0%</span>
+    </div>
+
+    <div class="presets-row">
+      <button class="preset-btn" onclick="applyPreset('night')">🌙 Night</button>
+      <button class="preset-btn" onclick="applyPreset('twilight')">🌆 Twilight</button>
+      <button class="preset-btn" onclick="applyPreset('day')">☀️ Day</button>
+      <button class="preset-btn" onclick="applyPreset('dark')">⬛ Dark</button>
+    </div>
+  </div>
+
+  <!-- Day/Night Cycle -->
+  <div class="panel">
+    <h2>Day / Night Cycle</h2>
+
+    <div class="cycle-toggle-row">
+      <canvas class="cycle-clock" id="cycle-canvas" width="80" height="80"></canvas>
+      <div class="cycle-info">
+        <div class="cycle-phase-label" id="cycle-phase">—</div>
+        <div class="cycle-opacity-row" id="cycle-opacities">—</div>
+      </div>
+      <div>
+        <button id="cycle-toggle" onclick="toggleCycle()">Enable</button>
+      </div>
+    </div>
+
+    <div class="slider-row">
+      <span class="slider-label">Speed (RPM)</span>
+      <input type="range" id="rpm-slider" min="0.1" max="10" step="0.1" value="2"
+             oninput="onRpmInput()" onchange="commitRpm()">
+      <span class="slider-value" id="rpm-value">2.0</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API = '';  // same-origin
+
+  // Track which sliders the user is currently dragging (dirty guard)
+  let fpsDirty = false;
+  let nightDirty = false;
+  let dayDirty = false;
+  let rpmDirty = false;
+
+  // Cycle state (mirrored from server for the clock drawing)
+  let cycleAngle = 0;
+  let cycleEnabled = false;
+
+  // ── Fire ────────────────────────────────────────────────────────────────────
+
+  function onFpsInput() {
+    fpsDirty = true;
+    document.getElementById('fps-value').textContent = document.getElementById('fps-slider').value;
+  }
+
+  function commitFps() {
+    const fps = parseInt(document.getElementById('fps-slider').value, 10);
+    fpsDirty = false;
+    postFire({ fps });
+  }
+
+  function setFirePlaying(playing) {
+    postFire({ playing });
+  }
+
+  function setMode(mode) {
+    postFire({ mode });
+  }
+
+  function postFire(body) {
+    fetch(`${API}/scene/fire`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(r => r.json())
+      .then(applyState)
+      .catch(err => console.error('[Scene] fire POST failed:', err));
+  }
+
+  // ── Lighting ─────────────────────────────────────────────────────────────────
+
+  function onNightInput() {
+    nightDirty = true;
+    document.getElementById('night-value').textContent = document.getElementById('night-slider').value + '%';
+  }
+
+  function commitNight() {
+    const v = parseInt(document.getElementById('night-slider').value, 10);
+    nightDirty = false;
+    postLighting({ nightOpacity: v / 100 });
+  }
+
+  function onDayInput() {
+    dayDirty = true;
+    document.getElementById('day-value').textContent = document.getElementById('day-slider').value + '%';
+  }
+
+  function commitDay() {
+    const v = parseInt(document.getElementById('day-slider').value, 10);
+    dayDirty = false;
+    postLighting({ dayOpacity: v / 100 });
+  }
+
+  function applyPreset(name) {
+    const presets = {
+      night:   { nightOpacity: 1.0, dayOpacity: 0.0 },
+      twilight: { nightOpacity: 0.6, dayOpacity: 0.4 },
+      day:     { nightOpacity: 0.0, dayOpacity: 1.0 },
+      dark:    { nightOpacity: 0.0, dayOpacity: 0.0 }
+    };
+    const p = presets[name];
+    if (!p) return;
+    nightDirty = false;
+    dayDirty = false;
+    postLighting(p);
+  }
+
+  function postLighting(body) {
+    fetch(`${API}/scene/lighting`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(r => r.json())
+      .then(applyState)
+      .catch(err => console.error('[Scene] lighting POST failed:', err));
+  }
+
+  // ── Day/Night Cycle ───────────────────────────────────────────────────────────
+
+  function onRpmInput() {
+    rpmDirty = true;
+    document.getElementById('rpm-value').textContent = parseFloat(document.getElementById('rpm-slider').value).toFixed(1);
+  }
+
+  function commitRpm() {
+    const rpm = parseFloat(document.getElementById('rpm-slider').value);
+    rpmDirty = false;
+    postCycle({ rpm });
+  }
+
+  function toggleCycle() {
+    postCycle({ enabled: !cycleEnabled });
+  }
+
+  function postCycle(body) {
+    fetch(`${API}/scene/cycle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(r => r.json())
+      .then(applyState)
+      .catch(err => console.error('[Scene] cycle POST failed:', err));
+  }
+
+  // Draw a small clock face showing current day/night phase.
+  // Night (angle=0,2π) = deep blue, Day (angle=π) = yellow. Hand points to current phase.
+  function drawCycleClock(angle, enabled) {
+    const canvas = document.getElementById('cycle-canvas');
+    const ctx = canvas.getContext('2d');
+    const cx = 40, cy = 40, r = 34;
+
+    ctx.clearRect(0, 0, 80, 80);
+
+    // Background circle — gradient: night (top) → day (bottom)
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    if (enabled) {
+      grad.addColorStop(0, '#1a2a4a');
+      grad.addColorStop(1, '#2a3a5a');
+    } else {
+      grad.addColorStop(0, '#1e2230');
+      grad.addColorStop(1, '#252a38');
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Arc segments: night half (top) and day half (bottom)
+    // angle=0 → night (top of clock), angle=π → day (bottom)
+    // Map angle to clock angle: clock 0 = top = -π/2
+    const NIGHT_COLOR = '#3b6ea8';
+    const DAY_COLOR   = '#f5c542';
+    ctx.lineWidth = 5;
+
+    // Night arc (0 → π) = left semicircle (clock top-left to bottom)
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 3, -Math.PI / 2, Math.PI / 2, false);
+    ctx.strokeStyle = NIGHT_COLOR;
+    ctx.stroke();
+
+    // Day arc (π → 2π) = right semicircle
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 3, Math.PI / 2, 3 * Math.PI / 2, false);
+    ctx.strokeStyle = DAY_COLOR;
+    ctx.stroke();
+
+    // Hand: angle 0 → top, π → bottom (clock convention: -π/2 + angle)
+    const handAngle = -Math.PI / 2 + angle;
+    const hx = cx + (r - 10) * Math.cos(handAngle);
+    const hy = cy + (r - 10) * Math.sin(handAngle);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(hx, hy);
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = enabled ? '#fff' : '#555';
+    ctx.stroke();
+
+    // Center dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, 2 * Math.PI);
+    ctx.fillStyle = enabled ? '#fff' : '#555';
+    ctx.fill();
+  }
+
+  function phaseLabel(angle) {
+    const norm = ((angle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const t = norm / (2 * Math.PI); // 0→1
+    if (t < 0.1 || t >= 0.9) return '🌑 Night';
+    if (t < 0.25) return '🌅 Dawn';
+    if (t < 0.4) return '🌄 Morning';
+    if (t < 0.6) return '☀️ Day';
+    if (t < 0.75) return '🌇 Afternoon';
+    if (t < 0.9) return '🌆 Dusk';
+    return '🌑 Night';
+  }
+
+  // ── State application ────────────────────────────────────────────────────────
+
+  function applyState(state) {
+    if (!state) return;
+
+    const { fire, lighting, cycle } = state;
+
+    if (fire) {
+      // Play / pause buttons
+      document.getElementById('btn-play').classList.toggle('active', fire.playing);
+      document.getElementById('btn-pause').classList.toggle('active', !fire.playing);
+
+      // Mode buttons
+      ['circular', 'pingpong', 'random'].forEach(m => {
+        document.getElementById(`mode-${m}`).classList.toggle('active', fire.mode === m);
+      });
+
+      // FPS slider (only if user not dragging)
+      if (!fpsDirty) {
+        document.getElementById('fps-slider').value = fire.fps;
+        document.getElementById('fps-value').textContent = fire.fps;
+      }
+
+      // Frame dots
+      for (let i = 0; i < 5; i++) {
+        document.getElementById(`frame-${i}`).classList.toggle('active', fire.frame === i);
+      }
+    }
+
+    if (lighting) {
+      // When cycle is running, show live computed opacities (read-only)
+      const useCycle = cycle && cycle.enabled && cycle.dayFrac !== null;
+      const liveNight = useCycle ? (1 - cycle.dayFrac) : lighting.nightOpacity;
+      const liveDay   = useCycle ? cycle.dayFrac       : lighting.dayOpacity;
+
+      if (!nightDirty) {
+        const pct = Math.round(liveNight * 100);
+        document.getElementById('night-slider').value = pct;
+        document.getElementById('night-value').textContent = pct + '%';
+      }
+      if (!dayDirty) {
+        const pct = Math.round(liveDay * 100);
+        document.getElementById('day-slider').value = pct;
+        document.getElementById('day-value').textContent = pct + '%';
+      }
+
+      // Dim the lighting panel when cycle is controlling it
+      const lightingPanel = document.getElementById('lighting-panel');
+      if (lightingPanel) lightingPanel.classList.toggle('sliders-disabled', Boolean(useCycle));
+    }
+
+    if (cycle) {
+      cycleEnabled = cycle.enabled;
+      cycleAngle   = cycle.angle;
+
+      const toggleBtn = document.getElementById('cycle-toggle');
+      toggleBtn.textContent = cycle.enabled ? 'Disable' : 'Enable';
+      toggleBtn.classList.toggle('active', cycle.enabled);
+
+      if (!rpmDirty) {
+        document.getElementById('rpm-slider').value = cycle.rpm;
+        document.getElementById('rpm-value').textContent = cycle.rpm.toFixed(1);
+      }
+
+      drawCycleClock(cycle.angle, cycle.enabled);
+      document.getElementById('cycle-phase').textContent = cycle.enabled ? phaseLabel(cycle.angle) : 'Paused';
+
+      if (cycle.dayFrac !== null) {
+        const night = Math.round((1 - cycle.dayFrac) * 100);
+        const day   = Math.round(cycle.dayFrac * 100);
+        document.getElementById('cycle-opacities').textContent = `Night ${night}%  ·  Day ${day}%`;
+      } else {
+        document.getElementById('cycle-opacities').textContent = 'Manual control';
+      }
+    }
+
+    document.getElementById('status-bar').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  }
+
+  // ── Polling ───────────────────────────────────────────────────────────────────
+
+  function poll() {
+    fetch(`${API}/scene/status`)
+      .then(r => r.json())
+      .then(applyState)
+      .catch(() => {});
+  }
+
+  poll();
+  setInterval(poll, 2000);
+</script>
+</body>
+</html>

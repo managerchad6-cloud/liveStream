@@ -33,6 +33,10 @@ class ChatIntakeAgent {
     this.autoApprove = false;
     this.queueSegmentWithBridge = null;
 
+    // Hold mode: when true, auto-approved messages are buffered instead of queued
+    this._holdMode = false;
+    this._heldMessages = [];
+
     // Filter state
     this._approvedTimestamps = []; // sliding window for rate limiter
     this._recentApproved = [];     // last 10 approved texts for dedup
@@ -141,9 +145,15 @@ class ChatIntakeAgent {
       if (this.eventEmitter) {
         this.eventEmitter.broadcast('chat:inbox-update', { inbox: this.getInbox() });
       }
-      this._autoQueue(card).catch(err => {
-        console.warn(`[ChatIntake] Auto queue failed: ${err.message}`);
-      });
+      if (this._holdMode) {
+        // Buffer during video reaction session — will be flushed after session ends
+        this._heldMessages.push(card);
+        console.log(`[ChatIntake] Hold mode — buffered: "${card.text.slice(0, 60)}"`);
+      } else {
+        this._autoQueue(card).catch(err => {
+          console.warn(`[ChatIntake] Auto queue failed: ${err.message}`);
+        });
+      }
     }
 
     return card;
@@ -239,6 +249,25 @@ class ChatIntakeAgent {
   }
 
   setIntakeRate() {}
+
+  /** Enable/disable hold mode (buffers auto-approved messages during video reaction) */
+  setHoldMode(enabled) {
+    this._holdMode = Boolean(enabled);
+    if (!this._holdMode) return; // reset handled by flushHeld
+    console.log(`[ChatIntake] Hold mode: ${this._holdMode ? 'ON' : 'OFF'}`);
+  }
+
+  /** Flush held messages — process them through the normal auto-queue flow */
+  flushHeld() {
+    const held = this._heldMessages.splice(0);
+    this._holdMode = false;
+    console.log(`[ChatIntake] Flushing ${held.length} held messages`);
+    for (const card of held) {
+      this._autoQueue(card).catch(err => {
+        console.warn(`[ChatIntake] Flush queue failed: ${err.message}`);
+      });
+    }
+  }
 
   /**
    * Extract a topic summary from viewer message and response (not a transcript).

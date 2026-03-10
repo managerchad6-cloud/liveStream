@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+const axios = require('axios');
 const ScriptGenerator = require('./script-generator');
 const BridgeGenerator = require('./bridge-generator');
 const FillerGenerator = require('./filler-generator');
@@ -6,10 +8,19 @@ const PlaybackController = require('./playback-controller');
 const BufferMonitor = require('./buffer-monitor');
 const ChatIntakeAgent = require('./chat-intake');
 const PumpChatListener = require('./pump-chat-listener');
+const VideoReactionPlanner = require('./video-reaction-planner');
+const VideoReactionSession = require('./video-reaction-session');
 
 class Orchestrator {
-  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage }) {
+  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onMemeCommand, tvService }) {
     this.pipelineStore = pipelineStore;
+    this.openai = openai || null;
+    this.animationServerUrl = animationServerUrl;
+    this.tvService = tvService || null;
+
+    // Video reaction session state
+    this._videoSessions = new Map(); // sessionId → { state, progress, plan, session }
+    this.activeVideoSession = null;
 
     this.scriptGenerator = openai ? new ScriptGenerator({ openai, pipelineStore }) : null;
     this.bridgeGenerator = openai ? new BridgeGenerator({ openai, pipelineStore }) : null;
@@ -54,7 +65,8 @@ class Orchestrator {
 
     this.pumpChatListener = new PumpChatListener({
       chatIntake: this.chatIntake,
-      token: process.env.PUMP_FUN_TOKEN || null
+      token: process.env.PUMP_FUN_TOKEN || null,
+      onMemeCommand: onMemeCommand || null
     });
   }
 
@@ -161,6 +173,198 @@ class Orchestrator {
 
   getFillerEnabled() {
     return this.bufferMonitor.fillerEnabled;
+  }
+
+  // ── Video Reaction ────────────────────────────────────────────────────────────
+
+  /**
+   * Begin planning a video reaction session. Returns sessionId immediately;
+   * poll getVideoSessionStatus(sessionId) for progress.
+   */
+  prepareVideoReaction(url) {
+    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!process.env.ELEVENLABS_API_KEY) throw new Error('ElevenLabs API key not configured');
+
+    const sessionId = crypto.randomUUID();
+    const entry = {
+      state: 'preparing',
+      progress: {},
+      plan: null,
+      session: null,
+      error: null
+    };
+    this._videoSessions.set(sessionId, entry);
+
+    const planner = new VideoReactionPlanner({
+      openai: this.openai,
+      elevenLabsApiKey: process.env.ELEVENLABS_API_KEY,
+      ttsModel: process.env.AUTO_TTS_MODEL || 'eleven_v3'
+    });
+
+    planner.on('progress', update => {
+      entry.progress[update.step] = { status: update.status, detail: update.detail || null };
+      // As soon as the video is downloaded, pre-load it into the TV playlist so it's
+      // fully decoded before the user clicks Start.
+      if (update.step === 'download' && update.status === 'done' && update.videoPath) {
+        const videoPath = update.videoPath;
+        entry.tvPreloadPromise = (async () => {
+          await axios.post(`${this.animationServerUrl}/tv/playlist/clear`).catch(() => {});
+          await axios.post(`${this.animationServerUrl}/tv/playlist/add`, {
+            type: 'video',
+            source: videoPath
+          });
+          await this._waitForTVVideoLoaded();
+          console.log('[Orchestrator] TV video pre-load complete');
+        })().catch(err => {
+          console.warn('[Orchestrator] TV pre-load failed:', err.message);
+        });
+      }
+    });
+
+    planner.plan(url).then(plan => {
+      entry.plan = plan;
+      entry.state = 'ready';
+      console.log(`[Orchestrator] Video reaction plan ready: "${plan.title}" (${plan.beats.length} beats)`);
+    }).catch(err => {
+      entry.state = 'failed';
+      entry.error = err.message;
+      console.error(`[Orchestrator] Video reaction plan failed: ${err.message}`);
+    });
+
+    return sessionId;
+  }
+
+  getVideoSessionStatus(sessionId) {
+    const entry = this._videoSessions.get(sessionId);
+    if (!entry) return null;
+    return {
+      state: entry.state,
+      progress: entry.progress,
+      error: entry.error,
+      plan: entry.plan ? {
+        title: entry.plan.title,
+        uploader: entry.plan.uploader,
+        videoDuration: entry.plan.videoDuration,
+        beatCount: entry.plan.beats.length
+      } : null,
+      session: entry.session ? entry.session.getStatus() : null
+    };
+  }
+
+  /**
+   * Add the intro segment to the pipeline and arm the session.
+   * The session activates when the intro goes on-air.
+   */
+  async startVideoReaction(sessionId) {
+    if (!this.tvService) throw new Error('TV service not available');
+    const entry = this._videoSessions.get(sessionId);
+    if (!entry) throw new Error('Session not found');
+    if (entry.state !== 'ready') throw new Error(`Session not ready (state: ${entry.state})`);
+    if (this.activeVideoSession) throw new Error('Another video reaction session is already active');
+
+    const plan = entry.plan;
+
+    // Wait for TV video to finish loading (pre-load started when download finished).
+    // If pre-load somehow didn't happen, fall back to loading now.
+    if (entry.tvPreloadPromise) {
+      await entry.tvPreloadPromise;
+    } else {
+      await axios.post(`${this.animationServerUrl}/tv/playlist/clear`).catch(() => {});
+      await axios.post(`${this.animationServerUrl}/tv/playlist/add`, {
+        type: 'video',
+        source: plan.tempVideoPath
+      });
+      await this._waitForTVVideoLoaded();
+    }
+
+    // Create intro segment in the normal pipeline
+    const introSegment = await this.pipelineStore.createSegment({
+      type: 'video-reaction-intro',
+      seed: plan.title,
+      script: plan.intro.script,
+      estimatedDuration: plan.intro.estimatedDuration,
+      exitContext: `video reaction: "${plan.title}"`
+    });
+
+    // Build and wire the session
+    const session = new VideoReactionSession({
+      plan,
+      animationServerUrl: this.animationServerUrl,
+      tvService: this.tvService,
+      playbackController: this.playbackController
+    });
+
+    entry.session = session;
+    entry.state = 'active';
+    this.activeVideoSession = session;
+
+    // On-air hook: activate session when the intro segment starts playing
+    const hookFn = (segId) => {
+      if (segId === introSegment.id) {
+        session.activate();
+        this._onSessionActive();
+      }
+    };
+    this.playbackController.registerOnAirHook(hookFn);
+
+    session.on('done', () => this._onSessionDone(sessionId));
+
+    // Prioritize intro to front of queue (after any currently on-air segment)
+    await this.pipelineStore.prioritizeSegment(introSegment.id);
+
+    // Queue intro for TTS + render (goes through normal SegmentRenderer flow)
+    this.segmentRenderer.queueRender(introSegment.id).catch(err => {
+      console.error(`[Orchestrator] Intro render failed: ${err.message}`);
+    });
+
+    console.log(`[Orchestrator] Video reaction queued: "${plan.title}"`);
+    return { introSegmentId: introSegment.id };
+  }
+
+  async _waitForTVVideoLoaded(timeoutMs = 10 * 60 * 1000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const item = this.tvService?.playlist?.[0];
+      if (item?.loaded) return;
+      if (item?.error) throw new Error(`TV video load failed: ${item.error}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    console.warn('[Orchestrator] TV video load timed out — proceeding anyway');
+  }
+
+  cancelVideoReaction() {
+    if (this.activeVideoSession) {
+      this.activeVideoSession.cancel();
+      // _onSessionDone will fire via 'done' event
+    }
+    // Cancel any preparing sessions too
+    for (const [, entry] of this._videoSessions) {
+      if (entry.state === 'preparing' || entry.state === 'ready') {
+        entry.state = 'cancelled';
+      }
+    }
+  }
+
+  _onSessionActive() {
+    // Suppress expand generation during the session
+    this.playbackController.pause();
+    // Hold chat auto-queue
+    if (this.chatIntake) this.chatIntake.setHoldMode(true);
+    console.log('[Orchestrator] Video session active — pipeline suppressed');
+  }
+
+  _onSessionDone(sessionId) {
+    this.activeVideoSession = null;
+    const entry = this._videoSessions.get(sessionId);
+    if (entry) entry.state = 'done';
+
+    // Resume normal pipeline
+    this.playbackController.start();
+
+    // Flush any held chat messages
+    if (this.chatIntake) this.chatIntake.flushHeld();
+
+    console.log('[Orchestrator] Video session done — pipeline resumed');
   }
 }
 

@@ -119,6 +119,33 @@
       transition: width 0.3s;
     }
 
+    /* Meme intake section */
+    #meme-intake-section {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      min-height: 50px;
+      align-items: flex-start;
+    }
+
+    .meme-intake-card {
+      background: #1a1f2e;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      min-width: 160px;
+      max-width: 220px;
+      border: 1px solid #4a5080;
+    }
+
+    .meme-intake-card .user { font-size: 0.72rem; color: var(--muted); margin-bottom: 4px; }
+    .meme-intake-card .desc { color: var(--text); font-size: 0.82rem; margin: 4px 0 8px; word-break: break-word; }
+    .meme-intake-card .actions { display: flex; gap: 6px; }
+    .meme-intake-card .btn-gen { flex: 1; padding: 4px 0; border: none; border-radius: 5px; background: var(--primary); color: #fff; cursor: pointer; font-family: inherit; font-size: 0.78rem; }
+    .meme-intake-card .btn-gen:hover { background: #2563eb; }
+    .meme-intake-card .btn-dismiss { padding: 4px 8px; border: 1px solid #555; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-family: inherit; font-size: 0.78rem; }
+    .meme-intake-card .btn-dismiss:hover { border-color: #c44; color: #c44; }
+
     /* Meme generation section */
     #meme-gen-section {
       display: flex;
@@ -815,6 +842,59 @@
 
   </div>
 
+  <!-- Video Ingest row -->
+  <div style="display:flex;gap:16px;margin-bottom:16px;">
+
+    <!-- YouTube Video -->
+    <div class="panel twitter-panel" id="yt-video-panel" style="flex:1;margin-bottom:0;">
+      <h2 style="color:#ff4444;">YouTube Video</h2>
+      <div class="twitter-col">
+        <input id="yt-url" class="twitter-field" placeholder="https://youtube.com/watch?v=..." />
+        <button class="btn-primary" id="yt-prepare-btn" style="background:#ff4444;margin-top:4px;">Prepare Reaction</button>
+
+        <!-- Progress (hidden until active) -->
+        <div id="yt-progress" style="display:none;margin-top:8px;font-size:0.78rem;line-height:1.7;">
+          <div id="yt-prog-transcript">⬜ Transcript</div>
+          <div id="yt-prog-beats">⬜ Beat selection</div>
+          <div id="yt-prog-scripts">⬜ Scripts</div>
+          <div id="yt-prog-tts">⬜ Audio generation</div>
+          <div id="yt-prog-download">⬜ Video download</div>
+        </div>
+
+        <!-- Ready card (hidden until ready) -->
+        <div id="yt-ready-card" style="display:none;margin-top:8px;background:#1a1a2e;border-radius:8px;padding:8px 10px;font-size:0.8rem;">
+          <div id="yt-ready-title" style="font-weight:600;color:#ff4444;margin-bottom:2px;"></div>
+          <div id="yt-ready-meta" style="color:var(--muted);"></div>
+        </div>
+
+        <button class="btn-primary" id="yt-start-btn" style="display:none;background:#ff4444;margin-top:6px;">▶ Start Session</button>
+
+        <!-- Active session status -->
+        <div id="yt-session-status" style="display:none;margin-top:6px;font-size:0.78rem;color:#ff8888;"></div>
+
+        <button id="yt-cancel-btn" style="display:none;padding:6px 12px;border:1px solid #c44;border-radius:8px;background:transparent;color:#c44;cursor:pointer;font-family:inherit;font-size:0.82rem;margin-top:6px;">✕ Cancel Session</button>
+      </div>
+    </div>
+
+    <!-- YouTube Live Stream (placeholder) -->
+    <div class="panel twitter-panel" style="flex:1;margin-bottom:0;opacity:0.45;pointer-events:none;">
+      <h2 style="color:#888;">YouTube Stream</h2>
+      <div class="twitter-col">
+        <input class="twitter-field" placeholder="https://youtube.com/watch?v=... (live)" disabled />
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:8px;">Coming soon</div>
+      </div>
+    </div>
+
+    <!-- Own Media Library (placeholder) -->
+    <div class="panel twitter-panel" style="flex:1;margin-bottom:0;opacity:0.45;pointer-events:none;">
+      <h2 style="color:#888;">Library Video</h2>
+      <div class="twitter-col">
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:8px;">Coming soon — react to videos from your media library</div>
+      </div>
+    </div>
+
+  </div>
+
   <!-- Meme row: Create (2/3) + Library (1/3) -->
   <div style="display:flex;gap:16px;margin-bottom:16px;align-items:stretch;">
 
@@ -884,6 +964,18 @@
       <div class="picker-grid" id="picker-grid">
         <span class="empty-state">Loading...</span>
       </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <h2 style="margin:0;">Meme Intake</h2>
+      <div style="display:flex;gap:6px;">
+        <button id="meme-intake-auto-btn" style="padding:4px 10px;border:1px solid #555;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:0.78rem;">Auto: OFF</button>
+      </div>
+    </div>
+    <div id="meme-intake-section">
+      <span class="empty-state">No pending meme requests</span>
     </div>
   </div>
 
@@ -1078,6 +1170,61 @@
       });
       return res.json();
     }
+
+    // ── Meme Intake ───────────────────────────────────────────────────────────
+    let memeIntakeAutoMode = false;
+
+    function renderMemeIntake(items, auto) {
+      memeIntakeAutoMode = !!auto;
+      const autoBtn = document.getElementById('meme-intake-auto-btn');
+      if (autoBtn) {
+        autoBtn.textContent = `Auto: ${memeIntakeAutoMode ? 'ON' : 'OFF'}`;
+        autoBtn.style.borderColor = memeIntakeAutoMode ? 'var(--primary)' : '#555';
+        autoBtn.style.color = memeIntakeAutoMode ? 'var(--primary)' : 'var(--muted)';
+      }
+
+      const container = document.getElementById('meme-intake-section');
+      if (!items || !items.length) {
+        container.innerHTML = '<span class="empty-state">No pending meme requests</span>';
+        return;
+      }
+      container.innerHTML = items.map(item => {
+        const desc = (item.description || item.text || '').slice(0, 80);
+        const user = (item.userId || 'anon').slice(0, 20);
+        return `
+          <div class="meme-intake-card" data-intake-id="${item.id}">
+            <div class="user">👤 ${escHtml(user)}</div>
+            <div class="desc">${escHtml(desc)}</div>
+            <div class="actions">
+              <button class="btn-gen intake-generate">Generate</button>
+              <button class="btn-dismiss intake-dismiss">✕</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      container.querySelectorAll('.intake-generate').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.closest('.meme-intake-card').dataset.intakeId;
+          btn.disabled = true;
+          btn.textContent = '…';
+          await apiPost(`/api/meme-intake/${id}/generate`, {}).catch(() => {});
+        });
+      });
+      container.querySelectorAll('.intake-dismiss').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.closest('.meme-intake-card').dataset.intakeId;
+          await fetch(`${API_BASE}/api/meme-intake/${id}`, { method: 'DELETE' }).catch(() => {});
+        });
+      });
+    }
+
+    document.getElementById('meme-intake-auto-btn').addEventListener('click', async () => {
+      await apiPost('/api/meme-intake/auto', { enabled: !memeIntakeAutoMode }).catch(() => {});
+    });
+
+    // Initial load
+    apiGet('/api/meme-intake').then(data => renderMemeIntake(data.items, data.auto)).catch(() => {});
 
     let currentMemeJobs = [];
     const memeElapsedInterval = setInterval(() => {
@@ -1342,6 +1489,9 @@
         }
         if (payload.event === 'meme:queue-update') {
           renderMemeGen(payload.data?.jobs || []);
+        }
+        if (payload.event === 'meme:intake-update') {
+          renderMemeIntake(payload.data?.items || [], payload.data?.auto);
         }
         if (payload.event === 'chat:new-card') {
           refreshAll();
@@ -2090,6 +2240,164 @@
     loadTwitterConfig();
     loadCommunityStatus();
     connectWebSocket();
+
+    // ── YouTube Video Reaction ────────────────────────────────────────────────
+
+    let ytSessionId = null;
+    let ytPollInterval = null;
+
+    const STEP_LABELS = {
+      transcript: 'Transcript',
+      beats: 'Beat selection',
+      scripts: 'Scripts',
+      tts: 'Audio generation',
+      download: 'Video download'
+    };
+    const STEP_IDS = {
+      transcript: 'yt-prog-transcript',
+      beats: 'yt-prog-beats',
+      scripts: 'yt-prog-scripts',
+      tts: 'yt-prog-tts',
+      download: 'yt-prog-download'
+    };
+
+    function ytSetStep(step, status, detail) {
+      const el = document.getElementById(STEP_IDS[step]);
+      if (!el) return;
+      const icon = status === 'done' ? '✅' : status === 'failed' ? '❌' : '⏳';
+      const label = STEP_LABELS[step] || step;
+      el.textContent = `${icon} ${label}${detail ? ' — ' + detail : ''}`;
+    }
+
+    function ytResetUI() {
+      document.getElementById('yt-progress').style.display = 'none';
+      document.getElementById('yt-ready-card').style.display = 'none';
+      document.getElementById('yt-start-btn').style.display = 'none';
+      document.getElementById('yt-session-status').style.display = 'none';
+      document.getElementById('yt-cancel-btn').style.display = 'none';
+      document.getElementById('yt-prepare-btn').style.display = '';
+      document.getElementById('yt-prepare-btn').disabled = false;
+      document.getElementById('yt-prepare-btn').textContent = 'Prepare Reaction';
+      for (const step of Object.keys(STEP_IDS)) ytSetStep(step, 'idle', null);
+      if (ytPollInterval) { clearInterval(ytPollInterval); ytPollInterval = null; }
+      ytSessionId = null;
+    }
+
+    function ytStartPolling(sessionId) {
+      if (ytPollInterval) clearInterval(ytPollInterval);
+      ytPollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`${API_BASE}/video-reaction/status/${sessionId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          ytHandleStatus(sessionId, data);
+        } catch (e) {}
+      }, 1500);
+    }
+
+    function ytHandleStatus(sessionId, data) {
+      // Update progress steps
+      for (const [step, info] of Object.entries(data.progress || {})) {
+        ytSetStep(step, info.status, info.detail);
+      }
+
+      if (data.state === 'ready') {
+        clearInterval(ytPollInterval); ytPollInterval = null;
+
+        // Show ready card
+        if (data.plan) {
+          document.getElementById('yt-ready-title').textContent = data.plan.title;
+          const dur = data.plan.videoDuration ? `${Math.floor(data.plan.videoDuration / 60)}m ${Math.floor(data.plan.videoDuration % 60)}s` : '';
+          document.getElementById('yt-ready-meta').textContent =
+            `${data.plan.uploader || ''} · ${dur} · ${data.plan.beatCount} reaction beat${data.plan.beatCount !== 1 ? 's' : ''}`;
+          document.getElementById('yt-ready-card').style.display = '';
+        }
+        document.getElementById('yt-start-btn').style.display = '';
+        document.getElementById('yt-prepare-btn').style.display = 'none';
+      }
+
+      if (data.state === 'failed') {
+        clearInterval(ytPollInterval); ytPollInterval = null;
+        document.getElementById('yt-prepare-btn').disabled = false;
+        document.getElementById('yt-prepare-btn').textContent = 'Retry';
+        alert('Preparation failed: ' + (data.error || 'unknown error'));
+      }
+
+      if (data.state === 'active' && data.session) {
+        const s = data.session;
+        const statusEl = document.getElementById('yt-session-status');
+        statusEl.style.display = '';
+        statusEl.textContent = `● ON AIR — Beat ${s.currentBeat}/${s.totalBeats}`;
+      }
+
+      if (data.state === 'done') {
+        clearInterval(ytPollInterval); ytPollInterval = null;
+        document.getElementById('yt-session-status').textContent = '✅ Session complete';
+        setTimeout(ytResetUI, 4000);
+      }
+    }
+
+    document.getElementById('yt-prepare-btn').addEventListener('click', async () => {
+      const url = document.getElementById('yt-url').value.trim();
+      if (!url) { alert('Enter a YouTube URL'); return; }
+
+      const btn = document.getElementById('yt-prepare-btn');
+      btn.disabled = true;
+      btn.textContent = 'Preparing…';
+
+      document.getElementById('yt-progress').style.display = '';
+      for (const step of Object.keys(STEP_IDS)) ytSetStep(step, 'loading', null);
+
+      try {
+        const res = await fetch(`${API_BASE}/video-reaction/prepare`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Prepare failed');
+        ytSessionId = data.sessionId;
+        ytStartPolling(ytSessionId);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Prepare Reaction';
+        document.getElementById('yt-progress').style.display = 'none';
+        alert('Error: ' + err.message);
+      }
+    });
+
+    document.getElementById('yt-start-btn').addEventListener('click', async () => {
+      if (!ytSessionId) return;
+      const startBtn = document.getElementById('yt-start-btn');
+      startBtn.disabled = true;
+      startBtn.textContent = 'Starting…';
+
+      try {
+        const res = await fetch(`${API_BASE}/video-reaction/start/${ytSessionId}`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Start failed');
+
+        startBtn.style.display = 'none';
+        document.getElementById('yt-cancel-btn').style.display = '';
+        document.getElementById('yt-session-status').style.display = '';
+        document.getElementById('yt-session-status').textContent = '⏳ Queued — playing when intro hits on-air';
+
+        // Resume polling to track session state
+        ytStartPolling(ytSessionId);
+      } catch (err) {
+        startBtn.disabled = false;
+        startBtn.textContent = '▶ Start Session';
+        alert('Error: ' + err.message);
+      }
+    });
+
+    document.getElementById('yt-cancel-btn').addEventListener('click', async () => {
+      try {
+        await fetch(`${API_BASE}/video-reaction/cancel`, { method: 'POST' });
+      } catch (e) {}
+      ytResetUI();
+    });
+
   </script>
 </body>
 </html>

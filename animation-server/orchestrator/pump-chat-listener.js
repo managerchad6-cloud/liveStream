@@ -8,9 +8,10 @@ const { PumpChatClient } = require('pump-chat-client');
  * is exhausted, spawns a fresh client and starts over.
  */
 class PumpChatListener {
-  constructor({ chatIntake, token }) {
+  constructor({ chatIntake, token, onMemeCommand }) {
     this.chatIntake = chatIntake;
     this.token = token;
+    this.onMemeCommand = onMemeCommand || null;
     this.client = null;
     this.running = false;
     this._restartTimer = null;
@@ -58,6 +59,17 @@ class PumpChatListener {
       if (!text) return;
 
       console.log(`[PumpChat] ${username}: ${text.substring(0, 80)}`);
+
+      // Route /meme commands to the meme handler instead of chat intake
+      const memeMatch = text.match(/^\/meme\s+(.+)/is);
+      if (memeMatch) {
+        if (this.onMemeCommand) {
+          this.onMemeCommand(username, memeMatch[1].trim());
+        } else {
+          console.warn('[PumpChat] /meme command received but no onMemeCommand handler set');
+        }
+        return;
+      }
 
       if (this.chatIntake) {
         this.chatIntake.addMessage(username, text);

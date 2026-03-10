@@ -1,0 +1,19 @@
+{
+  "fire": {
+    "frame": 3,
+    "mode": "random",
+    "fps": 5,
+    "playing": true,
+    "pingPongDir": 1
+  },
+  "lighting": {
+    "nightOpacity": 0.6,
+    "dayOpacity": 0.4
+  },
+  "cycle": {
+    "enabled": false,
+    "rpm": 3.4,
+    "angle": 2.1801448738728624,
+    "dayFrac": null
+  }
+}

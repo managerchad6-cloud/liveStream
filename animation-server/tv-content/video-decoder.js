@@ -100,12 +100,46 @@ class VideoDecoder {
         this.loaded = true;
 
         console.log(`[VideoDecoder] Decoded ${frames.length} frames from ${this.videoPath}, duration: ${this.duration.toFixed(2)}s`);
-        resolve({ frames: this.frames, duration: this.duration, frameCount: this.frames.length });
+
+        // Extract audio in a second pass (non-blocking — resolve video frames first)
+        this._decodeAudio().then(audioBuffer => {
+          if (audioBuffer) {
+            console.log(`[VideoDecoder] Audio extracted: ${audioBuffer.length} bytes`);
+          }
+          resolve({ frames: this.frames, duration: this.duration, frameCount: this.frames.length, audioBuffer: audioBuffer || null });
+        }).catch(() => {
+          resolve({ frames: this.frames, duration: this.duration, frameCount: this.frames.length, audioBuffer: null });
+        });
       });
 
       ffmpeg.on('error', (err) => {
         reject(new Error(`Video decode failed: ${err.message}`));
       });
+    });
+  }
+
+  /**
+   * Extract raw PCM audio (s16le, 44100Hz, stereo) from the video file.
+   * Returns a Buffer, or null if the video has no audio track.
+   */
+  _decodeAudio() {
+    return new Promise((resolve) => {
+      const chunks = [];
+      const ffmpeg = spawn(FFMPEG_PATH, [
+        '-i', this.videoPath,
+        '-vn',
+        '-f', 's16le',
+        '-ar', '44100',
+        '-ac', '2',
+        'pipe:1'
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      ffmpeg.stdout.on('data', chunk => chunks.push(chunk));
+      ffmpeg.on('close', () => {
+        if (chunks.length === 0) { resolve(null); return; }
+        resolve(Buffer.concat(chunks));
+      });
+      ffmpeg.on('error', () => resolve(null));
     });
   }
 
