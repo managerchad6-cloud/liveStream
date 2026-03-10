@@ -143,8 +143,14 @@ class XChatListener {
     console.log(`[XChat] Navigating to ${url}`);
     await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
-    // Give the React app time to hydrate and render the chat panel
-    await new Promise(r => setTimeout(r, 4000));
+    // Give the React app time to hydrate
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Dismiss cookie/consent banner — must happen before chat renders
+    await this._acceptCookies();
+
+    // Wait for chat to appear after consent is cleared
+    await new Promise(r => setTimeout(r, 3000));
 
     await this._setupObserver();
 
@@ -163,6 +169,31 @@ class XChatListener {
 
     this._reconnectAttempts = 0;
     console.log(`[XChat] Watching broadcast ${this.broadcastId} for chat`);
+  }
+
+  async _acceptCookies() {
+    try {
+      const clicked = await this.page.evaluate(() => {
+        // X's own GDPR accept button (most reliable)
+        const gdpr = document.querySelector('[data-testid="GDPR-accept"]');
+        if (gdpr) { gdpr.click(); return 'GDPR-accept'; }
+
+        // Generic "Accept all" / "Accept" buttons
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+        const accept = buttons.find(b => /^accept( all)?$/i.test(b.innerText?.trim()));
+        if (accept) { accept.click(); return accept.innerText.trim(); }
+
+        return null;
+      });
+      if (clicked) {
+        console.log(`[XChat] Cookie banner dismissed: "${clicked}"`);
+        await new Promise(r => setTimeout(r, 1500));
+      } else {
+        console.log('[XChat] No cookie banner found');
+      }
+    } catch (err) {
+      console.warn(`[XChat] Cookie dismiss failed: ${err.message}`);
+    }
   }
 
   async _setupObserver() {
