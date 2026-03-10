@@ -138,8 +138,10 @@ class ContinuousStreamManager {
       '-y',
       // Video input from stdin (pipe:0)
       '-thread_queue_size', '512',
-      '-f', 'image2pipe',
-      '-framerate', String(this.fps),
+      '-f', 'rawvideo',
+      '-pix_fmt', 'rgba',
+      '-s', '1280x720',
+      '-r', String(this.fps),
       '-i', 'pipe:0',
       // Audio input from pipe:3 (raw PCM)
       '-thread_queue_size', '512',

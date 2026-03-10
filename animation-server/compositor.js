@@ -18,12 +18,12 @@ const TICKER_SETTINGS_PATH = path.join(__dirname, 'ticker-settings.json');
 let manifest = null;
 let scaledLayerBuffers = {};
 let staticBaseBuffer = null; // Pre-composited static layers { data, info } raw RGBA
-let frameCache = {};          // Cache for character state (JPEG buffers) - Level 2
-const FRAME_CACHE_MAX = 200;  // Level 2 cache: expression base + phoneme + blink
+let frameCache = {};          // Cache for character state (raw RGBA buffers) - Level 2
+const FRAME_CACHE_MAX = 50;   // Level 2 cache: expression base + phoneme + blink (raw = larger)
 let lastOutputKey = null;     // Key of the last full output frame
 let lastOutputBuffer = null;  // Last complete JPEG output buffer
-let outputCache = {};         // Cache for full output frames (charBuffer + caption/TV overlay)
-const OUTPUT_CACHE_MAX = 60;  // Max cached output frames
+let outputCache = {};         // Cache for full output frames (raw RGBA buffers)
+const OUTPUT_CACHE_MAX = 10;  // Max cached output frames (raw RGBA = ~3.5MB each)
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
 const EXPR_LAYER_CACHE_MAX = 300; // Max cached expression layer buffers
 let exprBaseCache = {};       // Level 1 cache: staticBase + expression layers + nose → raw RGBA
@@ -1375,7 +1375,7 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
             raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
           })
             .composite(mouthOps)
-            .jpeg({ quality: JPEG_QUALITY })
+            .raw()
             .toBuffer();
           const frameCacheKeys = Object.keys(frameCache);
           if (frameCacheKeys.length >= FRAME_CACHE_MAX) {
@@ -1444,12 +1444,12 @@ function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
       }
     }
 
-    // Composite Level 2 from raw RGBA expression base
+    // Composite Level 2 from raw RGBA expression base → raw RGBA
     const charBuffer = await sharp(exprBaseRaw.data, {
       raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
     })
       .composite(charOps)
-      .jpeg({ quality: JPEG_QUALITY })
+      .raw()
       .toBuffer();
 
     // Store in L2 cache
@@ -1611,12 +1611,12 @@ async function compositeFrame(state) {
       }
     }
 
-    // Composite Level 2: expression base (raw RGBA) + mouth/blink → JPEG
+    // Composite Level 2: expression base (raw RGBA) + mouth/blink → raw RGBA
     charBuffer = await sharp(exprBaseRaw.data, {
       raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
     })
       .composite(charOps)
-      .jpeg({ quality: JPEG_QUALITY })
+      .raw()
       .toBuffer();
 
     // Cache character frame (evict if full)
@@ -1674,9 +1674,9 @@ async function compositeFrame(state) {
 
   if (!result) {
     if (overlayOps.length > 0) {
-      result = await sharp(charBuffer)
+      result = await sharp(charBuffer, { raw: { width: outputWidth, height: outputHeight, channels: 4 } })
         .composite(overlayOps)
-        .jpeg({ quality: JPEG_QUALITY })
+        .raw()
         .toBuffer();
     } else {
       result = charBuffer;
