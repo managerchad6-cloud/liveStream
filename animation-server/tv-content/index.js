@@ -26,6 +26,12 @@ class TVContentService {
     this.hold = false;           // When true, don't auto-advance to next item
     this.volume = 0.5;           // TV audio volume (0-1)
 
+    // Video audio mixing state
+    this._audioByteOffset = 0;   // Current byte position in item's audio buffer
+    this._audioItemId = null;    // ID of item whose audio we're tracking
+    this._videoEndFired = false; // Prevent repeated onVideoEnd calls
+    this.onVideoEnd = null;      // Set by VideoReactionSession to detect video completion
+
     // Ensure content directory exists
     if (!fs.existsSync(CONTENT_DIR)) {
       fs.mkdirSync(CONTENT_DIR, { recursive: true });
@@ -100,6 +106,7 @@ class TVContentService {
     item.frameCount = result.frameCount;
     item.duration = result.duration;
     item.decoder = decoder;
+    item.audioBuffer = result.audioBuffer || null;
   }
 
   /**
@@ -236,6 +243,14 @@ class TVContentService {
       item.decoder.close();
     }
 
+    // Free decoded frame buffers to release memory immediately
+    if (item.frames) {
+      item.frames = null;
+    }
+    if (item.audioBuffer) {
+      item.audioBuffer = null;
+    }
+
     this.playlist.splice(index, 1);
 
     // Adjust current index if needed
@@ -274,11 +289,11 @@ class TVContentService {
    * Clear entire playlist
    */
   clear() {
-    // Clean up all decoders
+    // Clean up all decoders and free frame buffers
     for (const item of this.playlist) {
-      if (item.decoder) {
-        item.decoder.close();
-      }
+      if (item.decoder) item.decoder.close();
+      if (item.frames) item.frames = null;
+      if (item.audioBuffer) item.audioBuffer = null;
     }
 
     this.playlist = [];
@@ -286,6 +301,10 @@ class TVContentService {
     this.frameIndex = 0;
     this.currentFrameBuffer = null;
     this.state = 'stopped';
+    this._audioByteOffset = 0;
+    this._audioItemId = null;
+    this._videoEndFired = false;
+    this.onVideoEnd = null;
     this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log('[TVContent] Playlist cleared');
   }
@@ -322,9 +341,63 @@ class TVContentService {
     this.currentIndex = 0;
     this.frameIndex = 0;
     this.currentFrameBuffer = null;
+    this._audioByteOffset = 0;
+    this._audioItemId = null;
+    this._videoEndFired = false;
     this._persist().catch(err => console.warn('[TVContent] persist error:', err.message));
     console.log('[TVContent] Stopped');
     return true;
+  }
+
+  /**
+   * Seek to a specific time position within the current item.
+   * Resets audio offset to match so audio stays in sync with video.
+   * @param {number} seconds - Target position in seconds
+   */
+  seekToTime(seconds) {
+    const item = this.playlist[this.currentIndex];
+    if (!item) return;
+    this.frameIndex = Math.max(0, Math.floor(seconds * this.fps));
+    // Reset audio to matching byte offset: samples = seconds * 44100, stereo s16le = 4 bytes/sample
+    this._audioByteOffset = Math.floor(seconds * 44100) * 4;
+    this._audioItemId = item.id;
+    this._videoEndFired = false;
+    console.log(`[TVContent] Seeked to ${seconds.toFixed(2)}s (frame ${this.frameIndex})`);
+  }
+
+  /**
+   * Get the next audio chunk for the current stream frame.
+   * Returns a raw s16le stereo Buffer, or null when TV has no audio / is not playing.
+   * Advances internal byte offset each call — call once per stream frame.
+   * @param {number} bytesNeeded - Bytes to return (samplesPerFrame * channels * 2)
+   * @returns {Buffer|null}
+   */
+  getAudioChunk(bytesNeeded) {
+    if (this.state !== 'playing' || this.playlist.length === 0) return null;
+
+    const item = this.playlist[this.currentIndex];
+    if (!item || !item.loaded || !item.audioBuffer) return null;
+
+    // Reset tracking if item changed
+    if (this._audioItemId !== item.id) {
+      this._audioByteOffset = 0;
+      this._audioItemId = item.id;
+    }
+
+    if (this._audioByteOffset >= item.audioBuffer.length) return null;
+
+    const end = Math.min(this._audioByteOffset + bytesNeeded, item.audioBuffer.length);
+    const chunk = item.audioBuffer.subarray(this._audioByteOffset, end);
+    this._audioByteOffset = end;
+
+    // Pad with silence if we hit end mid-frame
+    if (chunk.length < bytesNeeded) {
+      const padded = Buffer.alloc(bytesNeeded, 0);
+      chunk.copy(padded);
+      return padded;
+    }
+
+    return chunk;
   }
 
   /**
@@ -375,6 +448,12 @@ class TVContentService {
       if (this.hold) {
         // Hold mode: loop current item
         this.frameIndex = 0;
+      } else if (this.onVideoEnd && !this._videoEndFired) {
+        // Video reaction mode: pause on last frame and notify session
+        this._videoEndFired = true;
+        this.state = 'paused';
+        console.log('[TVContent] Video ended — notifying session');
+        this.onVideoEnd();
       } else {
         // Auto-advance to next item
         this.frameIndex = 0;

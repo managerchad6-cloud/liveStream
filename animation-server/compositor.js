@@ -1045,14 +1045,28 @@ function setDayCycle(config) {
 /**
  * Advance the day/night cycle by elapsed time. Called by server.js on a fast interval.
  * Only acts when dayCycleState.enabled is true.
+ * Only triggers a static-base rebuild when the quantized opacity actually changes (1% steps),
+ * not on every tick — prevents flooding the compositor with 5 rebuilds/sec.
  */
 function tickDayCycle() {
   if (!dayCycleState.enabled) return;
   const now = Date.now();
   if (dayCycleState.lastTickMs > 0) {
     const elapsed = (now - dayCycleState.lastTickMs) / 1000; // seconds
-    dayCycleState.angle = (dayCycleState.angle + dayCycleState.rpm * Math.PI / 60 * elapsed) % (2 * Math.PI);
-    setImmediate(_rebuildStaticBase);
+    const oldAngle = dayCycleState.angle;
+    const newAngle = (oldAngle + dayCycleState.rpm * Math.PI / 60 * elapsed) % (2 * Math.PI);
+
+    // Only trigger a rebuild when the visually-quantized day fraction changes (≥1% step).
+    // lightingOpacityCache already rounds to 0.01 precision, so rebuilding more often
+    // just produces identical buffers and wasted L1 invalidations.
+    const oldFrac = Math.round(((1 - Math.cos(oldAngle)) / 2) * 100);
+    const newFrac = Math.round(((1 - Math.cos(newAngle)) / 2) * 100);
+
+    dayCycleState.angle = newAngle;
+
+    if (oldFrac !== newFrac) {
+      setImmediate(_rebuildStaticBase);
+    }
   }
   dayCycleState.lastTickMs = now;
 }

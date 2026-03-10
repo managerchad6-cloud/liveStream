@@ -307,6 +307,7 @@ class ContinuousStreamManager {
   // Unified render + output loop — single timer, no queue, no spin loop
   startFrameLoop() {
     const RENDER_DEADLINE_MS = 30; // Hard deadline: drop to last frame if render exceeds this
+    this._renderInFlight = false;  // Guard: only one compositor call at a time
 
     const tick = async () => {
       if (!this.isRunning) return;
@@ -323,24 +324,35 @@ class ContinuousStreamManager {
         // Render a new frame with deadline enforcement
         if (this.onFrameRequest) {
           try {
-            const renderPromise = this.onFrameRequest(this.frameCount, audioProgress);
-
-            // Race render against deadline — if render is slow, reuse last frame
-            const timeoutPromise = new Promise(resolve =>
-              setTimeout(() => resolve(null), RENDER_DEADLINE_MS)
-            );
-            const frameBuffer = await Promise.race([renderPromise, timeoutPromise]);
-
-            if (frameBuffer) {
-              videoData = frameBuffer;
-              this.lastVideoFrame = frameBuffer;
-              this.frameCount++;
-            } else if (this.lastVideoFrame) {
-              // Deadline exceeded — reuse last frame, timed-out render still populates cache
+            if (this._renderInFlight) {
+              // Previous compositor call still running — reuse last frame instead of stacking
+              // another Sharp operation on top. The in-flight render will update lastVideoFrame
+              // once it completes, so the next tick that clears the guard will get fresh output.
               videoData = this.lastVideoFrame;
-              this.frameCount++;
+              if (videoData) this.frameCount++;
+            } else {
+              this._renderInFlight = true;
+              const renderPromise = this.onFrameRequest(this.frameCount, audioProgress)
+                .finally(() => { this._renderInFlight = false; });
+
+              // Race render against deadline — if render is slow, reuse last frame
+              const timeoutPromise = new Promise(resolve =>
+                setTimeout(() => resolve(null), RENDER_DEADLINE_MS)
+              );
+              const frameBuffer = await Promise.race([renderPromise, timeoutPromise]);
+
+              if (frameBuffer) {
+                videoData = frameBuffer;
+                this.lastVideoFrame = frameBuffer;
+                this.frameCount++;
+              } else if (this.lastVideoFrame) {
+                // Deadline exceeded — reuse last frame, in-flight render still populates cache
+                videoData = this.lastVideoFrame;
+                this.frameCount++;
+              }
             }
           } catch (err) {
+            this._renderInFlight = false;
             console.error('[ContinuousStreamManager] Render error:', err.message);
           }
         }
