@@ -38,6 +38,11 @@ const EXPR_BASE_CACHE_MAX = 25;   // Raw buffers are ~3.7MB vs ~0.5-1MB PNG, so 
 let committedExprBaseKey = null;
 let committedExprBaseBuffer = null; // { data, info } raw RGBA
 
+// Pre-warm concurrency guard: at most one pre-warm batch in flight + one pending (latest-wins).
+// Prevents >6 concurrent Sharp ops from stacking during heavy speech.
+let _preWarmL2InFlight = false;
+let _preWarmL2Pending = null; // null or { exprBaseCacheKey, exprBaseRaw, speakingChar }
+
 // Speaking character tracking for L2 pre-warming
 let currentSpeakingCharacter = null;
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
@@ -89,6 +94,10 @@ const lightingLayerBuffers = {}; // { No_Light, Night_Light, Day_Light } → { b
 const lightingOpacityCache = {}; // { 'Night_Light': { opacity, buffer }, 'Day_Light': { opacity, buffer } }
 let _baseRebuildInFlight = false;
 let _baseRebuildDirty = false;
+// Fire frame base cache: { [0..4]: { data, info } raw RGBA }
+// Caches _buildBaseFromParts(n) so L1 misses only pay ~20ms (expression composite)
+// instead of ~150ms (full scene rebuild). Cleared when staticBaseVersion increments.
+let fireFrameBaseCache = {};
 // Split static base: lowerStaticBase = Fondo only (raw RGBA, built once)
 //                    upperStaticBuffer = TV + chars + props (transparent PNG, built once)
 // Fire rebuild only composites ~6 layers instead of all 25+
@@ -881,6 +890,10 @@ function buildChatOverlaySvg() {
 async function _buildBaseFromParts(fireFrame = fireState.frame) {
   if (!lowerStaticBase || !outputWidth) return staticBaseBuffer; // Not ready yet
 
+  // Cache hit: same fire frame already built for this staticBaseVersion
+  const cached = fireFrameBaseCache[fireFrame];
+  if (cached) return cached;
+
   const ops = [];
 
   // Resolve night/day opacities — cycle overrides manual sliders when enabled.
@@ -947,7 +960,10 @@ async function _buildBaseFromParts(fireFrame = fireState.frame) {
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  return { data: result.data, info: result.info };
+  const base = { data: result.data, info: result.info };
+  // Cache by fire frame — valid until next _rebuildStaticBase clears it
+  fireFrameBaseCache[fireFrame] = base;
+  return base;
 }
 
 /**
@@ -961,6 +977,8 @@ async function _rebuildStaticBase() {
   }
   _baseRebuildInFlight = true;
   _baseRebuildDirty = false;
+  // Clear fire-frame base cache before build so we don't return stale frames
+  fireFrameBaseCache = {};
   try {
     const newBase = await _buildBaseFromParts();
     if (newBase) {
@@ -1407,11 +1425,23 @@ function setSpeakingCharacter(char) {
  * Called via setImmediate after buildExpressionBase completes — never blocks the frame loop.
  * For the speaking character we pre-warm phonemes A-F (most common during speech);
  * the other character stays at 'A', blink=false.
+ *
+ * Latest-wins concurrency guard: at most one batch in flight + one pending.
+ * Prevents stacking 6-op Sharp batches during heavy speech expression changes.
  */
 function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
+  if (_preWarmL2InFlight) {
+    // Queue only the latest request — intermediate states are fine to skip
+    _preWarmL2Pending = { exprBaseCacheKey, exprBaseRaw, speakingChar };
+    return;
+  }
+  _runPreWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar);
+}
+
+function _runPreWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
+  _preWarmL2InFlight = true;
   const m = loadManifest();
   const phonemes = ['A', 'B', 'C', 'D', 'E', 'F'];
-  const otherChar = speakingChar === 'chad' ? 'virgin' : 'chad';
 
   const tasks = phonemes.map(async (ph) => {
     const chadPh = speakingChar === 'chad' ? ph : 'A';
@@ -1461,11 +1491,19 @@ function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
   });
 
   Promise.all(tasks).then(() => {
+    _preWarmL2InFlight = false;
     // Atomically swap committed base now that L2 entries are pre-warmed
     committedExprBaseKey = exprBaseCacheKey;
     committedExprBaseBuffer = exprBaseRaw;
-    console.log(`[Compositor] L2 pre-warm complete for ${exprBaseCacheKey} (${phonemes.length} entries)`);
+    // Run the latest pending request if one queued up during this batch
+    const pending = _preWarmL2Pending;
+    _preWarmL2Pending = null;
+    if (pending) _runPreWarmL2(pending.exprBaseCacheKey, pending.exprBaseRaw, pending.speakingChar);
   }).catch(err => {
+    _preWarmL2InFlight = false;
+    const pending = _preWarmL2Pending;
+    _preWarmL2Pending = null;
+    if (pending) _runPreWarmL2(pending.exprBaseCacheKey, pending.exprBaseRaw, pending.speakingChar);
     console.warn('[Compositor] L2 pre-warm error:', err.message);
   });
 }
