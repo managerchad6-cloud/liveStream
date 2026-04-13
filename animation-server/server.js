@@ -36,7 +36,11 @@ const {
   setDayCycle,
   tickDayCycle,
   getSceneState,
-  setMemeQueue
+  setMemeQueue,
+  setSuggestionQueue,
+  setVideosList,
+  setRoadmapList,
+  triggerGlow
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -104,6 +108,70 @@ const DEFAULT_ORCHESTRATOR_CONFIG = {
 // Meme queue overlay — maps segment ID → display title for meme-reaction segments
 const memeSegmentTitles = new Map(); // segmentId → "virgin X vs chad Y"
 
+// Suggestion queue overlay — maps segment ID → suggestion text
+const suggestionSegmentTitles = new Map(); // segmentId → suggestion text
+
+function syncSuggestionQueueToCompositor() {
+  const all = pipelineStore ? pipelineStore.getAllSegments() : [];
+  for (const [id] of suggestionSegmentTitles) {
+    const seg = all.find(s => s.id === id);
+    if (!seg || seg.status === 'aired' || seg.status === 'deleted') {
+      suggestionSegmentTitles.delete(id);
+    }
+  }
+  // Build from Map insertion order (chronological), reverse for newest-first
+  const items = [];
+  for (const [id, title] of suggestionSegmentTitles) {
+    const seg = all.find(s => s.id === id);
+    if (seg && seg.status !== 'aired' && seg.status !== 'deleted') {
+      items.push({ segmentId: id, title });
+    }
+  }
+  setSuggestionQueue(items.reverse());
+}
+
+// ── External lists polling (videos + roadmap from :3007) ─────────────────────
+const EXTERNAL_API = 'http://93.127.214.75:3007';
+let _cachedVideosList = [];
+let _cachedRoadmapList = [];
+
+function httpGetJson(url, timeoutMs = 6000) {
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error('JSON parse error: ' + e.message)); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+  });
+}
+
+async function pollExternalLists() {
+  try {
+    const [videosData, roadmapData] = await Promise.all([
+      httpGetJson(`${EXTERNAL_API}/api/videos`),
+      httpGetJson(`${EXTERNAL_API}/api/roadmap`)
+    ]);
+    // Only show videos pending a vote (available=false) — already-available ones are done
+    // Sorted longest title first (shorter items sink to bottom)
+    _cachedVideosList = (videosData.videos || []).filter(v => !v.available).sort((a, b) => b.title.length - a.title.length);
+    setVideosList(_cachedVideosList);
+    _cachedRoadmapList = (roadmapData.items || []).sort((a, b) => b.title.length - a.title.length);
+    setRoadmapList(_cachedRoadmapList);
+    console.log(`[Lists] Fetched ${_cachedVideosList.length} videos, ${_cachedRoadmapList.length} roadmap items`);
+  } catch (err) {
+    console.warn('[Lists] Poll failed:', err.message);
+  }
+}
+
+pollExternalLists();
+setInterval(pollExternalLists, 60 * 1000);
+
 // ── Meme rate limiter (per-user queue-depth + strike escalation) ──────────────
 // A user may have at most MAX_PENDING memes in-flight (generating + queued but
 // not yet aired). Exceeding this issues a strike and imposes an escalating
@@ -153,22 +221,24 @@ function syncMemeQueueToCompositor() {
       memeSegmentTitles.delete(id);
     }
   }
-  // Pipeline items in pipeline order (will play soonest — appear at top)
+  // Newest first: generating jobs are most recent, then pipeline items in reverse order
   const pipelineItems = all
     .filter(s => s.type === 'meme-reaction'
       && s.status !== 'aired'
       && s.status !== 'deleted'
       && memeSegmentTitles.has(s.id))
-    .map(s => ({ segmentId: s.id, title: memeSegmentTitles.get(s.id) }));
-  // Still-generating items (not yet in pipeline — appear below)
+    .map(s => ({ segmentId: s.id, title: memeSegmentTitles.get(s.id) }))
+    .reverse();
   const generatingItems = Array.from(memeGenerationQueue.values())
     .filter(job => job.status !== 'failed')
-    .map(job => ({ segmentId: null, title: job.description }));
-  setMemeQueue([...pipelineItems, ...generatingItems]);
+    .map(job => ({ segmentId: null, title: job.description }))
+    .reverse();
+  setMemeQueue([...generatingItems, ...pipelineItems]);
 }
 
 function broadcastPipelineUpdate() {
   syncMemeQueueToCompositor();
+  syncSuggestionQueueToCompositor();
   if (!orchestratorSocket || !pipelineStore) return;
   orchestratorSocket.broadcast('pipeline:update', {
     segments: pipelineStore.getAllSegments(),
@@ -718,6 +788,7 @@ function handleAudioComplete() {
     if (playbackController) {
       playbackController.segmentDone(completedSegId).then(() => {
         syncMemeQueueToCompositor();
+        syncSuggestionQueueToCompositor();
       }).catch(err => {
         console.warn('[Server] segmentDone error:', err.message);
       });
@@ -2668,6 +2739,56 @@ app.post('/api/orchestrator/meme/freestyle', async (req, res) => {
   });
 });
 
+app.post('/api/orchestrator/suggestion/submit', async (req, res) => {
+  if (!scriptGenerator || !pipelineStore) {
+    return res.status(503).json({ error: 'Pipeline not initialized' });
+  }
+  const { text } = req.body || {};
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+  res.json({ ok: true, queued: true });
+  runSuggestionSegment(text.trim()).catch(err => {
+    console.error('[Suggestion] Segment failed:', err.message);
+  });
+});
+
+async function runSuggestionSegment(text) {
+  console.log(`[Suggestion] Generating reaction for: "${text.slice(0, 80)}"`);
+
+  const generated = await scriptGenerator.generateSuggestionReactionScript({ text });
+
+  // Narrator reads the suggestion aloud before characters react
+  generated.script.unshift({
+    speaker: 'narrator',
+    text: `New community suggestion: ${text}`
+  });
+
+  const segment = await pipelineStore.createSegment({
+    type: 'suggestion-reaction',
+    seed: `Suggestion: ${text.slice(0, 100)}`,
+    script: generated.script,
+    estimatedDuration: generated.estimatedDuration
+  });
+
+  await pipelineStore.updateSegment(segment.id, {
+    exitContext: generated.exitContext,
+    metadata: { source: 'suggestion', suggestionText: text }
+  });
+
+  // Register for on-screen overlay (removed when segment becomes 'aired')
+  suggestionSegmentTitles.set(segment.id, text);
+  syncSuggestionQueueToCompositor();
+
+  const queueFn = orchestrator?.queueSegmentWithBridge
+    ? id => orchestrator.queueSegmentWithBridge(id)
+    : id => segmentRenderer.queueRender(id);
+  queueFn(segment.id);
+
+  console.log(`[Suggestion] Segment ${segment.id} queued`);
+  broadcastPipelineUpdate();
+}
+
 app.post('/api/orchestrator/meme/create', async (req, res) => {
   if (!scriptGenerator || !pipelineStore || !mediaLibrary) {
     return res.status(503).json({ error: 'Pipeline not initialized' });
@@ -2898,6 +3019,45 @@ app.delete('/ticker', (req, res) => {
 });
 
 // Health check
+app.get('/api/lists', (req, res) => {
+  res.json({
+    videos: { count: _cachedVideosList.length, items: _cachedVideosList },
+    roadmap: { count: _cachedRoadmapList.length, items: _cachedRoadmapList }
+  });
+});
+
+app.post('/api/lists/refresh', async (req, res) => {
+  await pollExternalLists();
+  res.json({
+    videos: _cachedVideosList.length,
+    roadmap: _cachedRoadmapList.length
+  });
+});
+
+// Vote by 1-based index shown on stream — triggers glow, persists to :3007 best-effort
+app.post('/api/lists/vote', async (req, res) => {
+  const { list, index } = req.body; // list: 'video'|'roadmap', index: 1-based
+  const idx = parseInt(index, 10) - 1;
+  if (list === 'video') {
+    if (idx < 0 || idx >= _cachedVideosList.length) return res.status(404).json({ error: 'Index out of range' });
+    const item = _cachedVideosList[idx];
+    triggerGlow('video', item.file);
+    // Best-effort persist to external API (fire-and-forget)
+    httpGetJson(`${EXTERNAL_API}/api/videos`).then(d => {
+      const v = (d.videos || []).find(x => x.file === item.file);
+      if (v) { _cachedVideosList[idx].votes = v.votes; setVideosList([..._cachedVideosList]); }
+    }).catch(() => {});
+    return res.json({ ok: true, title: item.title });
+  }
+  if (list === 'roadmap') {
+    if (idx < 0 || idx >= _cachedRoadmapList.length) return res.status(404).json({ error: 'Index out of range' });
+    const item = _cachedRoadmapList[idx];
+    triggerGlow('roadmap', item.id);
+    return res.json({ ok: true, title: item.title });
+  }
+  res.status(400).json({ error: 'list must be video or roadmap' });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',

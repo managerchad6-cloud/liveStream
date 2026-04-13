@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VVC Suggestions</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d0d1a;
+      color: #e0e0f0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+    }
+
+    .page-header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .page-header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #a78bfa;
+      letter-spacing: 0.04em;
+    }
+    .page-header p {
+      margin-top: 8px;
+      color: #888;
+      font-size: 0.9rem;
+    }
+    .page-header code {
+      background: #1e1e3a;
+      color: #c4b5fd;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+
+    /* Wallet section */
+    .wallet-section {
+      max-width: 640px;
+      margin: 0 auto 28px;
+      background: #13132a;
+      border: 1px solid #2a2a4a;
+      border-radius: 12px;
+      padding: 20px 24px;
+    }
+    .wallet-section h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #666;
+      margin-bottom: 14px;
+    }
+    .wallet-buttons {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+    .btn:active:not(:disabled) { transform: translateY(0); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-metamask { background: #f6851b; color: #fff; }
+    .btn-phantom  { background: #ab9ff2; color: #1a1a2e; }
+    .btn-disconnect { background: #2a2a4a; color: #aaa; font-size: 0.8rem; padding: 8px 14px; }
+    .btn-vote     { background: #4c1d95; color: #e9d5ff; border: 1px solid #7c3aed; min-width: 90px; justify-content: center; }
+    .btn-voted    { background: #1e3a1e; color: #86efac; border: 1px solid #22c55e; min-width: 90px; justify-content: center; }
+    .btn-vote-disabled { background: #1e1e3a; color: #555; border: 1px solid #333; min-width: 90px; justify-content: center; cursor: not-allowed; }
+
+    .wallet-status {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .wallet-status.visible { display: flex; }
+    .wallet-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #1e1e3a;
+      border: 1px solid #3a3a6a;
+      border-radius: 8px;
+      padding: 8px 14px;
+    }
+    .wallet-badge .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+    }
+    .wallet-badge .addr {
+      font-family: monospace;
+      font-size: 0.85rem;
+      color: #c4b5fd;
+    }
+    .wallet-badge .type-label {
+      font-size: 0.75rem;
+      color: #666;
+      padding-left: 4px;
+      border-left: 1px solid #3a3a6a;
+      margin-left: 4px;
+    }
+
+    /* Suggestions list */
+    .suggestions-wrap {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .suggestions-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .suggestions-header h2 {
+      font-size: 1rem;
+      color: #888;
+      font-weight: 500;
+    }
+    .refresh-btn {
+      background: none;
+      border: 1px solid #333;
+      color: #666;
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .refresh-btn:hover { color: #aaa; border-color: #555; }
+
+    .suggestion-card {
+      background: #13132a;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      transition: border-color 0.15s;
+    }
+    .suggestion-card:hover { border-color: #4a4a7a; }
+
+    .vote-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      min-width: 70px;
+    }
+    .vote-count {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #a78bfa;
+      line-height: 1;
+    }
+    .vote-label {
+      font-size: 0.7rem;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .suggestion-body {
+      flex: 1;
+    }
+    .suggestion-text {
+      font-size: 0.95rem;
+      color: #d0d0f0;
+      line-height: 1.5;
+      margin-bottom: 8px;
+    }
+    .suggestion-meta {
+      font-size: 0.75rem;
+      color: #555;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 0;
+      color: #444;
+    }
+    .empty-state p { margin-top: 8px; font-size: 0.85rem; }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: #1e1e3a;
+      border: 1px solid #4a4a7a;
+      color: #e0e0f0;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      transition: transform 0.3s ease;
+      z-index: 100;
+      white-space: nowrap;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast.error { border-color: #ef4444; color: #fca5a5; }
+    .toast.success { border-color: #22c55e; color: #86efac; }
+
+    .loading-spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>VVC Suggestions</h1>
+  <p>Submit via chat: <code>/suggestion your idea here</code></p>
+  <p style="margin-top:6px">Connect your wallet to vote — one vote per wallet per suggestion.</p>
+</div>
+
+<div class="wallet-section">
+  <h2>Wallet</h2>
+
+  <!-- Connect buttons (shown when not connected) -->
+  <div id="connectButtons" class="wallet-buttons">
+    <button class="btn btn-metamask" onclick="connectMetaMask()">
+      <svg width="20" height="20" viewBox="0 0 40 40" fill="none"><path d="M35.9 4L22.1 13.6l2.5-5.9L35.9 4z" fill="#E2761B"/><path d="M4.1 4l13.7 9.7-2.4-5.9L4.1 4z" fill="#E4761B"/><path d="M30.9 27.8l-3.7 5.7 7.9 2.2 2.3-7.8-6.5-.1z" fill="#E4761B"/><path d="M2.6 27.9l2.2 7.8 7.9-2.2-3.7-5.7-6.4.1z" fill="#E4761B"/><path d="M12.2 18.1l-2.2 3.3 7.8.4-.3-8.4-5.3 4.7z" fill="#E4761B"/><path d="M27.8 18.1l-5.4-4.8-.2 8.5 7.8-.4-2.2-3.3z" fill="#E4761B"/><path d="M12.7 33.5l4.7-2.3-4-3.1-.7 5.4z" fill="#E4761B"/><path d="M22.6 31.2l4.6 2.3-.6-5.4-4 3.1z" fill="#E4761B"/></svg>
+      MetaMask
+    </button>
+    <button class="btn btn-phantom" onclick="connectPhantom()">
+      <svg width="20" height="20" viewBox="0 0 128 128" fill="none"><circle cx="64" cy="64" r="64" fill="#AB9FF2"/><path d="M110.6 64c0 25.7-20.9 46.6-46.6 46.6S17.4 89.7 17.4 64 38.3 17.4 64 17.4 110.6 38.3 110.6 64z" fill="#551BF9"/><path d="M93.1 62.4H84c0-10.7-8.7-19.4-19.4-19.4-9.9 0-18.1 7.5-19.2 17.1l-9 .3C37.6 46.8 49.7 35.6 64.6 35.6c15.8 0 28.5 12.8 28.5 28.5v-1.7z" fill="white"/><ellipse cx="53.8" cy="70.4" rx="6.2" ry="6.2" fill="white"/><ellipse cx="74.2" cy="70.4" rx="6.2" ry="6.2" fill="white"/></svg>
+      Phantom
+    </button>
+  </div>
+
+  <!-- Connected state -->
+  <div id="walletStatus" class="wallet-status">
+    <div class="wallet-badge">
+      <div class="dot"></div>
+      <span class="addr" id="walletAddr"></span>
+      <span class="type-label" id="walletTypeLabel"></span>
+    </div>
+    <button class="btn btn-disconnect" onclick="disconnect()">Disconnect</button>
+  </div>
+</div>
+
+<div class="suggestions-wrap">
+  <div class="suggestions-header">
+    <h2 id="suggestionsTitle">Loading...</h2>
+    <button class="refresh-btn" onclick="loadSuggestions()">Refresh</button>
+  </div>
+  <div id="suggestionsList"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const API_BASE = '';  // same origin
+
+  let wallet = null;       // { address: string, type: 'eth'|'sol' }
+  let suggestions = [];
+  let votePending = {};    // id -> true while request in-flight
+
+  // ─── Wallet connect ───────────────────────────────────────────
+
+  async function connectMetaMask() {
+    if (!window.ethereum) return showToast('MetaMask not detected', 'error');
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (!accounts.length) return;
+      setWallet(accounts[0], 'eth');
+    } catch (err) {
+      showToast(err.message || 'MetaMask error', 'error');
+    }
+  }
+
+  async function connectPhantom() {
+    const phantom = window.solana || window.phantom?.solana;
+    if (!phantom?.isPhantom) return showToast('Phantom not detected', 'error');
+    try {
+      const resp = await phantom.connect();
+      setWallet(resp.publicKey.toString(), 'sol');
+    } catch (err) {
+      showToast(err.message || 'Phantom error', 'error');
+    }
+  }
+
+  function setWallet(address, type) {
+    wallet = { address, type };
+    document.getElementById('connectButtons').style.display = 'none';
+    const status = document.getElementById('walletStatus');
+    status.classList.add('visible');
+    const display = address.length > 20
+      ? address.slice(0, 8) + '...' + address.slice(-6)
+      : address;
+    document.getElementById('walletAddr').textContent = display;
+    document.getElementById('walletTypeLabel').textContent = type === 'eth' ? 'Ethereum' : 'Solana';
+    renderSuggestions();
+  }
+
+  function disconnect() {
+    wallet = null;
+    document.getElementById('connectButtons').style.display = 'flex';
+    document.getElementById('walletStatus').classList.remove('visible');
+    renderSuggestions();
+  }
+
+  // ─── Suggestions ──────────────────────────────────────────────
+
+  async function loadSuggestions() {
+    try {
+      const res = await fetch(`${API_BASE}/api/suggestions`);
+      const data = await res.json();
+      suggestions = data.suggestions || [];
+      const title = document.getElementById('suggestionsTitle');
+      title.textContent = suggestions.length
+        ? `${suggestions.length} suggestion${suggestions.length !== 1 ? 's' : ''}`
+        : 'No suggestions yet';
+      renderSuggestions();
+    } catch (err) {
+      document.getElementById('suggestionsTitle').textContent = 'Failed to load';
+    }
+  }
+
+  function renderSuggestions() {
+    const container = document.getElementById('suggestionsList');
+    if (!suggestions.length) {
+      container.innerHTML = `<div class="empty-state">
+        <div style="font-size:2rem">💬</div>
+        <p>No suggestions yet. Submit one in chat with <code>/suggestion your idea</code>.</p>
+      </div>`;
+      return;
+    }
+
+    container.innerHTML = suggestions.map(s => {
+      const hasVoted = wallet && s.voters.includes(wallet.address.toLowerCase());
+      const btnHtml = buildVoteBtn(s, hasVoted);
+      const date = new Date(s.submittedAt).toLocaleDateString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      return `<div class="suggestion-card" id="card-${s.id}">
+        <div class="vote-col">
+          <div class="vote-count" id="count-${s.id}">${s.voteCount}</div>
+          <div class="vote-label">votes</div>
+          ${btnHtml}
+        </div>
+        <div class="suggestion-body">
+          <div class="suggestion-text">${escapeHtml(s.text)}</div>
+          <div class="suggestion-meta">${date}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function buildVoteBtn(s, hasVoted) {
+    if (!wallet) {
+      return `<button class="btn btn-vote-disabled" title="Connect wallet to vote" disabled>↑ Vote</button>`;
+    }
+    if (votePending[s.id]) {
+      return `<button class="btn ${hasVoted ? 'btn-voted' : 'btn-vote'}" disabled><span class="loading-spinner"></span></button>`;
+    }
+    if (hasVoted) {
+      return `<button class="btn btn-voted" onclick="castVote('${s.id}', true)">✓ Voted</button>`;
+    }
+    return `<button class="btn btn-vote" onclick="castVote('${s.id}', false)">↑ Vote</button>`;
+  }
+
+  // ─── Voting ───────────────────────────────────────────────────
+
+  async function castVote(id, alreadyVoted) {
+    if (!wallet || votePending[id]) return;
+
+    votePending[id] = true;
+    renderSuggestions();
+
+    const nonce = String(Date.now());
+    const action = alreadyVoted ? 'unvote' : 'upvote';
+    const challenge = `VVC Live: ${action} suggestion ${id} as ${wallet.address} ts ${nonce}`;
+
+    try {
+      const signature = await signChallenge(challenge);
+
+      const method = alreadyVoted ? 'DELETE' : 'POST';
+      const res = await fetch(`${API_BASE}/api/suggestions/${id}/vote`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wallet: wallet.address,
+          walletType: wallet.type,
+          signature,
+          challenge,
+          nonce
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // Update local state
+      const s = suggestions.find(x => x.id === id);
+      if (s) {
+        s.voteCount = data.voteCount;
+        if (alreadyVoted) {
+          s.voters = s.voters.filter(v => v !== wallet.address.toLowerCase());
+        } else {
+          s.voters.push(wallet.address.toLowerCase());
+        }
+      }
+
+      showToast(alreadyVoted ? 'Vote removed' : 'Vote cast!', 'success');
+    } catch (err) {
+      showToast(err.message || 'Vote failed', 'error');
+    } finally {
+      delete votePending[id];
+      // Re-sort and re-render
+      suggestions.sort((a, b) => b.voteCount - a.voteCount || new Date(b.submittedAt) - new Date(a.submittedAt));
+      renderSuggestions();
+    }
+  }
+
+  async function signChallenge(challenge) {
+    if (wallet.type === 'eth') {
+      if (!window.ethereum) throw new Error('MetaMask not available');
+      const sig = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [challenge, wallet.address]
+      });
+      return sig;  // hex string
+    } else {
+      const phantom = window.solana || window.phantom?.solana;
+      if (!phantom) throw new Error('Phantom not available');
+      const encoded = new TextEncoder().encode(challenge);
+      const { signature } = await phantom.signMessage(encoded, 'utf8');
+      // signature is Uint8Array — convert to base64
+      return btoa(String.fromCharCode(...signature));
+    }
+  }
+
+  // ─── Utilities ────────────────────────────────────────────────
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  let toastTimer;
+  function showToast(msg, type = '') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = `toast${type ? ' ' + type : ''} show`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  // ─── Init & auto-refresh ──────────────────────────────────────
+
+  loadSuggestions();
+  setInterval(loadSuggestions, 15000);
+</script>
+</body>
+</html>

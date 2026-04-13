@@ -3,9 +3,13 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const OpenAI = require('openai');
 const axios = require('axios');
 const FormData = require('form-data');
+const { ethers } = require('ethers');
+const nacl = require('tweetnacl');
+const bs58 = require('bs58');
 const voices = require('./voices');
 
 const app = express();
@@ -50,6 +54,40 @@ try {
   fs.mkdirSync(logsDir, { recursive: true });
 } catch (err) {
   console.warn('[Logs] Could not create logs dir:', err.message);
+}
+
+// --- Suggestions ---
+const SUGGESTIONS_FILE = path.join(__dirname, 'data', 'suggestions.json');
+
+function loadSuggestions() {
+  try {
+    return JSON.parse(fs.readFileSync(SUGGESTIONS_FILE, 'utf8'));
+  } catch {
+    return { suggestions: [] };
+  }
+}
+
+function saveSuggestions(data) {
+  const tmp = SUGGESTIONS_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, SUGGESTIONS_FILE);
+}
+
+function buildVoteChallenge(action, suggestionId, wallet, nonce) {
+  return `VVC Live: ${action} suggestion ${suggestionId} as ${wallet} ts ${nonce}`;
+}
+
+function verifySig(walletType, challenge, signature, wallet) {
+  if (walletType === 'eth') {
+    const recovered = ethers.verifyMessage(challenge, signature);
+    return recovered.toLowerCase() === wallet.toLowerCase();
+  } else if (walletType === 'sol') {
+    const msgBytes = Buffer.from(challenge, 'utf8');
+    const sigBytes = Buffer.from(signature, 'base64');
+    const pubKeyBytes = bs58.decode(wallet);
+    return nacl.sign.detached.verify(msgBytes, sigBytes, pubKeyBytes);
+  }
+  return false;
 }
 
 function appendLogFile(filename, payload) {
@@ -274,6 +312,47 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
+    // /voteVideo N — vote for video at index N in the on-stream list
+    const voteVideoMatch = message.match(/^\/voteVideo\s+(\d+)/i);
+    if (voteVideoMatch) {
+      const index = parseInt(voteVideoMatch[1], 10);
+      try {
+        const r = await axios.post(`${animationServerUrl}/api/lists/vote`, { list: 'video', index }, { timeout: 5000 });
+        return res.json({ ok: true, type: 'vote', list: 'video', index, title: r.data.title, votes: r.data.votes });
+      } catch (err) {
+        const detail = err.response?.data?.error || err.message;
+        return res.status(400).json({ ok: false, error: detail });
+      }
+    }
+
+    // /voteRoadmap N — vote for roadmap item at index N in the on-stream list
+    const voteRoadmapMatch = message.match(/^\/voteRoadmap\s+(\d+)/i);
+    if (voteRoadmapMatch) {
+      const index = parseInt(voteRoadmapMatch[1], 10);
+      try {
+        const r = await axios.post(`${animationServerUrl}/api/lists/vote`, { list: 'roadmap', index }, { timeout: 5000 });
+        return res.json({ ok: true, type: 'vote', list: 'roadmap', index, title: r.data.title, votes: r.data.votes });
+      } catch (err) {
+        const detail = err.response?.data?.error || err.message;
+        return res.status(400).json({ ok: false, error: detail });
+      }
+    }
+
+    // /suggestion command: save to store and forward to animation server for live reaction
+    const suggestionMatch = message.match(/^\/suggestion\s+(.+)/is);
+    if (suggestionMatch) {
+      const text = suggestionMatch[1].trim();
+      const data = loadSuggestions();
+      const id = crypto.randomBytes(6).toString('hex');
+      data.suggestions.push({ id, text, submittedAt: new Date().toISOString(), votes: {} });
+      saveSuggestions(data);
+      console.log(`[Chat] /suggestion saved id=${id}: "${text.slice(0, 80)}"`);
+      // Forward to animation server for on-stream narration + character reaction (fire-and-forget)
+      axios.post(`${animationServerUrl}/api/orchestrator/suggestion/submit`, { text }, { timeout: 8000 })
+        .catch(err => console.warn('[Chat] /suggestion animation forward failed:', err.message));
+      return res.json({ ok: true, queued: true, type: 'suggestion', id });
+    }
+
     // Router mode: LLM picks which character responds
     const normalizedMode = mode === 'router' ? 'router' : 'direct';
     const routingDecision = normalizedMode === 'router'
@@ -361,6 +440,91 @@ app.get('/api/history', (req, res) => {
 // Serve frontend index
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend', 'index.html'));
+});
+
+// --- Suggestion API ---
+
+app.get('/suggestions', (req, res) => {
+  res.sendFile(path.join(__dirname, 'frontend', 'suggestions.html'));
+});
+
+app.get('/api/suggestions', (req, res) => {
+  const data = loadSuggestions();
+  const list = data.suggestions.map(s => ({
+    id: s.id,
+    text: s.text,
+    submittedAt: s.submittedAt,
+    voteCount: Object.keys(s.votes).length,
+    voters: Object.keys(s.votes)
+  })).sort((a, b) => b.voteCount - a.voteCount || new Date(b.submittedAt) - new Date(a.submittedAt));
+  res.json({ suggestions: list });
+});
+
+app.post('/api/suggestions/:id/vote', (req, res) => {
+  const { wallet, walletType, signature, challenge, nonce } = req.body;
+  if (!wallet || !walletType || !signature || !challenge || !nonce) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  if (!['eth', 'sol'].includes(walletType)) {
+    return res.status(400).json({ error: 'Unknown wallet type' });
+  }
+  const nonceTs = parseInt(nonce, 10);
+  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
+    return res.status(400).json({ error: 'Challenge expired' });
+  }
+  const expected = buildVoteChallenge('upvote', req.params.id, wallet, nonce);
+  if (challenge !== expected) {
+    return res.status(400).json({ error: 'Invalid challenge' });
+  }
+  try {
+    if (!verifySig(walletType, challenge, signature, wallet)) {
+      return res.status(401).json({ error: 'Signature verification failed' });
+    }
+  } catch (err) {
+    return res.status(400).json({ error: 'Signature error: ' + err.message });
+  }
+  const data = loadSuggestions();
+  const suggestion = data.suggestions.find(s => s.id === req.params.id);
+  if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
+  const key = wallet.toLowerCase();
+  if (suggestion.votes[key]) return res.status(409).json({ error: 'Already voted' });
+  suggestion.votes[key] = { at: new Date().toISOString(), walletType };
+  saveSuggestions(data);
+  console.log(`[Suggestions] Vote recorded id=${req.params.id} wallet=${wallet.slice(0, 12)}... type=${walletType}`);
+  res.json({ ok: true, voteCount: Object.keys(suggestion.votes).length });
+});
+
+app.delete('/api/suggestions/:id/vote', (req, res) => {
+  const { wallet, walletType, signature, challenge, nonce } = req.body;
+  if (!wallet || !walletType || !signature || !challenge || !nonce) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  if (!['eth', 'sol'].includes(walletType)) {
+    return res.status(400).json({ error: 'Unknown wallet type' });
+  }
+  const nonceTs = parseInt(nonce, 10);
+  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
+    return res.status(400).json({ error: 'Challenge expired' });
+  }
+  const expected = buildVoteChallenge('unvote', req.params.id, wallet, nonce);
+  if (challenge !== expected) {
+    return res.status(400).json({ error: 'Invalid challenge' });
+  }
+  try {
+    if (!verifySig(walletType, challenge, signature, wallet)) {
+      return res.status(401).json({ error: 'Signature verification failed' });
+    }
+  } catch (err) {
+    return res.status(400).json({ error: 'Signature error: ' + err.message });
+  }
+  const data = loadSuggestions();
+  const suggestion = data.suggestions.find(s => s.id === req.params.id);
+  if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
+  const key = wallet.toLowerCase();
+  if (!suggestion.votes[key]) return res.status(404).json({ error: 'No vote to remove' });
+  delete suggestion.votes[key];
+  saveSuggestions(data);
+  res.json({ ok: true, voteCount: Object.keys(suggestion.votes).length });
 });
 
 app.listen(port, () => {

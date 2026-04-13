@@ -192,7 +192,8 @@ async function sendMessage() {
 
   addMessage(message, 'user');
   const isMemeCommand = /^\/meme\s+/i.test(message);
-  const statusMsg = addMessage(isMemeCommand ? 'Submitting meme...' : 'Generating response...');
+  const isSuggestionCommand = /^\/suggestion\s+/i.test(message);
+  const statusMsg = addMessage(isMemeCommand ? 'Submitting meme...' : isSuggestionCommand ? 'Submitting suggestion...' : 'Generating response...');
 
   if (isAutoMode) {
     try {

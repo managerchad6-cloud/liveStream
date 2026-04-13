@@ -82,6 +82,21 @@ const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
 let memeQueueItems = [];  // Array of { segmentId, title }
 let memeQueueVersion = 0; // Bumped on change (cache invalidation)
 
+// Suggestion queue overlay (top-left corner)
+let suggestionQueueItems = [];  // Array of { segmentId, title }
+let suggestionQueueVersion = 0; // Bumped on change (cache invalidation)
+
+// External lists — static panels in outer slots
+let videosList = [];      // Array of { file, title, available, votes }
+let videosListVersion = 0;
+let roadmapList = [];     // Array of { id, title, votes }
+let roadmapListVersion = 0;
+
+// Glow state — tracks recently voted items for the flash effect
+const GLOW_DURATION_MS = 700;
+const videosGlow = new Map(); // file -> glowStartMs
+const roadmapGlow = new Map(); // id -> glowStartMs
+
 // Fire animation state
 let fireState = { frame: 0, mode: 'circular', fps: 8, playing: true, pingPongDir: 1 };
 let lightingState = { nightOpacity: 1.0, dayOpacity: 0.0 };
@@ -772,60 +787,229 @@ function getChatVersion() {
 }
 
 /**
- * Build the "Queued Memes" panel SVG — top-right corner.
- * Shows up to 10 meme titles; last two fade to signal more may exist.
- * Returns Buffer or null if queue is empty.
+ * Build the Videos list SVG — leftmost slot (slot 1).
+ * Shows all available videos with a numerical index. Not cropped.
+ */
+// Videos — right slot (slot 4), right-aligned, index on outer edge
+function buildVideosListSvg() {
+  if (!outputWidth || !outputHeight || videosList.length === 0) return null;
+
+  const PANEL_W    = Math.floor(outputWidth / 4);
+  const PAD_X      = 12;
+  const PAD_Y      = 8;
+  const MARGIN     = 16;
+  const TITLE_FONT = 11;
+  const TITLE_H    = 22;
+  const ITEM_FONT  = 13;
+  const ITEM_H     = 20;
+  const MAX_CHARS  = 38;
+
+  const panelX = Math.floor(outputWidth * 3 / 4);
+  const panelY = MARGIN;
+
+  const relTitleY   = PAD_Y + TITLE_FONT;
+  const relDividerY = PAD_Y + TITLE_H;
+  const now = Date.now();
+
+  const cleanTitle = (s) => s.length > MAX_CHARS ? s.slice(0, MAX_CHARS - 1) + '\u2026' : s;
+
+  const itemRows = videosList.map((item, i) => {
+    const rowY   = relDividerY + i * ITEM_H;
+    const textY  = rowY + ITEM_H - 4;
+    const text   = `${cleanTitle(item.title)} .${i + 1}`;
+    const glowAge = videosGlow.has(item.file) ? now - videosGlow.get(item.file) : GLOW_DURATION_MS;
+    const glowOp  = glowAge < GLOW_DURATION_MS ? (1 - glowAge / GLOW_DURATION_MS) * 0.55 : 0;
+    const glow    = glowOp > 0
+      ? `<rect x="0" y="${rowY}" width="${PANEL_W}" height="${ITEM_H}" fill="rgba(255,210,60,${glowOp.toFixed(3)})"/>`
+      : '';
+    return `${glow}<text x="${PANEL_W - PAD_X}" y="${textY}" text-anchor="end" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${escapeSvgText(text)}</text>`;
+  }).join('');
+
+  const panelH = PAD_Y + TITLE_H + videosList.length * ITEM_H + PAD_Y;
+
+  const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <text x="${PANEL_W - PAD_X}" y="${relTitleY}" text-anchor="end" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">VIDEOS</text>
+    ${itemRows}
+  </svg>`;
+
+  return { input: Buffer.from(svg), left: panelX, top: panelY };
+}
+
+// Roadmap — left slot (slot 1), left-aligned, index on outer edge
+function buildRoadmapListSvg() {
+  if (!outputWidth || !outputHeight || roadmapList.length === 0) return null;
+
+  const PANEL_W    = Math.floor(outputWidth / 4);
+  const PAD_X      = 12;
+  const PAD_Y      = 8;
+  const MARGIN     = 16;
+  const TITLE_FONT = 11;
+  const TITLE_H    = 22;
+  const ITEM_FONT  = 13;
+  const ITEM_H     = 20;
+  const MAX_CHARS  = 38;
+
+  const panelX = 0;
+  const panelY = MARGIN;
+
+  const relTitleY   = PAD_Y + TITLE_FONT;
+  const relDividerY = PAD_Y + TITLE_H;
+  const now = Date.now();
+
+  const cleanTitle = (s) => s.length > MAX_CHARS ? s.slice(0, MAX_CHARS - 1) + '\u2026' : s;
+
+  const itemRows = roadmapList.map((item, i) => {
+    const rowY    = relDividerY + i * ITEM_H;
+    const textY   = rowY + ITEM_H - 4;
+    const text    = `${i + 1}. ${cleanTitle(item.title)}`;
+    const glowAge = roadmapGlow.has(item.id) ? now - roadmapGlow.get(item.id) : GLOW_DURATION_MS;
+    const glowOp  = glowAge < GLOW_DURATION_MS ? (1 - glowAge / GLOW_DURATION_MS) * 0.55 : 0;
+    const glow    = glowOp > 0
+      ? `<rect x="0" y="${rowY}" width="${PANEL_W}" height="${ITEM_H}" fill="rgba(255,210,60,${glowOp.toFixed(3)})"/>`
+      : '';
+    return `${glow}<text x="${PAD_X}" y="${textY}" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${escapeSvgText(text)}</text>`;
+  }).join('');
+
+  const panelH = PAD_Y + TITLE_H + roadmapList.length * ITEM_H + PAD_Y;
+
+  const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <text x="${PAD_X}" y="${relTitleY}" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">ROADMAP</text>
+    ${itemRows}
+  </svg>`;
+
+  return { input: Buffer.from(svg), left: panelX, top: panelY };
+}
+
+/**
+ * Build the "Queued Memes" panel SVG — inner-right slot.
+ * Newest items at top; items approaching the TV edge fade out.
+ * Returns { input, left, top } or null if queue is empty.
  */
 function buildMemeQueueSvg() {
   if (!outputWidth || !outputHeight || memeQueueItems.length === 0) return null;
 
-  const items = memeQueueItems.slice(0, 10);
-  const PANEL_W = 264;
-  const PAD_X   = 12;
-  const PAD_Y   = 8;
-  const MARGIN  = 16;
+  const PANEL_W    = Math.floor(outputWidth / 4);
+  const PAD_X      = 12;
+  const PAD_Y      = 8;
+  const MARGIN     = 16;
   const TITLE_FONT = 11;
-  const TITLE_H    = 22; // height of the title row (text + gap below)
+  const TITLE_H    = 22;
   const ITEM_FONT  = 13;
   const ITEM_H     = 20;
-  const MAX_CHARS  = 30; // truncate titles longer than this
+  const MAX_CHARS  = 40;
 
-  const panelH = PAD_Y + TITLE_H + items.length * ITEM_H + PAD_Y;
-  const panelX = outputWidth - MARGIN - PANEL_W; // right-aligned
+  const panelX = Math.floor(outputWidth / 2);
   const panelY = MARGIN;
 
-  // Strip parenthetical labels like "(wise, old)" and truncate
+  // Delimiter: top of TV viewport (runtime value), fallback ~130px
+  const delimiterY  = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - panelY;
+  const relDividerY = PAD_Y + TITLE_H;
+  const relTitleY   = PAD_Y + TITLE_FONT;
+
   const cleanTitle = (s) => {
     const stripped = s.replace(/\s*\([^)]*\)/g, '').trim();
     return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '\u2026' : stripped;
   };
 
-  // Fade last 2 items only when there are 3+ items, to hint the list continues
-  const getOpacity = (i, total) => {
-    if (total <= 2) return 1.0;
-    if (i === total - 1) return 0.18;
-    if (i === total - 2) return 0.5;
-    return 1.0;
-  };
+  // Ordering is already newest-first from syncMemeQueueToCompositor
+  const items = memeQueueItems.slice(0, 20);
 
-  // Coordinates relative to the SVG's own origin (top-left = panelX, panelY in output)
-  const relTextX = PAD_X;
-  const relTitleY = PAD_Y + TITLE_FONT;
-  const relDividerY = PAD_Y + TITLE_H;
+  // Find last row that fits before the delimiter
+  let lastIdx = -1;
+  for (let i = 0; i < items.length; i++) {
+    if (relDividerY + i * ITEM_H >= delimiterY) break;
+    lastIdx = i;
+  }
 
-  const itemRows = items.map((item, i) => {
-    const y = relDividerY + (i + 1) * ITEM_H - 4;
-    const op = getOpacity(i, items.length);
+  const itemRows = [];
+  for (let i = 0; i <= lastIdx; i++) {
+    const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
+    const distFromLimit = delimiterY - itemBottomRel;
+    // Only the last visible row fades; all others are fully opaque
+    const op = (i === lastIdx)
+      ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H))
+      : 1.0;
+
+    const y      = relDividerY + (i + 1) * ITEM_H - 4;
     const weight = i === 0 ? '600' : '400';
-    const fill = i === 0 ? '#ffffff' : 'rgba(255,255,255,0.85)';
-    return `<text x="${relTextX}" y="${y}" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(item.title))}</text>`;
-  }).join('');
+    const fill   = i === 0 ? '#ffffff' : 'rgba(255,255,255,0.85)';
+    itemRows.push(`<text x="${PAD_X}" y="${y}" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(items[i].title))}</text>`);
+  }
 
-  // SVG is only PANEL_W × panelH — much smaller than full 1280×720 output
+  const panelH = Math.min(PAD_Y + TITLE_H + items.length * ITEM_H + PAD_Y, delimiterY);
+
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
     <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-    <text x="${relTextX}" y="${relTitleY}" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">QUEUED MEMES</text>
-    ${itemRows}
+    <text x="${PAD_X}" y="${relTitleY}" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">QUEUED MEMES</text>
+    ${itemRows.join('')}
+  </svg>`;
+
+  return { input: Buffer.from(svg), left: panelX, top: panelY };
+}
+
+/**
+ * Build the "Community Suggestions" panel SVG — inner-left slot.
+ * Newest items at top; items approaching the TV edge fade out.
+ * Returns { input, left, top } or null if queue is empty.
+ */
+function buildSuggestionQueueSvg() {
+  if (!outputWidth || !outputHeight || suggestionQueueItems.length === 0) return null;
+
+  const PANEL_W    = Math.floor(outputWidth / 4);
+  const PAD_X      = 12;
+  const PAD_Y      = 8;
+  const MARGIN     = 16;
+  const TITLE_FONT = 11;
+  const TITLE_H    = 22;
+  const ITEM_FONT  = 13;
+  const ITEM_H     = 20;
+  const MAX_CHARS  = 40;
+
+  const panelX = Math.floor(outputWidth / 4);
+  const panelY = MARGIN;
+
+  const delimiterY  = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - panelY;
+  const relDividerY = PAD_Y + TITLE_H;
+  const relTitleY   = PAD_Y + TITLE_FONT;
+
+  const cleanTitle = (s) => {
+    const stripped = s.trim();
+    return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '\u2026' : stripped;
+  };
+
+  // Ordering is already newest-first from syncSuggestionQueueToCompositor
+  const items = suggestionQueueItems.slice(0, 20);
+
+  // Find last row that fits before the delimiter
+  let lastIdx = -1;
+  for (let i = 0; i < items.length; i++) {
+    if (relDividerY + i * ITEM_H >= delimiterY) break;
+    lastIdx = i;
+  }
+
+  const itemRows = [];
+  for (let i = 0; i <= lastIdx; i++) {
+    const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
+    const distFromLimit = delimiterY - itemBottomRel;
+    // Only the last visible row fades; all others are fully opaque
+    const op = (i === lastIdx)
+      ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H))
+      : 1.0;
+
+    const y      = relDividerY + (i + 1) * ITEM_H - 4;
+    const weight = i === 0 ? '600' : '400';
+    const fill   = i === 0 ? '#ffffff' : 'rgba(255,255,255,0.85)';
+    itemRows.push(`<text x="${PANEL_W - PAD_X}" y="${y}" text-anchor="end" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(items[i].title))}</text>`);
+  }
+
+  const panelH = Math.min(PAD_Y + TITLE_H + items.length * ITEM_H + PAD_Y, delimiterY);
+
+  const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <text x="${PANEL_W - PAD_X}" y="${relTitleY}" text-anchor="end" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">COMMUNITY SUGGESTIONS</text>
+    ${itemRows.join('')}
   </svg>`;
 
   return { input: Buffer.from(svg), left: panelX, top: panelY };
@@ -1600,10 +1784,16 @@ async function compositeFrame(state) {
   // so the fast path correctly reflects what was actually rendered
   const currentChatVersion = getChatVersion();
   const hasActiveTicker = tickerMessages.some(m => m);
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}`;
+  const now = Date.now();
+  // Clean up expired glows
+  for (const [k, t] of videosGlow) if (now - t >= GLOW_DURATION_MS) videosGlow.delete(k);
+  for (const [k, t] of roadmapGlow) if (now - t >= GLOW_DURATION_MS) roadmapGlow.delete(k);
+  const hasActiveGlow = videosGlow.size > 0 || roadmapGlow.size > 0;
 
-  // Fast path: skip all compositing if nothing changed and ticker is inactive
-  if (!hasActiveTicker && outputKey === lastOutputKey && lastOutputBuffer) {
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-rl${roadmapListVersion}`;
+
+  // Fast path: skip all compositing if nothing changed, ticker is inactive, and no glow animating
+  if (!hasActiveTicker && !hasActiveGlow && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -1694,8 +1884,17 @@ async function compositeFrame(state) {
   const chatOp = buildChatOverlaySvg();
   if (chatOp) overlayOps.push({ ...chatOp, blend: 'over' });
 
+  const videosListOp = buildVideosListSvg();
+  if (videosListOp) overlayOps.push({ ...videosListOp, blend: 'over' });
+
+  const roadmapListOp = buildRoadmapListSvg();
+  if (roadmapListOp) overlayOps.push({ ...roadmapListOp, blend: 'over' });
+
   const memeQueueOp = buildMemeQueueSvg();
   if (memeQueueOp) overlayOps.push({ ...memeQueueOp, blend: 'over' });
+
+  const suggestionQueueOp = buildSuggestionQueueSvg();
+  if (suggestionQueueOp) overlayOps.push({ ...suggestionQueueOp, blend: 'over' });
 
   // Ticker: correctly-sized SVG (1280×TICKER_HEIGHT = 36px, ~20× less than full frame).
   // Composited in the same single pass — rasterization cost is negligible at this size.
@@ -1704,9 +1903,9 @@ async function compositeFrame(state) {
     if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  // Check output cache (non-ticker frames only — ticker output scrolls every frame)
+  // Check output cache — skip when ticker scrolls or glow is animating (both change every frame)
   let result;
-  if (!hasActiveTicker) {
+  if (!hasActiveTicker && !hasActiveGlow) {
     result = outputCache[outputKey];
   }
 
@@ -2019,6 +2218,26 @@ module.exports = {
   setMemeQueue: (items) => {
     memeQueueItems = Array.isArray(items) ? items : [];
     memeQueueVersion++;
-    lastOutputKey = null; // invalidate output fast path
+    lastOutputKey = null;
+  },
+  setSuggestionQueue: (items) => {
+    suggestionQueueItems = Array.isArray(items) ? items : [];
+    suggestionQueueVersion++;
+    lastOutputKey = null;
+  },
+  setVideosList: (items) => {
+    videosList = Array.isArray(items) ? items : [];
+    videosListVersion++;
+    lastOutputKey = null;
+  },
+  setRoadmapList: (items) => {
+    roadmapList = Array.isArray(items) ? items : [];
+    roadmapListVersion++;
+    lastOutputKey = null;
+  },
+  triggerGlow: (list, id) => {
+    if (list === 'video') videosGlow.set(id, Date.now());
+    else if (list === 'roadmap') roadmapGlow.set(id, Date.now());
+    lastOutputKey = null;
   }
 };
