@@ -3052,8 +3052,11 @@ app.post('/api/lists/vote', async (req, res) => {
   if (list === 'roadmap') {
     if (idx < 0 || idx >= _cachedRoadmapList.length) return res.status(404).json({ error: 'Index out of range' });
     const item = _cachedRoadmapList[idx];
+    // Increment locally so the compositor updates immediately
+    _cachedRoadmapList[idx].votes = (item.votes || 0) + 1;
+    setRoadmapList([..._cachedRoadmapList]);
     triggerGlow('roadmap', item.id);
-    return res.json({ ok: true, title: item.title });
+    return res.json({ ok: true, title: item.title, votes: _cachedRoadmapList[idx].votes });
   }
   res.status(400).json({ error: 'list must be video or roadmap' });
 });

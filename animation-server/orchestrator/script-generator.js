@@ -848,6 +848,70 @@ Return ONLY valid JSON:
     const estimatedDuration = estimateDurationSeconds(script);
     return { script, estimatedDuration, exitContext: parsed.exitContext || 'chart analysis' };
   }
+  /**
+   * Generate a suggestion reaction script.
+   * Characters are live hosts of the VVC project and react to a community suggestion.
+   */
+  async generateSuggestionReactionScript({ text }) {
+    if (!this.openai) throw new Error('OpenAI not configured');
+
+    const systemPrompt = `You are writing dialogue for Chad and Virgin, the live hosts of VVC — a crypto/meme project.
+A community member has just submitted a suggestion for the VVC project. The narrator just read it aloud on stream.
+
+SUGGESTION: "${text}"
+
+The characters MUST:
+- Understand this is a real suggestion from a community member watching the live stream
+- React to the specific suggestion text — no vague platitudes
+- Stay fully in character (Chad: effortlessly confident, dismissive of effort, casually opinionated; Virgin: overthinks everything, finds something to be anxious about, ends up self-deprecating)
+- NOT break the fourth wall or mention the stream meta
+
+CHAD'S REACTION:
+- Has an instant, casually confident take on whether it's good or dumb
+- Won't pretend to care much unless it accidentally sounds cool or profitable
+- May credit himself if the idea aligns with something he already does
+
+VIRGIN'S REACTION:
+- Over-analyzes the suggestion
+- Finds at least one reason to be worried or that it's harder than it sounds
+- May actually like it but can't say so without hedging
+
+CHARACTER PROFILES:
+CHAD: ${voices.chad.basePrompt}
+VIRGIN: ${voices.virgin.basePrompt}
+
+RULES:
+- 2–4 lines total, punchy and specific to the suggestion
+- No emojis, no markdown
+- ElevenLabs v3 audio tags: [chuckles], [laughs], [nervous laugh], [sighs], [clears throat]
+- Adult platform: natural profanity ok (~1 in 20 lines), never slurs
+
+Return ONLY valid JSON:
+{
+  "script": [{ "speaker": "chad|virgin", "text": "..." }],
+  "exitContext": "brief summary of what was said about the suggestion"
+}`;
+
+    const completion = await this.openai.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `React to this community suggestion: "${text}"` }
+      ],
+      temperature: 0.85,
+      max_tokens: 350
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '';
+    const parsed = parseJson(content);
+    if (!parsed || !Array.isArray(parsed.script)) {
+      throw new Error('Failed to parse suggestion reaction script JSON');
+    }
+
+    const script = this._normalizeScript(parsed.script);
+    const estimatedDuration = estimateDurationSeconds(script);
+    return { script, estimatedDuration, exitContext: parsed.exitContext || null };
+  }
 }
 
 module.exports = ScriptGenerator;

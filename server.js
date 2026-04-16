@@ -312,8 +312,8 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // /voteVideo N — vote for video at index N in the on-stream list
-    const voteVideoMatch = message.match(/^\/voteVideo\s+(\d+)/i);
+    // /video N — vote for video at index N in the on-stream list
+    const voteVideoMatch = message.match(/^\/video\s+(\d+)/i);
     if (voteVideoMatch) {
       const index = parseInt(voteVideoMatch[1], 10);
       try {
@@ -325,8 +325,8 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // /voteRoadmap N — vote for roadmap item at index N in the on-stream list
-    const voteRoadmapMatch = message.match(/^\/voteRoadmap\s+(\d+)/i);
+    // /roadmap N — vote for roadmap item at index N in the on-stream list
+    const voteRoadmapMatch = message.match(/^\/roadmap\s+(\d+)/i);
     if (voteRoadmapMatch) {
       const index = parseInt(voteRoadmapMatch[1], 10);
       try {

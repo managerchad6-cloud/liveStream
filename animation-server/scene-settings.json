@@ -1,14 +1,14 @@
 {
   "fire": {
-    "frame": 3,
+    "frame": 4,
     "mode": "random",
     "fps": 5,
     "playing": true,
     "pingPongDir": 1
   },
   "lighting": {
-    "nightOpacity": 0.6,
-    "dayOpacity": 0.4
+    "nightOpacity": 1,
+    "dayOpacity": 0
   },
   "cycle": {
     "enabled": false,

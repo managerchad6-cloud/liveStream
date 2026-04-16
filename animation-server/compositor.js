@@ -15,6 +15,132 @@ const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 const EXPRESSION_LIMITS_PATH = path.join(ROOT_DIR, 'expression-limits.json');
 const TICKER_SETTINGS_PATH = path.join(__dirname, 'ticker-settings.json');
 
+// Friendszone font — embedded as base64 for SVG @font-face (librsvg picks it up)
+const FRIENDSZONE_B64 = (() => {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'fonts', 'Friendszone.ttf')).toString('base64');
+  } catch (e) {
+    console.warn('[Compositor] Friendszone.ttf not found, falling back to system font');
+    return null;
+  }
+})();
+const FRIENDSZONE_FACE = FRIENDSZONE_B64
+  ? `<defs><style>@font-face{font-family:'Friendszone';src:url('data:font/truetype;base64,${FRIENDSZONE_B64}');}</style></defs>`
+  : '';
+const FRIENDSZONE_FAMILY = FRIENDSZONE_B64 ? "'Friendszone', " : '';
+console.log(`[Compositor] Friendszone font: ${FRIENDSZONE_B64 ? 'loaded' : 'not found'}`);
+
+// ── Twemoji color emoji loader ────────────────────────────────────────────────
+// librsvg's bundled fontconfig can't find system emoji fonts (e.g. Segoe UI Emoji),
+// so we fetch Twemoji 72x72 PNGs and embed them as <image> elements in SVG.
+const emojiImgCache = new Map(); // codepoint string (e.g. '1f3af') → base64 data URI
+
+function emojiCodepoint(char) {
+  return [...char]
+    .map(c => c.codePointAt(0).toString(16))
+    .filter(cp => cp !== 'fe0f') // drop variation selector-16
+    .join('-');
+}
+
+async function loadEmoji(char) {
+  const cp = emojiCodepoint(char); // normalize: strip variation selectors
+  if (emojiImgCache.has(cp)) return emojiImgCache.get(cp);
+  const dir = path.join(__dirname, 'fonts', 'emoji');
+  const file = path.join(dir, `${cp}.png`);
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch {
+    const https = require('https');
+    const url = `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${cp}.png`;
+    buf = await new Promise((res, rej) => {
+      https.get(url, r => {
+        const chunks = [];
+        r.on('data', d => chunks.push(d));
+        r.on('end', () => res(Buffer.concat(chunks)));
+        r.on('error', rej);
+      }).on('error', rej);
+    });
+    try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(file, buf); } catch {}
+  }
+  const uri = `data:image/png;base64,${buf.toString('base64')}`;
+  emojiImgCache.set(cp, uri);
+  return uri;
+}
+
+// Matches single emoji chars and ZWJ sequences (e.g. 👨‍🎨)
+const EMOJI_RE = /\p{Extended_Pictographic}(?:\uFE0F)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F)?)*/gu;
+
+function parseEmojiParts(str) {
+  const parts = [];
+  let last = 0;
+  for (const m of str.matchAll(EMOJI_RE)) {
+    if (m.index > last) parts.push({ t: 'text', v: str.slice(last, m.index) });
+    parts.push({ t: 'emoji', v: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (last < str.length) parts.push({ t: 'text', v: str.slice(last) });
+  return parts;
+}
+
+// Renders a mixed emoji+text title as SVG elements starting from (x, y).
+// Emoji chars become <image> elements (Twemoji PNGs), text uses Friendszone.
+function svgEmojiTitle({ text, x, y, fontSize, fill, fontFamily, fontWeight = '700', letterSpacing = '1.5', centerInWidth, groupShift = 0, emojiShift = 0 }) {
+  const CHAR_W = fontSize * 0.62;  // approx advance per Friendszone char (used only for emoji placement)
+  const EM_SZ  = Math.round(fontSize * 1.1);
+  const EM_PAD = Math.round(fontSize * 0.22);
+  const parts  = parseEmojiParts(text);
+  const els    = [];
+
+  if (centerInWidth != null) {
+    // Text centered with SVG text-anchor="middle"; emoji placed to its left via estimate.
+    // groupShift moves BOTH emoji and text right together as a unit.
+    const textParts  = parts.filter(p => p.t === 'text');
+    const emojiParts = parts.filter(p => p.t === 'emoji');
+    const estTextHalfW = textParts.reduce((s, p) => s + p.v.trim().length * CHAR_W * 0.42, 0);
+    const totalEmojiW  = emojiParts.length * (EM_SZ + EM_PAD);
+    let emojiCx = Math.round(centerInWidth / 2 - estTextHalfW - totalEmojiW) + groupShift + emojiShift;
+    const textX = Math.round(centerInWidth / 2) + groupShift;
+
+    for (const p of parts) {
+      if (p.t === 'emoji') {
+        const uri = emojiImgCache.get(emojiCodepoint(p.v));
+        const iy  = Math.round(y - EM_SZ * 0.82);
+        if (uri) els.push(`<image x="${emojiCx}" y="${iy}" width="${EM_SZ}" height="${EM_SZ}" href="${uri}"/>`);
+        else     els.push(`<text x="${emojiCx}" y="${y}" fill="${fill}" font-size="${fontSize}">${p.v}</text>`);
+        emojiCx += EM_SZ + EM_PAD;
+      } else {
+        els.push(`<text x="${textX}" y="${y}" text-anchor="middle" fill="${fill}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${fontWeight}" letter-spacing="${letterSpacing}">${escapeSvgText(p.v.trim())}</text>`);
+      }
+    }
+    return els.join('');
+  }
+
+  // Non-centered path: left-to-right from x
+  let cx = x;
+  for (const p of parts) {
+    if (p.t === 'emoji') {
+      const uri = emojiImgCache.get(emojiCodepoint(p.v));
+      if (uri) {
+        const iy = Math.round(y - EM_SZ * 0.82);
+        els.push(`<image x="${Math.round(cx)}" y="${iy}" width="${EM_SZ}" height="${EM_SZ}" href="${uri}"/>`);
+      } else {
+        els.push(`<text x="${Math.round(cx)}" y="${y}" fill="${fill}" font-size="${fontSize}">${p.v}</text>`);
+      }
+      cx += EM_SZ + EM_PAD;
+    } else {
+      els.push(`<text x="${Math.round(cx)}" y="${y}" fill="${fill}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${fontWeight}" letter-spacing="${letterSpacing}">${escapeSvgText(p.v)}</text>`);
+      cx += p.v.length * CHAR_W;
+    }
+  }
+  return els.join('');
+}
+
+const PANEL_EMOJIS = ['🎯', '🌍', '😆', '⭐'];
+Promise.all(PANEL_EMOJIS.map(loadEmoji))
+  .then(() => console.log('[Compositor] Panel emojis loaded'))
+  .catch(e => console.warn('[Compositor] Emoji load error:', e.message));
+
 let manifest = null;
 let scaledLayerBuffers = {};
 let staticBaseBuffer = null; // Pre-composited static layers { data, info } raw RGBA
@@ -93,9 +219,21 @@ let roadmapList = [];     // Array of { id, title, votes }
 let roadmapListVersion = 0;
 
 // Glow state — tracks recently voted items for the flash effect
-const GLOW_DURATION_MS = 700;
+const GLOW_DURATION_MS  = 700;
+const PLUS_ONE_DURATION_MS = 1700; // +1 lingers an extra second after glow fades
+const GLOW_CLEANUP_MS   = Math.max(GLOW_DURATION_MS, PLUS_ONE_DURATION_MS);
 const videosGlow = new Map(); // file -> glowStartMs
 const roadmapGlow = new Map(); // id -> glowStartMs
+
+// Scroll state — auto-scrolls panels when content exceeds half screen height
+// scrollOffset is a continuous pixel value; advances at SCROLL_PX_PER_SEC px/s
+const SCROLL_PX_PER_SEC = 18; // comfortable reading pace
+const SCROLL_PAUSE_MS   = 2000; // pause at top before cycling again
+let videosScrollPx   = 0;
+let roadmapScrollPx  = 0;
+let videosScrollPauseUntil  = 0;
+let roadmapScrollPauseUntil = 0;
+let lastScrollTick = Date.now();
 
 // Fire animation state
 let fireState = { frame: 0, mode: 'circular', fps: 8, playing: true, pingPongDir: 1 };
@@ -709,7 +847,7 @@ function buildTickerSvg() {
   // Positioned at stripY in the output via the composite op's `top` field.
   const svg = `<svg width="${outputWidth}" height="${TICKER_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
   <rect x="0" y="0" width="${outputWidth}" height="${TICKER_HEIGHT}" fill="black"/>
-  <text x="${scrollX}" y="${textY}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="600" xml:space="preserve">${tspans}</text>
+  <text x="${scrollX}" y="${textY}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="400" xml:space="preserve">${tspans}</text>
 </svg>`;
 
   // Return composite op: input SVG + output position
@@ -790,96 +928,154 @@ function getChatVersion() {
  * Build the Videos list SVG — leftmost slot (slot 1).
  * Shows all available videos with a numerical index. Not cropped.
  */
-// Videos — right slot (slot 4), right-aligned, index on outer edge
-function buildVideosListSvg() {
-  if (!outputWidth || !outputHeight || videosList.length === 0) return null;
+// Shared helper — builds a clipped, scrolled list SVG for either panel
+function buildListSvg({ items, scrollPx, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0 }) {
+  if (!outputWidth || !outputHeight || items.length === 0) return null;
 
-  const PANEL_W    = Math.floor(outputWidth / 4);
-  const PAD_X      = 12;
-  const PAD_Y      = 8;
-  const MARGIN     = 16;
-  const TITLE_FONT = 11;
-  const TITLE_H    = 22;
-  const ITEM_FONT  = 13;
-  const ITEM_H     = 20;
-  const MAX_CHARS  = 38;
+  const PANEL_W       = Math.floor(outputWidth / 4);
+  const PAD_X         = 12;
+  const PAD_Y         = 8;
+  const MARGIN        = 4;
+  const TITLE_FONT    = 21;
+  const SUBTITLE_FONT = 15;
+  const TITLE_H       = subText ? 54 : 32;
+  const ITEM_FONT     = 13;
+  const ITEM_H        = 20;
+  const MAX_CHARS     = 38;
 
-  const panelX = Math.floor(outputWidth * 3 / 4);
-  const panelY = MARGIN;
-
-  const relTitleY   = PAD_Y + TITLE_FONT;
-  const relDividerY = PAD_Y + TITLE_H;
-  const now = Date.now();
+  const panelY       = MARGIN;
+  const relTitleY    = PAD_Y + TITLE_FONT;
+  const relSubtitleY = relTitleY + SUBTITLE_FONT + 6;
+  const relDividerY  = PAD_Y + TITLE_H;
+  const maxPanelH   = Math.floor(outputHeight / 4) + 4;
+  const clipH       = maxPanelH - relDividerY; // height of the scrollable window
+  const svgH        = relDividerY + clipH;     // total SVG height = header + clip window
+  const now         = Date.now();
 
   const cleanTitle = (s) => s.length > MAX_CHARS ? s.slice(0, MAX_CHARS - 1) + '\u2026' : s;
 
-  const itemRows = videosList.map((item, i) => {
-    const rowY   = relDividerY + i * ITEM_H;
+  // Render items twice for seamless marquee looping — second copy sits directly below first.
+  // The translate shifts both copies up by scrollPx; when scrollPx wraps to 0 the
+  // second copy fills the gap that would otherwise appear at the bottom.
+  const scroll  = Math.floor(scrollPx);
+  const loopH   = items.length * ITEM_H;
+  const tx      = rightAligned ? PANEL_W - PAD_X : PAD_X;
+  const anchor  = rightAligned ? 'end' : 'start';
+
+  function renderRow(item, i, offsetY) {
+    const rowY   = offsetY + i * ITEM_H;
     const textY  = rowY + ITEM_H - 4;
-    const text   = `${cleanTitle(item.title)} .${i + 1}`;
-    const glowAge = videosGlow.has(item.file) ? now - videosGlow.get(item.file) : GLOW_DURATION_MS;
-    const glowOp  = glowAge < GLOW_DURATION_MS ? (1 - glowAge / GLOW_DURATION_MS) * 0.55 : 0;
-    const glow    = glowOp > 0
+    const id     = item[glowKey];
+    const text   = rightAligned
+      ? `${cleanTitle(item.title)} .${i + 1}`
+      : `${i + 1}. ${cleanTitle(item.title)}`;
+    const glowAge  = glowMap.has(id) ? now - glowMap.get(id) : GLOW_CLEANUP_MS;
+    const glowT    = glowAge < GLOW_DURATION_MS    ? 1 - glowAge / GLOW_DURATION_MS    : 0; // glow: 700ms
+    const plusT    = glowAge < PLUS_ONE_DURATION_MS ? 1 - glowAge / PLUS_ONE_DURATION_MS : 0; // +1: 1700ms
+    const glowOp   = glowT * 0.55;
+    const glow     = glowOp > 0
       ? `<rect x="0" y="${rowY}" width="${PANEL_W}" height="${ITEM_H}" fill="rgba(255,210,60,${glowOp.toFixed(3)})"/>`
       : '';
-    return `${glow}<text x="${PANEL_W - PAD_X}" y="${textY}" text-anchor="end" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${escapeSvgText(text)}</text>`;
-  }).join('');
+    // Single +1 particle — stays clearly next to its row, fun but contained
+    const plusOne = plusT > 0
+      ? (() => {
+          const seed = glowMap.get(id) || 0;
+          const rA = (seed * 9301    + 49297)    % 233280    / 233280;
+          const rB = (seed * 1234567 + 7654321)  % 999983    / 999983;
 
-  const panelH = PAD_Y + TITLE_H + videosList.length * ITEM_H + PAD_Y;
+          // Pop-in over first 120ms
+          const popT     = Math.min(1, glowAge / 120);
+          const fontSize = Math.round((14 + rA * 4) * (0.4 + popT * 0.6)); // 14–18px
 
-  const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
-    <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-    <text x="${PANEL_W - PAD_X}" y="${relTitleY}" text-anchor="end" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">VIDEOS</text>
-    ${itemRows}
+          // Flush to the outer screen edge of the panel
+          // Videos (right panel): x near PANEL_W. Roadmap (left panel): x near 0.
+          // Sway goes inward only (away from screen edge) so it always reads as "on the edge".
+          const edgeX  = rightAligned ? 3 : PANEL_W - 3;
+          const sway   = Math.abs(Math.sin(glowAge * (0.007 + rB * 0.004) + rA * Math.PI * 2)) * (5 + rA * 7);
+          const finalX = Math.round(rightAligned ? edgeX + sway : edgeX - sway);
+
+          // Gentle float upward — max 7px, well within the row's vertical space
+          const floatY = Math.round((1 - plusT) * 7);
+          const finalY = textY - floatY;
+
+          // Opacity: snappy pop-in, hold near full, then fade
+          const op = Math.min(1, popT * 3) * plusT;
+
+          const pAnchor = rightAligned ? 'start' : 'end';
+          return `<text x="${finalX}" y="${finalY}" text-anchor="${pAnchor}" fill="rgba(255,220,40,${op.toFixed(3)})" font-family="DejaVu Sans, Arial, sans-serif" font-size="${fontSize}" font-weight="900" stroke="rgba(0,0,0,0.5)" stroke-width="1.5" paint-order="stroke">+1</text>`;
+        })()
+      : '';
+    // Vote count: inline tspan before title for videos; separate right-edge element for roadmap
+    const votes = item.votes != null ? item.votes : null;
+    let votePrefix = '', voteExtraEl = '';
+    if (votes !== null) {
+      const vOp = Math.min(1, 0.75 + glowT * 0.25).toFixed(3);
+      const voteStr = `(${votes} votes)`;
+      if (rightAligned) {
+        // Videos: separate element on the left edge of the panel
+        voteExtraEl = `<text x="${PAD_X}" y="${textY}" text-anchor="start" fill="rgba(255,165,55,${vOp})" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="600">${voteStr}</text>`;
+      } else {
+        // Roadmap: separate element pushed to the right edge of the panel
+        voteExtraEl = `<text x="${PANEL_W - PAD_X}" y="${textY}" text-anchor="end" fill="rgba(255,165,55,${vOp})" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="600">${voteStr}</text>`;
+      }
+    }
+    return `${glow}${plusOne}<text x="${tx}" y="${textY}" text-anchor="${anchor}" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${votePrefix}${escapeSvgText(text)}</text>${voteExtraEl}`;
+  }
+
+  const itemRows = [
+    ...items.map((item, i) => renderRow(item, i, 0)),       // first copy
+    ...items.map((item, i) => renderRow(item, i, loopH)),   // second copy — fills wrap gap
+  ].join('');
+
+  const lineX1 = PAD_X, lineX2 = PANEL_W - PAD_X;
+
+  // Nested SVG with viewBox handles scrolling + clipping without clipPath transforms.
+  // viewBox shifts the visible window by `scroll` pixels down into the content.
+  const subtitleEl = subText
+    ? `<text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">${escapeSvgText(subText)}</text>`
+    : '';
+  const titleEl = svgEmojiTitle({ text: labelText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, emojiShift });
+  const svg = `<svg width="${PANEL_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
+    ${FRIENDSZONE_FACE}
+    ${titleEl}
+    ${subtitleEl}
+    <line x1="${lineX1}" y1="${relDividerY}" x2="${lineX2}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <svg x="0" y="${relDividerY}" width="${PANEL_W}" height="${clipH}" viewBox="0 ${scroll} ${PANEL_W} ${clipH}">
+      ${itemRows}
+    </svg>
   </svg>`;
 
   return { input: Buffer.from(svg), left: panelX, top: panelY };
 }
 
-// Roadmap — left slot (slot 1), left-aligned, index on outer edge
+// Videos — right slot (slot 4), right-aligned
+function buildVideosListSvg() {
+  return buildListSvg({
+    items:        videosList,
+    scrollPx:     videosScrollPx,
+    glowMap:      videosGlow,
+    glowKey:      'file',
+    panelX:       Math.floor(outputWidth * 3 / 4),
+    labelText:    '⭐️ Videos',
+    subText:      '(Vote for next release: /video 1)',
+    rightAligned: false,
+    emojiShift:   4,
+  });
+}
+
+// Roadmap — left slot (slot 1), left-aligned
 function buildRoadmapListSvg() {
-  if (!outputWidth || !outputHeight || roadmapList.length === 0) return null;
-
-  const PANEL_W    = Math.floor(outputWidth / 4);
-  const PAD_X      = 12;
-  const PAD_Y      = 8;
-  const MARGIN     = 16;
-  const TITLE_FONT = 11;
-  const TITLE_H    = 22;
-  const ITEM_FONT  = 13;
-  const ITEM_H     = 20;
-  const MAX_CHARS  = 38;
-
-  const panelX = 0;
-  const panelY = MARGIN;
-
-  const relTitleY   = PAD_Y + TITLE_FONT;
-  const relDividerY = PAD_Y + TITLE_H;
-  const now = Date.now();
-
-  const cleanTitle = (s) => s.length > MAX_CHARS ? s.slice(0, MAX_CHARS - 1) + '\u2026' : s;
-
-  const itemRows = roadmapList.map((item, i) => {
-    const rowY    = relDividerY + i * ITEM_H;
-    const textY   = rowY + ITEM_H - 4;
-    const text    = `${i + 1}. ${cleanTitle(item.title)}`;
-    const glowAge = roadmapGlow.has(item.id) ? now - roadmapGlow.get(item.id) : GLOW_DURATION_MS;
-    const glowOp  = glowAge < GLOW_DURATION_MS ? (1 - glowAge / GLOW_DURATION_MS) * 0.55 : 0;
-    const glow    = glowOp > 0
-      ? `<rect x="0" y="${rowY}" width="${PANEL_W}" height="${ITEM_H}" fill="rgba(255,210,60,${glowOp.toFixed(3)})"/>`
-      : '';
-    return `${glow}<text x="${PAD_X}" y="${textY}" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${escapeSvgText(text)}</text>`;
-  }).join('');
-
-  const panelH = PAD_Y + TITLE_H + roadmapList.length * ITEM_H + PAD_Y;
-
-  const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
-    <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-    <text x="${PAD_X}" y="${relTitleY}" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">ROADMAP</text>
-    ${itemRows}
-  </svg>`;
-
-  return { input: Buffer.from(svg), left: panelX, top: panelY };
+  return buildListSvg({
+    items:        roadmapList,
+    scrollPx:     roadmapScrollPx,
+    glowMap:      roadmapGlow,
+    glowKey:      'id',
+    panelX:       0,
+    labelText:    '🎯 Roadmap',
+    subText:      '(Vote for next implementation: /roadmap 1)',
+    rightAligned: false,
+    emojiShift:   -5,
+  });
 }
 
 /**
@@ -888,35 +1084,34 @@ function buildRoadmapListSvg() {
  * Returns { input, left, top } or null if queue is empty.
  */
 function buildMemeQueueSvg() {
-  if (!outputWidth || !outputHeight || memeQueueItems.length === 0) return null;
+  if (!outputWidth || !outputHeight) return null;
 
-  const PANEL_W    = Math.floor(outputWidth / 4);
-  const PAD_X      = 12;
-  const PAD_Y      = 8;
-  const MARGIN     = 16;
-  const TITLE_FONT = 11;
-  const TITLE_H    = 22;
-  const ITEM_FONT  = 13;
-  const ITEM_H     = 20;
-  const MAX_CHARS  = 40;
+  const PANEL_W       = Math.floor(outputWidth / 4);
+  const PAD_X         = 12;
+  const PAD_Y         = 8;
+  const MARGIN        = 4;
+  const TITLE_FONT    = 21;
+  const SUBTITLE_FONT = 15;
+  const TITLE_H       = 54;
+  const ITEM_FONT     = 13;
+  const ITEM_H        = 20;
+  const MAX_CHARS     = 40;
 
   const panelX = Math.floor(outputWidth / 2);
   const panelY = MARGIN;
 
-  // Delimiter: top of TV viewport (runtime value), fallback ~130px
-  const delimiterY  = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - panelY;
-  const relDividerY = PAD_Y + TITLE_H;
-  const relTitleY   = PAD_Y + TITLE_FONT;
+  const delimiterY   = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - panelY;
+  const relTitleY    = PAD_Y + TITLE_FONT;
+  const relSubtitleY = relTitleY + SUBTITLE_FONT + 6;
+  const relDividerY  = PAD_Y + TITLE_H;
 
   const cleanTitle = (s) => {
     const stripped = s.replace(/\s*\([^)]*\)/g, '').trim();
     return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '\u2026' : stripped;
   };
 
-  // Ordering is already newest-first from syncMemeQueueToCompositor
   const items = memeQueueItems.slice(0, 20);
 
-  // Find last row that fits before the delimiter
   let lastIdx = -1;
   for (let i = 0; i < items.length; i++) {
     if (relDividerY + i * ITEM_H >= delimiterY) break;
@@ -927,7 +1122,6 @@ function buildMemeQueueSvg() {
   for (let i = 0; i <= lastIdx; i++) {
     const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
     const distFromLimit = delimiterY - itemBottomRel;
-    // Only the last visible row fades; all others are fully opaque
     const op = (i === lastIdx)
       ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H))
       : 1.0;
@@ -938,11 +1132,13 @@ function buildMemeQueueSvg() {
     itemRows.push(`<text x="${PAD_X}" y="${y}" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(items[i].title))}</text>`);
   }
 
-  const panelH = Math.min(PAD_Y + TITLE_H + items.length * ITEM_H + PAD_Y, delimiterY);
+  const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 0) * ITEM_H + PAD_Y, delimiterY);
 
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
+    ${FRIENDSZONE_FACE}
+    ${svgEmojiTitle({ text: '😆 Queued Memes', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) })}
+    <text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">(/meme your prompt)</text>
     <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-    <text x="${PAD_X}" y="${relTitleY}" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">QUEUED MEMES</text>
     ${itemRows.join('')}
   </svg>`;
 
@@ -955,34 +1151,34 @@ function buildMemeQueueSvg() {
  * Returns { input, left, top } or null if queue is empty.
  */
 function buildSuggestionQueueSvg() {
-  if (!outputWidth || !outputHeight || suggestionQueueItems.length === 0) return null;
+  if (!outputWidth || !outputHeight) return null;
 
-  const PANEL_W    = Math.floor(outputWidth / 4);
-  const PAD_X      = 12;
-  const PAD_Y      = 8;
-  const MARGIN     = 16;
-  const TITLE_FONT = 11;
-  const TITLE_H    = 22;
-  const ITEM_FONT  = 13;
-  const ITEM_H     = 20;
-  const MAX_CHARS  = 40;
+  const PANEL_W       = Math.floor(outputWidth / 4);
+  const PAD_X         = 12;
+  const PAD_Y         = 8;
+  const MARGIN        = 4;
+  const TITLE_FONT    = 21;
+  const SUBTITLE_FONT = 15;
+  const TITLE_H       = 54;
+  const ITEM_FONT     = 13;
+  const ITEM_H        = 20;
+  const MAX_CHARS     = 40;
 
   const panelX = Math.floor(outputWidth / 4);
   const panelY = MARGIN;
 
-  const delimiterY  = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - panelY;
-  const relDividerY = PAD_Y + TITLE_H;
-  const relTitleY   = PAD_Y + TITLE_FONT;
+  const delimiterY   = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - panelY;
+  const relTitleY    = PAD_Y + TITLE_FONT;
+  const relSubtitleY = relTitleY + SUBTITLE_FONT + 6;
+  const relDividerY  = PAD_Y + TITLE_H;
 
   const cleanTitle = (s) => {
     const stripped = s.trim();
     return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '\u2026' : stripped;
   };
 
-  // Ordering is already newest-first from syncSuggestionQueueToCompositor
   const items = suggestionQueueItems.slice(0, 20);
 
-  // Find last row that fits before the delimiter
   let lastIdx = -1;
   for (let i = 0; i < items.length; i++) {
     if (relDividerY + i * ITEM_H >= delimiterY) break;
@@ -993,7 +1189,6 @@ function buildSuggestionQueueSvg() {
   for (let i = 0; i <= lastIdx; i++) {
     const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
     const distFromLimit = delimiterY - itemBottomRel;
-    // Only the last visible row fades; all others are fully opaque
     const op = (i === lastIdx)
       ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H))
       : 1.0;
@@ -1001,14 +1196,16 @@ function buildSuggestionQueueSvg() {
     const y      = relDividerY + (i + 1) * ITEM_H - 4;
     const weight = i === 0 ? '600' : '400';
     const fill   = i === 0 ? '#ffffff' : 'rgba(255,255,255,0.85)';
-    itemRows.push(`<text x="${PANEL_W - PAD_X}" y="${y}" text-anchor="end" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(items[i].title))}</text>`);
+    itemRows.push(`<text x="${PAD_X}" y="${y}" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(items[i].title))}</text>`);
   }
 
-  const panelH = Math.min(PAD_Y + TITLE_H + items.length * ITEM_H + PAD_Y, delimiterY);
+  const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 0) * ITEM_H + PAD_Y, delimiterY);
 
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
+    ${FRIENDSZONE_FACE}
+    ${svgEmojiTitle({ text: '🌍 Suggestions', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) })}
+    <text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">(/suggestion your idea)</text>
     <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-    <text x="${PANEL_W - PAD_X}" y="${relTitleY}" text-anchor="end" fill="rgba(255,255,255,0.45)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TITLE_FONT}" font-weight="700" letter-spacing="1.5">COMMUNITY SUGGESTIONS</text>
     ${itemRows.join('')}
   </svg>`;
 
@@ -1785,15 +1982,40 @@ async function compositeFrame(state) {
   const currentChatVersion = getChatVersion();
   const hasActiveTicker = tickerMessages.some(m => m);
   const now = Date.now();
-  // Clean up expired glows
-  for (const [k, t] of videosGlow) if (now - t >= GLOW_DURATION_MS) videosGlow.delete(k);
-  for (const [k, t] of roadmapGlow) if (now - t >= GLOW_DURATION_MS) roadmapGlow.delete(k);
+
+  // Clean up after the longest of glow or +1 duration
+  for (const [k, t] of videosGlow) if (now - t >= GLOW_CLEANUP_MS) videosGlow.delete(k);
+  for (const [k, t] of roadmapGlow) if (now - t >= GLOW_CLEANUP_MS) roadmapGlow.delete(k);
   const hasActiveGlow = videosGlow.size > 0 || roadmapGlow.size > 0;
+
+  // Advance scroll offsets — permanent marquee loop regardless of content height
+  const ITEM_H_SCROLL = 20; // must match ITEM_H in buildListSvg
+  const elapsed = Math.min((now - lastScrollTick) / 1000, 0.1); // cap at 100ms to avoid jumps
+  lastScrollTick = now;
+
+  function tickScroll(scrollPx, pauseUntil, itemCount) {
+    if (itemCount === 0) return { scrollPx: 0, pauseUntil };
+    const loopH = itemCount * ITEM_H_SCROLL;
+    if (now < pauseUntil) return { scrollPx, pauseUntil };
+    let next = scrollPx + SCROLL_PX_PER_SEC * elapsed;
+    if (next >= loopH) { next = 0; return { scrollPx: next, pauseUntil: now + SCROLL_PAUSE_MS }; }
+    return { scrollPx: next, pauseUntil };
+  }
+
+  const vScroll = tickScroll(videosScrollPx, videosScrollPauseUntil, videosList.length);
+  videosScrollPx = vScroll.scrollPx; videosScrollPauseUntil = vScroll.pauseUntil;
+
+  const rScroll = tickScroll(roadmapScrollPx, roadmapScrollPauseUntil, roadmapList.length);
+  roadmapScrollPx = rScroll.scrollPx; roadmapScrollPauseUntil = rScroll.pauseUntil;
+
+  // Active whenever a panel has items and isn't in its reset pause
+  const hasActiveScroll = (videosList.length > 0 && now >= videosScrollPauseUntil) ||
+                          (roadmapList.length > 0 && now >= roadmapScrollPauseUntil);
 
   const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-rl${roadmapListVersion}`;
 
-  // Fast path: skip all compositing if nothing changed, ticker is inactive, and no glow animating
-  if (!hasActiveTicker && !hasActiveGlow && outputKey === lastOutputKey && lastOutputBuffer) {
+  // Fast path: skip all compositing if nothing changed and no animated overlays running
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveScroll && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -1903,9 +2125,9 @@ async function compositeFrame(state) {
     if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  // Check output cache — skip when ticker scrolls or glow is animating (both change every frame)
+  // Check output cache — skip when ticker, glow, or scroll is animating (all change every frame)
   let result;
-  if (!hasActiveTicker && !hasActiveGlow) {
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveScroll) {
     result = outputCache[outputKey];
   }
 
