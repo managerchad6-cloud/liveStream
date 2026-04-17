@@ -200,7 +200,7 @@ const CHAT_EXPIRE_MS = 45000; // 45 seconds
 let tickerMessages = [];       // array of strings, plays in order
 let tickerCurrentIndex = 0;    // index into tickerMessages of currently playing slot
 let tickerSlotStartMs = 0;     // when the current slot started scrolling
-const TICKER_SPEED = 45;      // px/sec, right to left
+const TICKER_SPEED = 22;      // px/sec, right to left
 const TICKER_FONT_SIZE = 20;  // px
 const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
 
@@ -227,7 +227,7 @@ const roadmapGlow = new Map(); // id -> glowStartMs
 
 // Scroll state — auto-scrolls panels when content exceeds half screen height
 // scrollOffset is a continuous pixel value; advances at SCROLL_PX_PER_SEC px/s
-const SCROLL_PX_PER_SEC = 8;  // slow, readable pace
+const SCROLL_PX_PER_SEC = 4;  // slow, readable pace
 const SCROLL_PAUSE_MS   = 2000; // pause at top before cycling again
 let videosScrollPx   = 0;
 let roadmapScrollPx  = 0;
