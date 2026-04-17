@@ -165,12 +165,11 @@ class ChatIntakeAgent {
     let segment = null;
 
     if (card.response) {
-      // Create narrator-cue FIRST so it sits before the response in the pipeline array.
-      // Use the responding character's voice — avoids depending on a separate narrator voice ID.
+      // Create narrator-cue FIRST so it sits before the response in the pipeline array
       narratorSeg = await this.pipelineStore.createSegment({
         type: 'narrator-cue',
         seed: card.text.substring(0, 50),
-        script: [{ speaker: card.response.speaker, text: narratorText }],
+        script: [{ speaker: 'narrator', text: narratorText }],
         estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
       });
 
@@ -183,12 +182,11 @@ class ChatIntakeAgent {
       const topicSummary = this._extractTopicSummary(card.text, card.response.text);
       await this.pipelineStore.updateSegment(segment.id, { exitContext: topicSummary });
     } else if (this.scriptGenerator) {
-      // No pre-written response — expand via LLM (narrator-cue precedes the expanded segment).
-      // Default speaker to 'chad' — updated after expandChatMessage if needed.
+      // No pre-written response — expand via LLM (narrator-cue precedes the expanded segment)
       narratorSeg = await this.pipelineStore.createSegment({
         type: 'narrator-cue',
         seed: card.text.substring(0, 50),
-        script: [{ speaker: 'chad', text: narratorText }],
+        script: [{ speaker: 'narrator', text: narratorText }],
         estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
       });
 

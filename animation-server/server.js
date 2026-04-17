@@ -2260,12 +2260,10 @@ app.post('/api/orchestrator/expand-chat', async (req, res) => {
     let narratorSeg = null;
     if (segment && pipelineStore) {
       const narratorText = message.substring(0, 120);
-      // Use the first character speaker from the expanded script (defaults to 'chad')
-      const narratorSpeaker = segment.script?.find(l => l.speaker !== 'narrator')?.speaker || 'chad';
       narratorSeg = await pipelineStore.createSegment({
         type: 'narrator-cue',
         seed: message.substring(0, 50),
-        script: [{ speaker: narratorSpeaker, text: narratorText }],
+        script: [{ speaker: 'narrator', text: narratorText }],
         estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60)),
       });
       await pipelineStore.updateSegment(narratorSeg.id, {
@@ -2433,11 +2431,10 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
     const narratorText = (seed || text).substring(0, 120);
 
     // Create narrator-cue FIRST so it naturally precedes the response in pipeline order.
-    // Use the responding character's voice — avoids depending on a separate narrator voice ID.
     const narratorSeg = await pipelineStore.createSegment({
       type: 'narrator-cue',
       seed: seed || text.substring(0, 50),
-      script: [{ speaker: speaker.toLowerCase(), text: narratorText }],
+      script: [{ speaker: 'narrator', text: narratorText }],
       estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
     });
 
