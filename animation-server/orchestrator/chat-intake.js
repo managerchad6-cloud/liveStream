@@ -160,53 +160,51 @@ class ChatIntakeAgent {
   }
 
   async _autoQueue(card) {
-    let segment;
-
-    // Narrator line reads the viewer's message before the character responds
-    const narratorLine = { speaker: 'narrator', text: card.text };
+    const narratorText = card.text.substring(0, 120);
+    let narratorSeg = null;
+    let segment = null;
 
     if (card.response) {
-      // Pre-written response from router — prepend narrator + response
-      const script = [narratorLine, { speaker: card.response.speaker, text: card.response.text }];
+      // Create narrator-cue FIRST so it sits before the response in the pipeline array
+      narratorSeg = await this.pipelineStore.createSegment({
+        type: 'narrator-cue',
+        seed: card.text.substring(0, 50),
+        script: [{ speaker: 'narrator', text: narratorText }],
+        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+      });
+
       segment = await this.pipelineStore.createSegment({
         type: 'chat-response',
         seed: card.text.substring(0, 50),
-        script,
-        estimatedDuration: Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60) + 3)
+        script: [{ speaker: card.response.speaker, text: card.response.text }],
+        estimatedDuration: Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60))
       });
-      // Generate a proper topic summary as exitContext (not a transcript)
-      // Extract the topic/theme from the interaction for continuity
       const topicSummary = this._extractTopicSummary(card.text, card.response.text);
-      await this.pipelineStore.updateSegment(segment.id, {
-        exitContext: topicSummary
-      });
+      await this.pipelineStore.updateSegment(segment.id, { exitContext: topicSummary });
     } else if (this.scriptGenerator) {
-      // No pre-written response — expand via LLM, then prepend narrator
+      // No pre-written response — expand via LLM (narrator-cue precedes the expanded segment)
+      narratorSeg = await this.pipelineStore.createSegment({
+        type: 'narrator-cue',
+        seed: card.text.substring(0, 50),
+        script: [{ speaker: 'narrator', text: narratorText }],
+        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+      });
+
       segment = await this.scriptGenerator.expandChatMessage(card.text);
-      if (segment && Array.isArray(segment.script)) {
-        segment.script.unshift(narratorLine);
-        await this.pipelineStore.updateSegment(segment.id, { script: segment.script });
-      }
     }
 
     if (!segment) return;
 
-    // Mark as chat source (keep metadata but don't prioritize in queue)
     try {
       await this.pipelineStore.updateSegment(segment.id, {
         metadata: { ...(segment.metadata || {}), source: 'chat' }
       });
     } catch (_) {}
 
-    // Chat messages now queue in arrival order (no prioritization)
-
-    // Cancel queued filler renders beyond 1 to avoid wasting credits
     if (this.segmentRenderer?.cancelQueuedSegmentsByType) {
       const cancelled = this.segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });
       for (const id of cancelled) {
-        try {
-          await this.pipelineStore.removeSegment(id);
-        } catch (_) {}
+        try { await this.pipelineStore.removeSegment(id); } catch (_) {}
       }
     }
 
@@ -221,7 +219,17 @@ class ChatIntakeAgent {
       ? this.queueSegmentWithBridge
       : (id => this.segmentRenderer?.queueRender(id));
 
-    if (queueFn) {
+    if (!queueFn) return;
+
+    if (narratorSeg) {
+      // Queue narrator first (through bridge machinery), then response directly
+      Promise.resolve(queueFn(narratorSeg.id)).catch(err => {
+        console.warn(`[ChatIntake] Narrator render failed: ${err.message}`);
+      });
+      Promise.resolve(this.segmentRenderer?.queueRender(segment.id)).catch(err => {
+        console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
+      });
+    } else {
       Promise.resolve(queueFn(segment.id)).catch(err => {
         console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
       });

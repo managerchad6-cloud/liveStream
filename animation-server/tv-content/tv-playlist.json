@@ -1,16 +1,16 @@
 {
   "playlist": [
     {
-      "id": "b41c4784-2c89-4be8-ac02-2788b3b10ac8",
+      "id": "1ffb20a9-6614-4b83-af32-5a4d8fe2f16a",
       "type": "image",
-      "mediaId": "8de084d2-ff79-4db9-9234-2ecdeaf906a6",
-      "source": "C:\\Users\\Money Getting Mfucka\\Dev\\vvc\\LiveStream\\media-library\\originals\\8de084d2-ff79-4db9-9234-2ecdeaf906a6.png",
-      "duration": 42,
+      "mediaId": "bcd13f34-32b2-4782-94d4-ffc54143d250",
+      "source": "C:\\Users\\Money Getting Mfucka\\Dev\\vvc\\LiveStream\\media-library\\originals\\bcd13f34-32b2-4782-94d4-ffc54143d250.png",
+      "duration": 33,
       "audioPath": null
     }
   ],
   "currentIndex": 0,
-  "hold": false,
-  "volume": 0.56,
+  "hold": true,
+  "volume": 0.48,
   "state": "playing"
 }

@@ -48,6 +48,9 @@ class ContinuousStreamManager {
     // TV content service (optional) — provides per-frame audio from playing video
     this.tvContentService = null;
 
+    // SFX service (optional) — one-shot sound effects mixed on top of everything
+    this.sfxService = null;
+
     // Duck factor: lowers music to 20% while a character speaks, fades back after silence.
     // Attack: 3 frames (~100ms) to reach 0.2. Release: 500ms to return to 1.0.
     this._duckFactor = 1.0;
@@ -212,6 +215,10 @@ class ContinuousStreamManager {
 
   setTVContentService(service) {
     this.tvContentService = service;
+  }
+
+  setSFXService(service) {
+    this.sfxService = service;
   }
 
   // Mix character audio with background music (s16le stereo).
@@ -391,6 +398,14 @@ class ContinuousStreamManager {
                 const tvChunk = tvs.getAudioChunk(audioData.length);
                 if (tvChunk) {
                   audioData = this._mixAudio(audioData, tvChunk, 1.0);
+                }
+              }
+              // Mix SFX on top (one-shot sounds triggered from soundboard)
+              const sfx = this.sfxService;
+              if (sfx) {
+                const sfxChunk = sfx.getChunk(audioData.length);
+                if (sfxChunk) {
+                  audioData = this._mixAudio(audioData, sfxChunk, sfx.volume);
                 }
               }
               this.audioStdin.write(audioData);

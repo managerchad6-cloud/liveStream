@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SFX Soundboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      background: #0b1224;
+      border-bottom: 1px solid #1e293b;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .topbar h1 { margin: 0; font-size: 1.2em; color: #f59e0b; letter-spacing: .03em; }
+    .topbar .badge { font-size: .78em; color: #64748b; margin-left: auto; }
+
+    .vol-row { display: flex; align-items: center; gap: 10px; }
+    .vol-row label { font-size: .82em; color: #94a3b8; white-space: nowrap; }
+    .vol-row input[type=range] { flex: 1; accent-color: #f59e0b; width: 120px; }
+    .vol-row span { font-size: .82em; color: #e2e8f0; min-width: 34px; text-align: right; }
+
+    /* ── Grid ── */
+    .grid {
+      flex: 1;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 10px;
+      align-content: start;
+    }
+
+    /* ── Card ── */
+    .sfx-btn {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 10px 10px 8px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      transition: background .12s, border-color .12s, transform .08s;
+      user-select: none;
+      position: relative;
+    }
+    .sfx-btn:hover { background: #253044; border-color: #f59e0b55; }
+    .sfx-btn:active, .sfx-btn.playing {
+      background: #f59e0b22;
+      border-color: #f59e0b;
+      transform: scale(0.97);
+    }
+
+    .sfx-btn .icon { font-size: 1.4em; line-height: 1; margin-bottom: 2px; }
+
+    /* Label row */
+    .sfx-btn .label {
+      font-size: .82em;
+      font-weight: 600;
+      color: #e2e8f0;
+      text-align: center;
+      line-height: 1.2;
+      word-break: break-word;
+      width: 100%;
+    }
+    .sfx-btn .label-input {
+      display: none;
+      font-size: .82em;
+      font-weight: 600;
+      color: #e2e8f0;
+      background: #0f172a;
+      border: 1px solid #f59e0b;
+      border-radius: 4px;
+      padding: 2px 5px;
+      width: 100%;
+      text-align: center;
+      outline: none;
+    }
+
+    /* Meaning row */
+    .sfx-btn .meaning {
+      font-size: .7em;
+      color: #64748b;
+      text-align: center;
+      line-height: 1.3;
+      word-break: break-word;
+      width: 100%;
+      font-style: italic;
+      cursor: text;
+    }
+    .sfx-btn .meaning:hover { color: #94a3b8; }
+    .sfx-btn .meaning-input {
+      display: none;
+      font-size: .7em;
+      font-style: italic;
+      color: #94a3b8;
+      background: #0f172a;
+      border: 1px solid #38bdf8;
+      border-radius: 4px;
+      padding: 2px 5px;
+      width: 100%;
+      text-align: center;
+      outline: none;
+      resize: none;
+      line-height: 1.3;
+    }
+
+    /* Editing states */
+    .sfx-btn.editing-label   .label         { display: none; }
+    .sfx-btn.editing-label   .label-input   { display: block; }
+    .sfx-btn.editing-meaning .meaning       { display: none; }
+    .sfx-btn.editing-meaning .meaning-input { display: block; }
+
+    /* Edit hint */
+    .sfx-btn .hint-label, .sfx-btn .hint-meaning {
+      position: absolute;
+      font-size: .6em;
+      color: #334155;
+      opacity: 0;
+      transition: opacity .15s;
+      pointer-events: none;
+    }
+    .sfx-btn .hint-label  { top: 4px; right: 6px; }
+    .sfx-btn .hint-meaning { bottom: 4px; right: 6px; }
+    .sfx-btn:hover .hint-label,
+    .sfx-btn:hover .hint-meaning { opacity: 1; }
+
+    /* Flash on play */
+    @keyframes flash {
+      0%   { background: #f59e0b44; border-color: #f59e0b; }
+      100% { background: #1e293b;   border-color: #334155; }
+    }
+    .sfx-btn.flash { animation: flash .5s ease-out forwards; }
+
+    .empty {
+      grid-column: 1/-1;
+      color: #475569;
+      text-align: center;
+      padding: 40px 0;
+      font-size: .9em;
+    }
+
+    /* ── Stats panel ── */
+    .stats-panel {
+      background: #0b1224;
+      border-top: 1px solid #1e293b;
+      padding: 16px 20px;
+      flex-shrink: 0;
+    }
+    .stats-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .stats-header h2 { margin: 0; font-size: .9em; color: #94a3b8; font-weight: 600; letter-spacing: .04em; }
+    .stats-header .btn-reset {
+      margin-left: auto;
+      font-size: .72em;
+      background: none;
+      border: 1px solid #334155;
+      color: #64748b;
+      border-radius: 4px;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .stats-header .btn-reset:hover { border-color: #f59e0b; color: #f59e0b; }
+    .stats-toggle {
+      background: none; border: none; color: #475569; font-size: .8em;
+      cursor: pointer; padding: 0;
+    }
+    .stats-toggle:hover { color: #94a3b8; }
+    .stats-table {
+      display: none;
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .75em;
+    }
+    .stats-table.visible { display: table; }
+    .stats-table th {
+      text-align: left;
+      color: #475569;
+      font-weight: 500;
+      padding: 3px 8px 3px 0;
+      border-bottom: 1px solid #1e293b;
+    }
+    .stats-table th.num { text-align: right; }
+    .stats-table td { padding: 4px 8px 4px 0; color: #94a3b8; }
+    .stats-table td.num { text-align: right; color: #e2e8f0; font-variant-numeric: tabular-nums; }
+    .stats-table tr:hover td { color: #e2e8f0; }
+    .stats-table .bar-cell { width: 80px; }
+    .bar-wrap { background: #1e293b; border-radius: 3px; height: 6px; overflow: hidden; }
+    .bar-fill { height: 100%; background: #f59e0b; border-radius: 3px; transition: width .3s; }
+    .stats-table .zero td { opacity: 0.35; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>🎛 SFX Soundboard</h1>
+  <div class="vol-row">
+    <label>Vol</label>
+    <input type="range" id="volSlider" min="0" max="100" value="85" step="1">
+    <span id="volVal">85%</span>
+  </div>
+  <span class="badge" id="badge">loading…</span>
+</div>
+
+<div class="grid" id="grid">
+  <div class="empty">Loading sounds…</div>
+</div>
+
+<div class="stats-panel">
+  <div class="stats-header">
+    <h2>AUTO-SELECT STATS</h2>
+    <button class="stats-toggle" id="statsToggle" onclick="toggleStats()">▸ show</button>
+    <button class="btn-reset" onclick="resetStats()">Reset</button>
+  </div>
+  <table class="stats-table" id="statsTable">
+    <thead>
+      <tr>
+        <th>Sound</th>
+        <th class="num">Played</th>
+        <th class="num">Considered</th>
+        <th class="bar-cell"></th>
+      </tr>
+    </thead>
+    <tbody id="statsBody"></tbody>
+  </table>
+</div>
+
+<script>
+  const BASE = '';
+  const grid      = document.getElementById('grid');
+  const volSlider = document.getElementById('volSlider');
+  const volVal    = document.getElementById('volVal');
+  const badge     = document.getElementById('badge');
+
+  const EMOJIS = ['🔊','💥','😂','🎵','🎤','🔔','🤣','💀','🫡','🎶','🤯','🔥','😎','🥁','🎸'];
+  let sounds = [];
+
+  // ── Load ───────────────────────────────────────────────────────────────────
+  async function load() {
+    try {
+      const res  = await fetch(`${BASE}/sfx/list`);
+      const data = await res.json();
+      sounds = data.sounds || [];
+      const serverVol = Math.round((data.volume || 0.85) * 100);
+      volSlider.value = serverVol;
+      volVal.textContent = serverVol + '%';
+      render();
+    } catch (e) {
+      grid.innerHTML = `<div class="empty">⚠ Could not load SFX list: ${e.message}</div>`;
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function render() {
+    badge.textContent = `${sounds.length} sound${sounds.length !== 1 ? 's' : ''}`;
+    if (!sounds.length) {
+      grid.innerHTML = '<div class="empty">No audio files found in SFX/ folder.</div>';
+      return;
+    }
+    grid.innerHTML = '';
+    sounds.forEach((s, i) => {
+      const card = document.createElement('div');
+      card.className = 'sfx-btn';
+      card.dataset.id = s.id;
+
+      card.innerHTML = `
+        <span class="hint-label">dbl-click name</span>
+        <div class="icon">${EMOJIS[i % EMOJIS.length]}</div>
+        <div class="label">${esc(s.label)}</div>
+        <input class="label-input" type="text" value="${esc(s.label)}" maxlength="40">
+        <div class="meaning">${esc(s.meaning || '—')}</div>
+        <textarea class="meaning-input" rows="3" maxlength="200">${esc(s.meaning || '')}</textarea>
+        <span class="hint-meaning">dbl-click context</span>
+      `;
+
+      // ── Click to play (not while editing) ──
+      card.addEventListener('click', (e) => {
+        if (card.classList.contains('editing-label') || card.classList.contains('editing-meaning')) return;
+        playSound(s.id, card);
+      });
+
+      // ── Label: double-click to edit ──
+      const labelEl  = card.querySelector('.label');
+      const labelInp = card.querySelector('.label-input');
+      labelEl.addEventListener('dblclick', e => { e.stopPropagation(); startEditLabel(card, s); });
+      labelInp.addEventListener('keydown', e => {
+        if (e.key === 'Enter')  { e.preventDefault(); commitLabel(card, s, labelInp.value); }
+        if (e.key === 'Escape') { cancelLabel(card, s); }
+      });
+      labelInp.addEventListener('blur', () => commitLabel(card, s, labelInp.value));
+      labelInp.addEventListener('click', e => e.stopPropagation());
+
+      // ── Meaning: double-click to edit ──
+      const meaningEl  = card.querySelector('.meaning');
+      const meaningInp = card.querySelector('.meaning-input');
+      meaningEl.addEventListener('dblclick', e => { e.stopPropagation(); startEditMeaning(card, s); });
+      meaningInp.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitMeaning(card, s, meaningInp.value); }
+        if (e.key === 'Escape') { cancelMeaning(card, s); }
+      });
+      meaningInp.addEventListener('blur', () => commitMeaning(card, s, meaningInp.value));
+      meaningInp.addEventListener('click', e => e.stopPropagation());
+
+      grid.appendChild(card);
+    });
+  }
+
+  // ── Play ───────────────────────────────────────────────────────────────────
+  async function playSound(id, card) {
+    if (card._playing) return;
+    card._playing = true;
+    card.classList.add('playing');
+    try {
+      await fetch(`${BASE}/sfx/play/${encodeURIComponent(id)}`, { method: 'POST' });
+    } catch (e) {}
+    card.classList.remove('playing');
+    card.classList.add('flash');
+    card._playing = false;
+    card.addEventListener('animationend', () => card.classList.remove('flash'), { once: true });
+  }
+
+  // ── Label edit ─────────────────────────────────────────────────────────────
+  function startEditLabel(card, s) {
+    card.classList.add('editing-label');
+    const inp = card.querySelector('.label-input');
+    inp.value = s.label; inp.select(); inp.focus();
+  }
+  async function commitLabel(card, s, val) {
+    if (!card.classList.contains('editing-label')) return;
+    val = val.trim();
+    cancelLabel(card, s);
+    if (!val || val === s.label) return;
+    s.label = val;
+    card.querySelector('.label').textContent = val;
+    await fetch(`${BASE}/sfx/label/${encodeURIComponent(s.id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: val })
+    }).catch(() => {});
+  }
+  function cancelLabel(card, s) {
+    card.classList.remove('editing-label');
+    card.querySelector('.label-input').value = s.label;
+  }
+
+  // ── Meaning edit ───────────────────────────────────────────────────────────
+  function startEditMeaning(card, s) {
+    card.classList.add('editing-meaning');
+    const inp = card.querySelector('.meaning-input');
+    inp.value = s.meaning || ''; inp.select(); inp.focus();
+  }
+  async function commitMeaning(card, s, val) {
+    if (!card.classList.contains('editing-meaning')) return;
+    val = val.trim();
+    cancelMeaning(card, s);
+    if (val === (s.meaning || '')) return;
+    s.meaning = val;
+    card.querySelector('.meaning').textContent = val || '—';
+    await fetch(`${BASE}/sfx/meaning/${encodeURIComponent(s.id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ meaning: val })
+    }).catch(() => {});
+  }
+  function cancelMeaning(card, s) {
+    card.classList.remove('editing-meaning');
+    card.querySelector('.meaning-input').value = s.meaning || '';
+  }
+
+  // ── Volume ─────────────────────────────────────────────────────────────────
+  volSlider.addEventListener('input', () => { volVal.textContent = volSlider.value + '%'; });
+  let _vt = null;
+  volSlider.addEventListener('change', () => {
+    clearTimeout(_vt);
+    _vt = setTimeout(() => {
+      fetch(`${BASE}/sfx/volume`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume: parseInt(volSlider.value) / 100 })
+      }).catch(() => {});
+    }, 200);
+  });
+
+  // ── Utils ──────────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  load();
+
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  let statsVisible = false;
+
+  function toggleStats() {
+    statsVisible = !statsVisible;
+    document.getElementById('statsTable').classList.toggle('visible', statsVisible);
+    document.getElementById('statsToggle').textContent = statsVisible ? '▾ hide' : '▸ show';
+    if (statsVisible) loadStats();
+  }
+
+  async function loadStats() {
+    try {
+      const res  = await fetch(`${BASE}/sfx/stats`);
+      const data = await res.json();
+      renderStats(data.stats || []);
+    } catch (e) {}
+  }
+
+  function renderStats(stats) {
+    const tbody = document.getElementById('statsBody');
+    if (!stats.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:#475569;padding:8px 0">No data yet</td></tr>'; return; }
+    const maxPlayed = Math.max(1, ...stats.map(s => s.autoPlayed));
+    tbody.innerHTML = stats.map(s => `
+      <tr class="${s.autoPlayed === 0 ? 'zero' : ''}">
+        <td>${esc(s.label)}</td>
+        <td class="num">${s.autoPlayed}</td>
+        <td class="num" style="color:#64748b">${s.considered}</td>
+        <td class="bar-cell">
+          <div class="bar-wrap"><div class="bar-fill" style="width:${Math.round(s.autoPlayed/maxPlayed*100)}%"></div></div>
+        </td>
+      </tr>`).join('');
+  }
+
+  async function resetStats() {
+    if (!confirm('Reset all auto-select stats?')) return;
+    await fetch(`${BASE}/sfx/stats/reset`, { method: 'POST' }).catch(() => {});
+    if (statsVisible) loadStats();
+  }
+</script>
+</body>
+</html>

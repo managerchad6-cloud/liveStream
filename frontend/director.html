@@ -775,6 +775,22 @@
           </label>
           <button class="btn-attach" id="seed-attach-clear" style="display:none;color:#f66;" onclick="clearAttach('seed')">✕</button>
         </div>
+        <div class="attach-row" id="seed-sfx-before-row">
+          <span>🔊</span>
+          <span class="attach-name" id="seed-sfx-before-name">No SFX before</span>
+          <select id="seed-sfx-before-select" style="flex:1;background:#1a1f2e;color:var(--text);border:none;font-size:0.78rem;outline:none;" onchange="onSfxSelect('seed','before')">
+            <option value="">— none —</option>
+          </select>
+          <button class="btn-attach" id="seed-sfx-before-clear" style="display:none;color:#f66;" onclick="clearSfx('seed','before')">✕</button>
+        </div>
+        <div class="attach-row" id="seed-sfx-after-row">
+          <span>🔊</span>
+          <span class="attach-name" id="seed-sfx-after-name">No SFX after</span>
+          <select id="seed-sfx-after-select" style="flex:1;background:#1a1f2e;color:var(--text);border:none;font-size:0.78rem;outline:none;" onchange="onSfxSelect('seed','after')">
+            <option value="">— none —</option>
+          </select>
+          <button class="btn-attach" id="seed-sfx-after-clear" style="display:none;color:#f66;" onclick="clearSfx('seed','after')">✕</button>
+        </div>
         <button class="btn-primary" id="create-btn">Create</button>
       </div>
     </div>
@@ -792,6 +808,22 @@
             <span class="btn-attach">Upload</span>
           </label>
           <button class="btn-attach" id="script-attach-clear" style="display:none;color:#f66;" onclick="clearAttach('script')">✕</button>
+        </div>
+        <div class="attach-row" id="script-sfx-before-row">
+          <span>🔊</span>
+          <span class="attach-name" id="script-sfx-before-name">No SFX before</span>
+          <select id="script-sfx-before-select" style="flex:1;background:#1a1f2e;color:var(--text);border:none;font-size:0.78rem;outline:none;" onchange="onSfxSelect('script','before')">
+            <option value="">— none —</option>
+          </select>
+          <button class="btn-attach" id="script-sfx-before-clear" style="display:none;color:#f66;" onclick="clearSfx('script','before')">✕</button>
+        </div>
+        <div class="attach-row" id="script-sfx-after-row">
+          <span>🔊</span>
+          <span class="attach-name" id="script-sfx-after-name">No SFX after</span>
+          <select id="script-sfx-after-select" style="flex:1;background:#1a1f2e;color:var(--text);border:none;font-size:0.78rem;outline:none;" onchange="onSfxSelect('script','after')">
+            <option value="">— none —</option>
+          </select>
+          <button class="btn-attach" id="script-sfx-after-clear" style="display:none;color:#f66;" onclick="clearSfx('script','after')">✕</button>
         </div>
         <button class="btn-primary" id="create-custom-btn">Create Custom</button>
       </div>
@@ -1035,6 +1067,63 @@
     // attachState[tab] = { id, name, type, file } or null
     const attachState = { seed: null, script: null };
     let libItems = [];
+
+    // ---- SFX attach state ----
+    // sfxState[tab][placement] = { id, label } or null
+    const sfxState = { seed: { before: null, after: null }, script: { before: null, after: null } };
+    let _sfxSounds = [];  // populated once from /sfx/list
+
+    async function loadSfxOptions() {
+      try {
+        const r = await fetch(`${API_BASE}/sfx/list`);
+        const d = await r.json();
+        _sfxSounds = d.sounds || [];
+        for (const tab of ['seed', 'script']) {
+          for (const placement of ['before', 'after']) {
+            const sel = document.getElementById(`${tab}-sfx-${placement}-select`);
+            if (!sel) continue;
+            _sfxSounds.forEach(s => {
+              const opt = document.createElement('option');
+              opt.value = s.id;
+              opt.textContent = s.label;
+              sel.appendChild(opt);
+            });
+          }
+        }
+      } catch (e) {}
+    }
+
+    function onSfxSelect(tab, placement) {
+      const sel = document.getElementById(`${tab}-sfx-${placement}-select`);
+      const nameEl = document.getElementById(`${tab}-sfx-${placement}-name`);
+      const clearBtn = document.getElementById(`${tab}-sfx-${placement}-clear`);
+      const row = document.getElementById(`${tab}-sfx-${placement}-row`);
+      const val = sel.value;
+      if (val) {
+        const sound = _sfxSounds.find(s => s.id === val);
+        sfxState[tab][placement] = { id: val, label: sound?.label || val };
+        nameEl.textContent = sound?.label || val;
+        nameEl.classList.add('set');
+        clearBtn.style.display = '';
+        row.classList.add('has-media');
+      } else {
+        clearSfx(tab, placement);
+      }
+    }
+
+    function clearSfx(tab, placement) {
+      sfxState[tab][placement] = null;
+      const sel = document.getElementById(`${tab}-sfx-${placement}-select`);
+      const nameEl = document.getElementById(`${tab}-sfx-${placement}-name`);
+      const clearBtn = document.getElementById(`${tab}-sfx-${placement}-clear`);
+      const row = document.getElementById(`${tab}-sfx-${placement}-row`);
+      if (sel) sel.value = '';
+      if (nameEl) { nameEl.textContent = `No SFX ${placement}`; nameEl.classList.remove('set'); }
+      if (clearBtn) clearBtn.style.display = 'none';
+      if (row) row.classList.remove('has-media');
+    }
+
+    loadSfxOptions();
     let pickerTarget = null; // 'seed' | 'script' | 'seg:<segmentId>'
 
     function setAttach(tab, item) {
@@ -1098,6 +1187,14 @@
     async function detachSegmentMedia(segmentId) {
       await patchSegmentMedia(segmentId, null);
       refreshAll();
+    }
+
+    async function patchSegmentSfx(segmentId, sfxBefore, sfxAfter) {
+      await fetch(`${API_BASE}/api/orchestrator/segments/${segmentId}/sfx`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sfxBefore: sfxBefore || null, sfxAfter: sfxAfter || null })
+      });
     }
 
     // ---- Picker modal ----
@@ -1294,6 +1391,10 @@
                  <button class="btn-attach" style="color:#f66;" onclick="detachSegmentMedia('${seg.id}')">✕ Detach</button>`
               : `<button class="btn-attach" onclick="openPicker('seg:${seg.id}')">📺 Attach TV</button>`
             }
+            ${seg.metadata?.sfxAttach
+              ? `<div style="font-size:0.72rem;color:#f59e0b;margin-top:4px;" title="${escHtml(seg.metadata.sfxAttach.reason || '')}">🔊 ${escHtml(sfxLabel(seg.metadata.sfxAttach.sfxId))} (${seg.metadata.sfxAttach.placement}, ${(seg.metadata.sfxAttach.score||0).toFixed(2)})</div>`
+              : ''
+            }
           </div>
         `;
       }).join('');
@@ -1337,6 +1438,16 @@
                  ${!isOnAir ? `<button class="btn-attach" onclick="openPicker('seg:${seg.id}')">↻</button>
                  <button class="btn-attach" style="color:#f66;" onclick="detachSegmentMedia('${seg.id}')">✕</button>` : ''}`
               : (!isOnAir ? `<button class="btn-attach" onclick="openPicker('seg:${seg.id}')">📺 Attach</button>` : '')
+            }
+            ${seg.metadata?.sfxBefore
+              ? `<div style="font-size:0.72rem;color:#f59e0b;margin-top:2px;">🔊 <span style="color:#64748b">before:</span> ${escHtml(sfxLabel(seg.metadata.sfxBefore))}</div>`
+              : ''}
+            ${seg.metadata?.sfxAfter
+              ? `<div style="font-size:0.72rem;color:#f59e0b;margin-top:2px;">🔊 <span style="color:#64748b">after:</span> ${escHtml(sfxLabel(seg.metadata.sfxAfter))}</div>`
+              : ''}
+            ${seg.metadata?.sfxAttach
+              ? `<div style="font-size:0.72rem;color:#f59e0b;margin-top:2px;" title="${escHtml(seg.metadata.sfxAttach.reason || '')}">🔊 ${escHtml(sfxLabel(seg.metadata.sfxAttach.sfxId))} <span style="color:#64748b">(${seg.metadata.sfxAttach.placement}, ${(seg.metadata.sfxAttach.score||0).toFixed(2)})</span></div>`
+              : ''
             }
           </div>
         `;
@@ -1640,7 +1751,9 @@
 
         const result = await apiPost('/api/orchestrator/seed', {
           topic: seed || null,
-          attachedMediaId: mediaId || null
+          attachedMediaId: mediaId || null,
+          sfxBefore: sfxState.seed.before?.id || null,
+          sfxAfter:  sfxState.seed.after?.id  || null,
         });
 
         if (result.error) {
@@ -1648,6 +1761,8 @@
         } else {
           document.getElementById('seed-input').value = '';
           clearAttach('seed');
+          clearSfx('seed', 'before');
+          clearSfx('seed', 'after');
         }
       } catch (err) {
         alert(err.message);
@@ -1688,8 +1803,13 @@
         } else {
           await apiPost(`/api/orchestrator/render/${result.id}`, {});
           if (mediaId) await patchSegmentMedia(result.id, mediaId);
+          const sfxB = sfxState.script.before?.id;
+          const sfxA = sfxState.script.after?.id;
+          if (sfxB || sfxA) await patchSegmentSfx(result.id, sfxB, sfxA);
           document.getElementById('custom-script-json').value = '';
           clearAttach('script');
+          clearSfx('script', 'before');
+          clearSfx('script', 'after');
         }
       } catch (err) {
         alert(`Invalid JSON or request failed: ${err.message}`);
@@ -2040,6 +2160,20 @@
 
     function escHtml(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── SFX label cache ───────────────────────────────────────────────────────
+    let _sfxLabels = {};   // id → label
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/sfx/list`);
+        const d = await r.json();
+        (d.sounds || []).forEach(s => { _sfxLabels[s.id] = s.label; });
+      } catch (e) {}
+    })();
+    function sfxLabel(id) {
+      if (!id) return '';
+      return _sfxLabels[id] || id.replace(/\.mp3$/i, '').replace(/[-_]/g, ' ');
     }
 
     // ── Auth box ─────────────────────────────────────────────────────────────

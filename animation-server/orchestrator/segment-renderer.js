@@ -85,6 +85,8 @@ class SegmentRenderer {
     // Ordered drain: segments wait here after TTS until it's their turn in pipeline order
     this.pendingPushes = new Map();   // segmentId → { audioItems, renderDurations, resolve, reject }
     this.activeTTS = new Set();       // segmentIds currently in Phase 1 (TTS)
+    // SFX auto-matcher (optional, injected after construction)
+    this.sfxMatcher = null;
     this._draining = false;
     // Safety valve: periodically check for stuck render queue items
     this._dequeueInterval = setInterval(() => {
@@ -103,6 +105,10 @@ class SegmentRenderer {
    * Add a pre-gate: target segment's Phase 2 will wait for gatePromise to settle
    * before pushing audio to the animation server.
    */
+  setSfxMatcher(matcher) {
+    this.sfxMatcher = matcher;
+  }
+
   addPreGate(segmentId, gatePromise) {
     // Wrap with timeout safety valve
     const timedGate = Promise.race([
@@ -355,6 +361,26 @@ class SegmentRenderer {
 
       if (audioItems.length === 0) {
         throw new Error('No audio generated for any line');
+      }
+
+      // Phase 1.5: SFX auto-match — awaited so metadata is set before the segment goes on-air.
+      // Has its own internal 5s timeout so it never meaningfully delays rendering.
+      if (this.sfxMatcher) {
+        try {
+          const freshSeg = this.pipelineStore.getSegment(segmentId);
+          const sfxResult = await this.sfxMatcher.match(freshSeg);
+          if (sfxResult) {
+            const seg = this.pipelineStore.getSegment(segmentId);
+            if (seg) {
+              await this.pipelineStore.updateSegment(segmentId, {
+                metadata: this._mergeMetadata(seg, { sfxAttach: sfxResult })
+              });
+              console.log(`[SegmentRenderer] SFX attached to ${segmentId.slice(0,8)}: ${sfxResult.sfxId} (${sfxResult.placement}, score=${sfxResult.score?.toFixed(2)})`);
+            }
+          }
+        } catch (e) {
+          // Never block rendering
+        }
       }
 
       // Phase 2: Store result and drain in pipeline order

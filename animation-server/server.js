@@ -57,6 +57,8 @@ const TVLayerManager = require('./orchestrator/tv-layer-manager');
 const OrchestratorSocket = require('./orchestrator/websocket');
 const Orchestrator = require('./orchestrator');
 const BackgroundMusicService = require('./background-music');
+const SfxService = require('./sfx-service');
+const SfxMatcher = require('./orchestrator/sfx-matcher');
 const TwitterIngestService = require('./orchestrator/twitter-ingest');
 const XChatListener = require('./orchestrator/x-chat-listener');
 
@@ -333,6 +335,70 @@ app.post('/music/volume', (req, res) => {
   if (volume === undefined) return res.status(400).json({ error: 'volume required' });
   backgroundMusic.setVolume(volume);
   res.json(backgroundMusic.getStatus());
+});
+
+// ── SFX Soundboard Routes ────────────────────────────────────────────────────
+
+app.get('/sfx', (req, res) => {
+  res.sendFile(path.join(ROOT_DIR, 'frontend', 'sfx-control.html'));
+});
+
+app.get('/sfx/list', (req, res) => {
+  if (!sfxService) return res.status(503).json({ error: 'SFX service not ready' });
+  res.json({ sounds: sfxService.list(), volume: sfxService.volume });
+});
+
+app.post('/sfx/play/:id', async (req, res) => {
+  if (!sfxService) return res.status(503).json({ error: 'SFX service not ready' });
+  const id = decodeURIComponent(req.params.id);
+  try {
+    await sfxService.play(id);
+    res.json({ ok: true, id });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.post('/sfx/label/:id', (req, res) => {
+  if (!sfxService) return res.status(503).json({ error: 'SFX service not ready' });
+  const id = decodeURIComponent(req.params.id);
+  const { label } = req.body || {};
+  if (!label) return res.status(400).json({ error: 'label required' });
+  sfxService.setLabel(id, label);
+  res.json({ ok: true, id, label });
+});
+
+app.post('/sfx/meaning/:id', (req, res) => {
+  if (!sfxService) return res.status(503).json({ error: 'SFX service not ready' });
+  const id = decodeURIComponent(req.params.id);
+  const { meaning } = req.body || {};
+  if (meaning === undefined) return res.status(400).json({ error: 'meaning required' });
+  sfxService.setMeaning(id, meaning);
+  res.json({ ok: true, id, meaning });
+});
+
+app.get('/sfx/volume', (req, res) => {
+  if (!sfxService) return res.json({ volume: 0.85 });
+  res.json({ volume: sfxService.volume });
+});
+
+app.post('/sfx/volume', (req, res) => {
+  if (!sfxService) return res.status(503).json({ error: 'SFX service not ready' });
+  const { volume } = req.body || {};
+  if (volume === undefined) return res.status(400).json({ error: 'volume required' });
+  sfxService.setVolume(volume);
+  res.json({ volume: sfxService.volume });
+});
+
+app.get('/sfx/stats', (req, res) => {
+  if (!sfxMatcher) return res.json({ stats: [] });
+  res.json({ stats: sfxMatcher.getStats() });
+});
+
+app.post('/sfx/stats/reset', (req, res) => {
+  if (!sfxMatcher) return res.status(503).json({ error: 'SFX matcher not ready' });
+  sfxMatcher.resetStats();
+  res.json({ ok: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -688,6 +754,8 @@ const blinkControllers = {
 };
 let streamManager = null;  // Will be either StreamManager or ContinuousStreamManager
 let backgroundMusic = null;
+let sfxService = null;
+let sfxMatcher = null;
 let frameCount = 0;
 let tvService = null;  // TV content service (initialized after preloadLayers)
 let mediaLibrary = null;
@@ -778,13 +846,39 @@ function handleAudioComplete() {
   resetExpressionOffsets();
   lastExprState.chad = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
   lastExprState.virgin = { eyeX: 0, eyeY: 0, browY: 0, browAsymL: 0, browAsymR: 0, mouth: null };
-  processQueue();
-  // If queue is still empty and idle expressions are on, load an idle plan
-  if (!isAudioActive && idleExpressions) loadIdleExpressionPlan();
 
-  // After processQueue: currentPlayingSegmentId is set to the next item's segment (sync),
-  // or stays null if the queue was empty. If it changed, the previous segment is done.
-  if (completedSegId && completedSegId !== currentPlayingSegmentId) {
+  // sfxAfter: play SFX into silence, delay processQueue until it finishes so the next
+  // segment doesn't overlap with the sound effect.
+  let sfxAfterDelayMs = 0;
+  if (completedSegId && sfxService && pipelineStore) {
+    const doneSeg = pipelineStore.getSegment(completedSegId);
+    const sfxAfterId = doneSeg?.metadata?.sfxAfter
+      || (doneSeg?.metadata?.sfxAttach?.placement === 'post' ? doneSeg?.metadata?.sfxAttach?.sfxId : null);
+
+    if (sfxAfterId) {
+      sfxAfterDelayMs = sfxService.getDurationMs(sfxAfterId); // synchronous — preloaded at startup
+      sfxService.play(sfxAfterId).then(() => {
+        if (doneSeg?.metadata?.sfxAttach?.placement === 'post' && sfxMatcher) {
+          sfxMatcher.trackPlayed(sfxAfterId);
+        }
+        console.log(`[SFX] AFTER segment ${completedSegId.slice(0,8)}: ${sfxAfterId} (${sfxAfterDelayMs}ms)`);
+      }).catch(err => console.warn('[SFX] AFTER play failed:', err.message));
+    }
+  }
+
+  if (sfxAfterDelayMs > 0) {
+    // Let the SFX play over silence before the next segment starts
+    setTimeout(() => {
+      processQueue();
+      if (!isAudioActive && idleExpressions) loadIdleExpressionPlan();
+    }, sfxAfterDelayMs);
+  } else {
+    processQueue();
+    if (!isAudioActive && idleExpressions) loadIdleExpressionPlan();
+  }
+
+  // segmentDone: advance pipeline state + expand chain
+  if (completedSegId) {
     if (playbackController) {
       playbackController.segmentDone(completedSegId).then(() => {
         syncMemeQueueToCompositor();
@@ -965,13 +1059,14 @@ async function startPlayback(item) {
     setTimeout(handleAudioComplete, Math.max(0, item.duration) * 1000);
   }
 
-  // Captions disabled — chat overlay shows viewer messages instead
-  // if (item.messageText) {
-  //   setCaption(item.messageText, item.duration);
-  // }
+  // Show caption during narrator segments so viewers can read the chat message on screen
+  if (item.character === 'narrator' && item.messageText) {
+    setCaption(item.messageText, item.duration);
+  }
 
   // Build expression plan and load into frame-driven evaluator
-  if (item.messageText && autoExpressions) {
+  // Skip for narrator — it has no character layers to animate
+  if (item.messageText && autoExpressions && item.character !== 'narrator') {
     const listener = item.character === 'virgin' ? 'chad' : 'virgin';
     const limits = getExpressionLimits();
 
@@ -1033,6 +1128,41 @@ function processQueue() {
   }
 
   const next = renderQueue.shift();
+
+  // sfxBefore: play SFX into the stream, wait for it to finish, THEN start the segment.
+  // This ensures the SFX plays over silence (not over segment audio).
+  const nextSeg = sfxService && pipelineStore ? pipelineStore.getSegment(next.segmentId) : null;
+  const sfxBeforeId = nextSeg?.metadata?.sfxBefore
+    || (nextSeg?.metadata?.sfxAttach?.placement === 'pre' ? nextSeg.metadata.sfxAttach.sfxId : null);
+
+  if (sfxBeforeId && sfxService) {
+    // Block the queue immediately so nothing else dequeues during the SFX gap
+    isAudioActive = true;
+    sfxService.play(sfxBeforeId)
+      .then(() => {
+        const dur = sfxService.getDurationMs(sfxBeforeId);
+        if (sfxMatcher && nextSeg?.metadata?.sfxAttach?.placement === 'pre') {
+          sfxMatcher.trackPlayed(sfxBeforeId);
+        }
+        console.log(`[SFX] BEFORE segment ${next.segmentId?.slice(0,8)}: ${sfxBeforeId} (${dur}ms)`);
+        // Wait for SFX to finish, then start the segment
+        setTimeout(() => {
+          isAudioActive = false; // let startPlayback set it back to true
+          startPlayback(next).catch(err => {
+            console.error('[Queue] Failed to start playback after sfxBefore:', err.message);
+            isAudioActive = false;
+            processQueue();
+          });
+        }, dur);
+      })
+      .catch(err => {
+        console.warn(`[SFX] sfxBefore play failed (${sfxBeforeId}): ${err.message}`);
+        isAudioActive = false;
+        startPlayback(next).catch(e => { isAudioActive = false; processQueue(); });
+      });
+    return;
+  }
+
   startPlayback(next).catch(err => {
     console.error('[Queue] Failed to start playback:', err.message);
     isAudioActive = false;
@@ -2060,7 +2190,7 @@ app.post('/api/tv-layer/clear-manual', async (req, res) => {
 // ============== Orchestrator Script API ==============
 app.post('/api/orchestrator/seed', async (req, res) => {
   if (!scriptGenerator || !playbackController || !segmentRenderer) return res.status(503).json({ error: 'Orchestrator not initialized' });
-  const { topic, attachedMediaId } = req.body || {};
+  const { topic, attachedMediaId, sfxBefore, sfxAfter } = req.body || {};
   if (!topic && !attachedMediaId) return res.status(400).json({ error: 'Missing topic or attachedMediaId' });
   try {
     // Load attached image for vision pass if present
@@ -2086,6 +2216,13 @@ app.post('/api/orchestrator/seed', async (req, res) => {
     }
 
     const segment = await scriptGenerator.expandDirectorNote(topic, { imageBase64, imageMimeType, attachedMediaId });
+    // Attach manual SFX if provided
+    if (sfxBefore || sfxAfter) {
+      const newMeta = { ...(segment.metadata || {}) };
+      if (sfxBefore) newMeta.sfxBefore = sfxBefore;
+      if (sfxAfter)  newMeta.sfxAfter  = sfxAfter;
+      await pipelineStore.updateSegment(segment.id, { metadata: newMeta });
+    }
     if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
     broadcastPipelineUpdate();
     segmentRenderer.queueRender(segment.id);
@@ -2117,14 +2254,29 @@ app.post('/api/orchestrator/expand-chat', async (req, res) => {
   if (!message) return res.status(400).json({ error: 'Missing message' });
   try {
     const segment = await scriptGenerator.expandChatMessage(message);
-    // Prepend narrator line to read the viewer's message
-    if (segment && Array.isArray(segment.script)) {
-      segment.script.unshift({ speaker: 'narrator', text: message.substring(0, 120) });
-      await pipelineStore.updateSegment(segment.id, { script: segment.script });
+
+    // Create a separate narrator-cue segment to read the viewer message aloud
+    // It stays as a draft companion to the expanded segment
+    let narratorSeg = null;
+    if (segment && pipelineStore) {
+      const narratorText = message.substring(0, 120);
+      narratorSeg = await pipelineStore.createSegment({
+        type: 'narrator-cue',
+        seed: message.substring(0, 50),
+        script: [{ speaker: 'narrator', text: narratorText }],
+        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60)),
+      });
+      await pipelineStore.updateSegment(narratorSeg.id, {
+        metadata: { ...(narratorSeg.metadata || {}), companionFor: segment.id }
+      });
     }
-    if (orchestratorSocket) orchestratorSocket.broadcast('segment:draft-ready', segment);
+
+    if (orchestratorSocket) {
+      orchestratorSocket.broadcast('segment:draft-ready', segment);
+      if (narratorSeg) orchestratorSocket.broadcast('segment:draft-ready', narratorSeg);
+    }
     broadcastPipelineUpdate();
-    res.json(segment);
+    res.json({ ...segment, narratorSegmentId: narratorSeg?.id || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2246,6 +2398,23 @@ app.patch('/api/orchestrator/segments/:id/media', async (req, res) => {
   res.json({ success: true, segmentId: req.params.id, mediaId: mediaId || null });
 });
 
+// Attach or detach manual SFX before/after a segment
+app.patch('/api/orchestrator/segments/:id/sfx', async (req, res) => {
+  if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
+  const segment = pipelineStore.getSegment(req.params.id);
+  if (!segment) return res.status(404).json({ error: 'Segment not found' });
+
+  const { sfxBefore, sfxAfter } = req.body || {};
+  const newMeta = { ...(segment.metadata || {}) };
+
+  if (sfxBefore) newMeta.sfxBefore = sfxBefore; else delete newMeta.sfxBefore;
+  if (sfxAfter)  newMeta.sfxAfter  = sfxAfter;  else delete newMeta.sfxAfter;
+
+  await pipelineStore.updateSegment(req.params.id, { metadata: newMeta });
+  broadcastPipelineUpdate();
+  res.json({ success: true, segmentId: req.params.id, sfxBefore: sfxBefore || null, sfxAfter: sfxAfter || null });
+});
+
 // Queue a pre-written single-line response directly to the pipeline
 // Used by /api/chat after router + OpenAI generate the response text
 app.post('/api/orchestrator/queue-response', async (req, res) => {
@@ -2258,28 +2427,44 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
   }
 
   try {
-    // Narrator reads the viewer message, then character responds
-    const narratorLine = { speaker: 'narrator', text: (seed || text).substring(0, 120) };
-    const script = [narratorLine, { speaker: speaker.toLowerCase(), text }];
-    const segment = await pipelineStore.createSegment({
+    const narratorText = (seed || text).substring(0, 120);
+
+    // Create narrator-cue FIRST so it naturally precedes the response in pipeline order
+    const narratorSeg = await pipelineStore.createSegment({
+      type: 'narrator-cue',
+      seed: seed || text.substring(0, 50),
+      script: [{ speaker: 'narrator', text: narratorText }],
+      estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+    });
+
+    // Create the character response segment second
+    const responseSeg = await pipelineStore.createSegment({
       type: 'chat-response',
       seed: seed || text.substring(0, 50),
-      script,
-      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60) + 3)
+      script: [{ speaker: speaker.toLowerCase(), text }],
+      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
     });
 
     try {
-      await pipelineStore.updateSegment(segment.id, {
-        metadata: { ...(segment.metadata || {}), priority: 'high', source: 'chat' }
+      await pipelineStore.updateSegment(responseSeg.id, {
+        metadata: { ...(responseSeg.metadata || {}), priority: 'high', source: 'chat' }
       });
     } catch (_) {}
 
+    // Jump the pair to the front: prioritize narrator just after on-air,
+    // then slot response immediately after narrator.
+    // Final order: [on-air] → narrator-cue → chat-response
     if (pipelineStore.prioritizeSegment) {
       try {
-        await pipelineStore.prioritizeSegment(segment.id, {
+        await pipelineStore.prioritizeSegment(narratorSeg.id, {
           afterOnAir: true,
           avoidTransitionSplit: true
         });
+        // Insert response right after narrator (narrator may have shifted)
+        const narratorIdx = pipelineStore.getSegmentIndex(narratorSeg.id);
+        if (narratorIdx !== -1) {
+          await pipelineStore.insertAt(responseSeg.id, narratorIdx + 1);
+        }
       } catch (_) {}
     }
 
@@ -2292,18 +2477,23 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
       }
     }
 
-    console.log(`[Orchestrator] Queued response segment ${segment.id} (${speaker})`);
+    console.log(`[Orchestrator] Queued narrator+response: ${narratorSeg.id} → ${responseSeg.id} (${speaker})`);
     broadcastPipelineUpdate();
 
-    // Immediately queue for rendering (TTS + /render pipeline)
+    // Queue narrator through bridge (handles transition from on-air → narrator)
     const queueFn = orchestrator?.queueSegmentWithBridge
       ? (id => orchestrator.queueSegmentWithBridge(id))
       : (id => segmentRenderer.queueRender(id));
-    Promise.resolve(queueFn(segment.id)).catch(err => {
-      console.error(`[Orchestrator] Render failed for ${segment.id}: ${err.message}`);
+    Promise.resolve(queueFn(narratorSeg.id)).catch(err => {
+      console.error(`[Orchestrator] Narrator render failed for ${narratorSeg.id}: ${err.message}`);
     });
 
-    res.json({ queued: true, segmentId: segment.id });
+    // Queue response directly — no bridge between narrator and response
+    Promise.resolve(segmentRenderer.queueRender(responseSeg.id)).catch(err => {
+      console.error(`[Orchestrator] Response render failed for ${responseSeg.id}: ${err.message}`);
+    });
+
+    res.json({ queued: true, segmentId: responseSeg.id, narratorSegmentId: narratorSeg.id });
   } catch (err) {
     console.error('[Orchestrator] queue-response error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2380,6 +2570,11 @@ app.post('/api/orchestrator/render/:id', async (req, res) => {
     return res.status(400).json({ error: 'Segment has no script' });
   }
 
+  // Check for a narrator-cue companion segment (created by expand-chat)
+  const narratorCompanion = pipelineStore.getAllSegments().find(
+    s => s.type === 'narrator-cue' && s.metadata?.companionFor === segmentId && s.status === 'forming'
+  );
+
   // Accept immediately, render in background
   res.json({ id: segmentId, status: 'rendering', message: 'Render queued' });
 
@@ -2387,9 +2582,21 @@ app.post('/api/orchestrator/render/:id', async (req, res) => {
     ? (id => orchestrator.queueSegmentWithBridge(id))
     : (id => segmentRenderer.queueRender(id));
 
-  Promise.resolve(queueFn(segmentId)).then(() => {
+  Promise.resolve((async () => {
+    if (narratorCompanion) {
+      // Prioritize response first, then narrator (so narrator ends up before response)
+      if (pipelineStore.prioritizeSegment) {
+        try { await pipelineStore.prioritizeSegment(segmentId, { afterOnAir: true, avoidTransitionSplit: true }); } catch (_) {}
+        try { await pipelineStore.prioritizeSegment(narratorCompanion.id, { afterOnAir: true, avoidTransitionSplit: true }); } catch (_) {}
+      }
+      // Queue narrator through bridge machinery, response directly
+      await queueFn(narratorCompanion.id);
+      await segmentRenderer.queueRender(segmentId);
+    } else {
+      await queueFn(segmentId);
+    }
     broadcastPipelineUpdate();
-  }).catch(err => {
+  })()).catch(err => {
     console.error(`[Render] Background render failed for ${segmentId}: ${err.message}`);
   });
 });
@@ -3341,6 +3548,16 @@ async function start() {
     streamManager.setTVContentService(tvService);
   }
 
+  // SFX soundboard
+  sfxService = new SfxService();
+  sfxService.preloadAll().catch(err => console.warn('[SFX] Preload error:', err.message));
+  if (STREAM_MODE === 'synced' && streamManager.setSFXService) {
+    streamManager.setSFXService(sfxService);
+    console.log('[SFX] Service attached to stream manager');
+  }
+
+  // SFX auto-matcher is wired AFTER orchestrator.init() below (segmentRenderer/playbackController are null here)
+
   // Restore scene settings (fire animation + lighting) and start fire timer
   try {
     if (fs.existsSync(SCENE_SETTINGS_PATH)) {
@@ -3403,6 +3620,14 @@ async function start() {
   playbackController = orchestrator.playbackController;
   chatIntake = orchestrator.chatIntake;
   console.log('[Orchestrator] Initialized');
+
+  // SFX auto-matcher — must be wired AFTER orchestrator.init() so segmentRenderer/playbackController exist
+  sfxMatcher = new SfxMatcher({ sfxService, openai, pipelineStore });
+  segmentRenderer.setSfxMatcher(sfxMatcher);
+  console.log('[SFX] Auto-matcher enabled');
+
+  // sfxBefore (manual + auto pre) is handled in processQueue() before startPlayback,
+  // so the SFX plays over silence rather than overlapping with segment audio.
 
   // Initialize Twitter ingest service
   twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
