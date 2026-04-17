@@ -200,7 +200,7 @@ const CHAT_EXPIRE_MS = 45000; // 45 seconds
 let tickerMessages = [];       // array of strings, plays in order
 let tickerCurrentIndex = 0;    // index into tickerMessages of currently playing slot
 let tickerSlotStartMs = 0;     // when the current slot started scrolling
-const TICKER_SPEED = 0;       // px/sec, right to left (0 = static, fully visible)
+const TICKER_SPEED = 28;      // px/sec, right to left
 const TICKER_FONT_SIZE = 20;  // px
 const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
 
@@ -225,15 +225,47 @@ const GLOW_CLEANUP_MS   = Math.max(GLOW_DURATION_MS, PLUS_ONE_DURATION_MS);
 const videosGlow = new Map(); // file -> glowStartMs
 const roadmapGlow = new Map(); // id -> glowStartMs
 
-// Scroll state — auto-scrolls panels when content exceeds half screen height
-// scrollOffset is a continuous pixel value; advances at SCROLL_PX_PER_SEC px/s
-const SCROLL_PX_PER_SEC = 0;  // 0 = static at top
-const SCROLL_PAUSE_MS   = 2000; // pause at top before cycling again
-let videosScrollPx   = 0;
-let roadmapScrollPx  = 0;
-let videosScrollPauseUntil  = 0;
-let roadmapScrollPauseUntil = 0;
-let lastScrollTick = Date.now();
+// Panel paging — shows ITEMS_PER_PAGE items at a time, crossfades to next batch after PAGE_SHOW_MS
+const ITEMS_PER_PAGE = 6;
+const PAGE_SHOW_MS   = 5000; // hold each page for 5 seconds
+const PAGE_FADE_MS   = 700;  // crossfade duration between pages
+
+const _pageState = {
+  videos:  { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 },
+  roadmap: { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 }
+};
+
+// Current resolved page/fadeT — set by tickPage() calls in compositeFrame,
+// read by buildVideosListSvg / buildRoadmapListSvg (also called from async pre-raster)
+let _videosPage = 0, _videosFadeT = 0;
+let _roadmapPage = 0, _roadmapFadeT = 0;
+
+function tickPage(state, itemCount, listVersion) {
+  const now = Date.now();
+  // Reset when list is replaced
+  if (state.lastVersion !== listVersion) {
+    state.page = 0; state.phase = 'show'; state.phaseStartMs = now;
+    state.lastVersion = listVersion;
+  }
+  if (!state.phaseStartMs) state.phaseStartMs = now;
+  const totalPages = Math.max(1, Math.ceil(itemCount / ITEMS_PER_PAGE));
+  const elapsed = now - state.phaseStartMs;
+  if (totalPages > 1) {
+    if (state.phase === 'show' && elapsed >= PAGE_SHOW_MS) {
+      state.phase = 'fade'; state.phaseStartMs = now;
+    } else if (state.phase === 'fade' && elapsed >= PAGE_FADE_MS) {
+      state.page = (state.page + 1) % totalPages;
+      state.phase = 'show'; state.phaseStartMs = now;
+    }
+  } else {
+    state.page = 0; state.phase = 'show';
+  }
+  state.page = state.page % totalPages;
+  const fadeT = state.phase === 'fade'
+    ? Math.min(1, (now - state.phaseStartMs) / PAGE_FADE_MS)
+    : 0;
+  return { page: state.page, fadeT };
+}
 
 // Panel raster cache — pre-rasterized RGBA to avoid per-frame SVG rasterization.
 // Each entry: { rgba: Buffer|null, width, height, left, top, key: string|null, pending: bool }
@@ -965,9 +997,11 @@ function getChatVersion() {
  * Build the Videos list SVG — leftmost slot (slot 1).
  * Shows all available videos with a numerical index. Not cropped.
  */
-// Shared helper — builds a clipped, scrolled list SVG for either panel
-function buildListSvg({ items, scrollPx, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0 }) {
-  if (!outputWidth || !outputHeight || items.length === 0) return null;
+// Shared helper — builds a paged list SVG for either panel.
+// currentItems = items for the visible page, nextItems = items for the incoming page (during fade).
+// fadeT = 0 (fully showing current) → 1 (fully showing next).
+function buildListSvg({ currentItems, nextItems, fadeT, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0 }) {
+  if (!outputWidth || !outputHeight || currentItems.length === 0) return null;
 
   const PANEL_W       = Math.floor(outputWidth / 4);
   const PAD_X         = 12;
@@ -985,22 +1019,17 @@ function buildListSvg({ items, scrollPx, glowMap, glowKey, panelX, labelText, su
   const relSubtitleY = relTitleY + SUBTITLE_FONT + 6;
   const relDividerY  = PAD_Y + TITLE_H;
   const maxPanelH   = Math.floor(outputHeight / 4) + 4;
-  const clipH       = maxPanelH - relDividerY; // height of the scrollable window
-  const svgH        = relDividerY + clipH;     // total SVG height = header + clip window
+  const clipH       = maxPanelH - relDividerY;
+  const svgH        = relDividerY + clipH;
   const now         = Date.now();
 
   const cleanTitle = (s) => s.length > MAX_CHARS ? s.slice(0, MAX_CHARS - 1) + '\u2026' : s;
 
-  // Render items twice for seamless marquee looping — second copy sits directly below first.
-  // The translate shifts both copies up by scrollPx; when scrollPx wraps to 0 the
-  // second copy fills the gap that would otherwise appear at the bottom.
-  const scroll  = Math.floor(scrollPx);
-  const loopH   = items.length * ITEM_H;
   const tx      = rightAligned ? PANEL_W - PAD_X : PAD_X;
   const anchor  = rightAligned ? 'end' : 'start';
 
   function renderRow(item, i, offsetY) {
-    const rowY   = offsetY + i * ITEM_H;
+    const rowY   = relDividerY + offsetY + i * ITEM_H;
     const textY  = rowY + ITEM_H - 4;
     const id     = item[glowKey];
     const text   = rightAligned
@@ -1059,15 +1088,15 @@ function buildListSvg({ items, scrollPx, glowMap, glowKey, panelX, labelText, su
     return `${glow}${plusOne}<text x="${tx}" y="${textY}" text-anchor="${anchor}" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${votePrefix}${escapeSvgText(text)}</text>${voteExtraEl}`;
   }
 
-  const itemRows = [
-    ...items.map((item, i) => renderRow(item, i, 0)),       // first copy
-    ...items.map((item, i) => renderRow(item, i, loopH)),   // second copy — fills wrap gap
-  ].join('');
+  const currentRows = currentItems.map((item, i) => renderRow(item, i, 0)).join('');
+  const nextRows    = fadeT > 0 && nextItems.length > 0
+    ? nextItems.map((item, i) => renderRow(item, i, 0)).join('')
+    : '';
+
+  const curOp  = (1 - fadeT).toFixed(3);
+  const nextOp = fadeT.toFixed(3);
 
   const lineX1 = PAD_X, lineX2 = PANEL_W - PAD_X;
-
-  // Nested SVG with viewBox handles scrolling + clipping without clipPath transforms.
-  // viewBox shifts the visible window by `scroll` pixels down into the content.
   const subtitleEl = subText
     ? `<text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">${escapeSvgText(subText)}</text>`
     : '';
@@ -1077,19 +1106,24 @@ function buildListSvg({ items, scrollPx, glowMap, glowKey, panelX, labelText, su
     ${titleEl}
     ${subtitleEl}
     <line x1="${lineX1}" y1="${relDividerY}" x2="${lineX2}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-    <svg x="0" y="${relDividerY}" width="${PANEL_W}" height="${clipH}" viewBox="0 ${scroll} ${PANEL_W} ${clipH}">
-      ${itemRows}
-    </svg>
+    <g opacity="${curOp}">${currentRows}</g>
+    ${nextRows ? `<g opacity="${nextOp}">${nextRows}</g>` : ''}
   </svg>`;
 
   return { input: Buffer.from(svg), left: panelX, top: panelY };
 }
 
-// Videos — right slot (slot 4), right-aligned
+// Videos — right slot (slot 4)
 function buildVideosListSvg() {
+  if (!videosList.length) return null;
+  const totalPages   = Math.max(1, Math.ceil(videosList.length / ITEMS_PER_PAGE));
+  const page         = _videosPage;
+  const fadeT        = _videosFadeT;
+  const nextPage     = (page + 1) % totalPages;
+  const currentItems = videosList.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE);
+  const nextItems    = videosList.slice(nextPage * ITEMS_PER_PAGE, (nextPage + 1) * ITEMS_PER_PAGE);
   return buildListSvg({
-    items:        videosList,
-    scrollPx:     videosScrollPx,
+    currentItems, nextItems, fadeT,
     glowMap:      videosGlow,
     glowKey:      'file',
     panelX:       Math.floor(outputWidth * 3 / 4),
@@ -1102,9 +1136,15 @@ function buildVideosListSvg() {
 
 // Roadmap — left slot (slot 1), left-aligned
 function buildRoadmapListSvg() {
+  if (!roadmapList.length) return null;
+  const totalPages   = Math.max(1, Math.ceil(roadmapList.length / ITEMS_PER_PAGE));
+  const page         = _roadmapPage;
+  const fadeT        = _roadmapFadeT;
+  const nextPage     = (page + 1) % totalPages;
+  const currentItems = roadmapList.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE);
+  const nextItems    = roadmapList.slice(nextPage * ITEMS_PER_PAGE, (nextPage + 1) * ITEMS_PER_PAGE);
   return buildListSvg({
-    items:        roadmapList,
-    scrollPx:     roadmapScrollPx,
+    currentItems, nextItems, fadeT,
     glowMap:      roadmapGlow,
     glowKey:      'id',
     panelX:       0,
@@ -2025,44 +2065,29 @@ async function compositeFrame(state) {
   for (const [k, t] of roadmapGlow) if (now - t >= GLOW_CLEANUP_MS) roadmapGlow.delete(k);
   const hasActiveGlow = videosGlow.size > 0 || roadmapGlow.size > 0;
 
-  // Advance scroll offsets — permanent marquee loop regardless of content height
-  const ITEM_H_SCROLL = 20; // must match ITEM_H in buildListSvg
-  const elapsed = Math.min((now - lastScrollTick) / 1000, 0.1); // cap at 100ms to avoid jumps
-  lastScrollTick = now;
+  // Tick page state — advances phase timers, resolves current page + fadeT
+  { const r = tickPage(_pageState.videos,  videosList.length,  videosListVersion);  _videosPage  = r.page; _videosFadeT  = r.fadeT; }
+  { const r = tickPage(_pageState.roadmap, roadmapList.length, roadmapListVersion); _roadmapPage = r.page; _roadmapFadeT = r.fadeT; }
 
-  function tickScroll(scrollPx, pauseUntil, itemCount) {
-    if (itemCount === 0) return { scrollPx: 0, pauseUntil };
-    const loopH = itemCount * ITEM_H_SCROLL;
-    if (now < pauseUntil) return { scrollPx, pauseUntil };
-    let next = scrollPx + SCROLL_PX_PER_SEC * elapsed;
-    if (next >= loopH) { next = 0; return { scrollPx: next, pauseUntil: now + SCROLL_PAUSE_MS }; }
-    return { scrollPx: next, pauseUntil };
-  }
-
-  const vScroll = tickScroll(videosScrollPx, videosScrollPauseUntil, videosList.length);
-  videosScrollPx = vScroll.scrollPx; videosScrollPauseUntil = vScroll.pauseUntil;
-
-  const rScroll = tickScroll(roadmapScrollPx, roadmapScrollPauseUntil, roadmapList.length);
-  roadmapScrollPx = rScroll.scrollPx; roadmapScrollPauseUntil = rScroll.pauseUntil;
-
-  // Integer scroll positions — only re-composite when pixel actually advances (≈18×/sec max)
-  const scrollVInt = Math.floor(videosScrollPx);
-  const scrollRInt = Math.floor(roadmapScrollPx);
+  // Quantise fadeT to 0.05 steps → limits pre-raster updates to ≤20 per fade transition
+  const vFadeQ = Math.round(_videosFadeT  / 0.05);
+  const rFadeQ = Math.round(_roadmapFadeT / 0.05);
+  const hasActiveFade = _videosFadeT > 0 || _roadmapFadeT > 0;
 
   // Kick off async panel pre-rasterization when content changes.
   // Skipped during glow (glow path uses SVG directly for per-frame accuracy).
   if (!hasActiveGlow) {
-    _maybeUpdatePanelRaster('videos',  buildVideosListSvg,  `vl${videosListVersion}-s${scrollVInt}`);
-    _maybeUpdatePanelRaster('roadmap', buildRoadmapListSvg, `rl${roadmapListVersion}-s${scrollRInt}`);
+    _maybeUpdatePanelRaster('videos',  buildVideosListSvg,  `vl${videosListVersion}-p${_videosPage}-f${vFadeQ}`);
+    _maybeUpdatePanelRaster('roadmap', buildRoadmapListSvg, `rl${roadmapListVersion}-p${_roadmapPage}-f${rFadeQ}`);
   }
 
-  // outputKey now includes scroll integers so the fast path correctly reflects scroll position.
-  // hasActiveScroll is intentionally removed — the key captures scroll state precisely.
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vs${scrollVInt}-rl${roadmapListVersion}-rs${scrollRInt}`;
+  // outputKey tracks page + quantised fade so the fast path fires correctly between transitions.
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}`;
 
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
-  // hasActiveScroll removed — scroll is now tracked via scroll integers in outputKey.
-  if (!hasActiveTicker && !hasActiveGlow && outputKey === lastOutputKey && lastOutputBuffer) {
+  // Fast path: skip compositing when nothing changed.
+  // hasActiveFade bypasses it during crossfades (pre-raster updates each quantised step).
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -2187,9 +2212,9 @@ async function compositeFrame(state) {
     if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  // Check output cache — skip during ticker/glow (scroll is now tracked via outputKey)
+  // Check output cache — skip during ticker/glow/fade
   let result;
-  if (!hasActiveTicker && !hasActiveGlow) {
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade) {
     result = outputCache[outputKey];
   }
 
