@@ -403,7 +403,10 @@ class SegmentRenderer {
       const seg = this.pipelineStore.getSegment(segmentId);
       const retryCount = seg?.metadata?.retryCount || 0;
 
-      if (seg && retryCount < MAX_SEGMENT_RETRIES) {
+      // narrator-cue is ephemeral — skip retries so a TTS failure never blocks the response
+      const isNarratorCue = seg?.type === 'narrator-cue';
+
+      if (seg && retryCount < MAX_SEGMENT_RETRIES && !isNarratorCue) {
         // Retry: reset to forming so it can be re-rendered after a delay
         console.warn(`[SegmentRenderer] Scheduling retry ${retryCount + 1}/${MAX_SEGMENT_RETRIES} for segment ${segmentId}`);
         try {
