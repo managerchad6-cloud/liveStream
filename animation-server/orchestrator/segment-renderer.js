@@ -307,6 +307,7 @@ class SegmentRenderer {
       form.append('mode', 'router');
       form.append('segmentId', segmentId);
       form.append('lineIndex', String(i));
+      form.append('totalLines', String(audioItems.length));
       form.append('segmentType', segmentType);
       form.append('priority', isPriority ? 'high' : 'normal');
       form.append('crazy', segment?.metadata?.crazy ? 'true' : 'false');
