@@ -227,7 +227,7 @@ const roadmapGlow = new Map(); // id -> glowStartMs
 
 // Scroll state — auto-scrolls panels when content exceeds half screen height
 // scrollOffset is a continuous pixel value; advances at SCROLL_PX_PER_SEC px/s
-const SCROLL_PX_PER_SEC = 4;  // slow, readable pace
+const SCROLL_PX_PER_SEC = 2;  // slow, readable pace
 const SCROLL_PAUSE_MS   = 2000; // pause at top before cycling again
 let videosScrollPx   = 0;
 let roadmapScrollPx  = 0;
