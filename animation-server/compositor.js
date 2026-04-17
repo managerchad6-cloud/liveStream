@@ -1000,7 +1000,7 @@ function getChatVersion() {
 // Shared helper — builds a paged list SVG for either panel.
 // currentItems = items for the visible page, nextItems = items for the incoming page (during fade).
 // fadeT = 0 (fully showing current) → 1 (fully showing next).
-function buildListSvg({ currentItems, nextItems, fadeT, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0 }) {
+function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextOffset = 0, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0 }) {
   if (!outputWidth || !outputHeight || currentItems.length === 0) return null;
 
   const PANEL_W       = Math.floor(outputWidth / 4);
@@ -1028,13 +1028,14 @@ function buildListSvg({ currentItems, nextItems, fadeT, glowMap, glowKey, panelX
   const tx      = rightAligned ? PANEL_W - PAD_X : PAD_X;
   const anchor  = rightAligned ? 'end' : 'start';
 
-  function renderRow(item, i, offsetY) {
+  function renderRow(item, i, offsetY, globalI) {
     const rowY   = relDividerY + offsetY + i * ITEM_H;
     const textY  = rowY + ITEM_H - 4;
     const id     = item[glowKey];
+    const num    = globalI + 1; // 1-based absolute index across all pages
     const text   = rightAligned
-      ? `${cleanTitle(item.title)} .${i + 1}`
-      : `${i + 1}. ${cleanTitle(item.title)}`;
+      ? `${cleanTitle(item.title)} .${num}`
+      : `${num}. ${cleanTitle(item.title)}`;
     const glowAge  = glowMap.has(id) ? now - glowMap.get(id) : GLOW_CLEANUP_MS;
     const glowT    = glowAge < GLOW_DURATION_MS    ? 1 - glowAge / GLOW_DURATION_MS    : 0; // glow: 700ms
     const plusT    = glowAge < PLUS_ONE_DURATION_MS ? 1 - glowAge / PLUS_ONE_DURATION_MS : 0; // +1: 1700ms
@@ -1088,9 +1089,9 @@ function buildListSvg({ currentItems, nextItems, fadeT, glowMap, glowKey, panelX
     return `${glow}${plusOne}<text x="${tx}" y="${textY}" text-anchor="${anchor}" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="400">${votePrefix}${escapeSvgText(text)}</text>${voteExtraEl}`;
   }
 
-  const currentRows = currentItems.map((item, i) => renderRow(item, i, 0)).join('');
+  const currentRows = currentItems.map((item, i) => renderRow(item, i, 0, currentOffset + i)).join('');
   const nextRows    = fadeT > 0 && nextItems.length > 0
-    ? nextItems.map((item, i) => renderRow(item, i, 0)).join('')
+    ? nextItems.map((item, i) => renderRow(item, i, 0, nextOffset + i)).join('')
     : '';
 
   const curOp  = (1 - fadeT).toFixed(3);
@@ -1124,13 +1125,15 @@ function buildVideosListSvg() {
   const nextItems    = videosList.slice(nextPage * ITEMS_PER_PAGE, (nextPage + 1) * ITEMS_PER_PAGE);
   return buildListSvg({
     currentItems, nextItems, fadeT,
-    glowMap:      videosGlow,
-    glowKey:      'file',
-    panelX:       Math.floor(outputWidth * 3 / 4),
-    labelText:    '⭐️ Videos',
-    subText:      '(Vote for next release: /video 1)',
-    rightAligned: false,
-    emojiShift:   4,
+    currentOffset: page * ITEMS_PER_PAGE,
+    nextOffset:    nextPage * ITEMS_PER_PAGE,
+    glowMap:       videosGlow,
+    glowKey:       'file',
+    panelX:        Math.floor(outputWidth * 3 / 4),
+    labelText:     '⭐️ Videos',
+    subText:       '(Vote for next release: /video 1)',
+    rightAligned:  false,
+    emojiShift:    4,
   });
 }
 
@@ -1145,13 +1148,15 @@ function buildRoadmapListSvg() {
   const nextItems    = roadmapList.slice(nextPage * ITEMS_PER_PAGE, (nextPage + 1) * ITEMS_PER_PAGE);
   return buildListSvg({
     currentItems, nextItems, fadeT,
-    glowMap:      roadmapGlow,
-    glowKey:      'id',
-    panelX:       0,
-    labelText:    '🎯 Roadmap',
-    subText:      '(Vote for next implementation: /roadmap 1)',
-    rightAligned: false,
-    emojiShift:   -5,
+    currentOffset: page * ITEMS_PER_PAGE,
+    nextOffset:    nextPage * ITEMS_PER_PAGE,
+    glowMap:       roadmapGlow,
+    glowKey:       'id',
+    panelX:        0,
+    labelText:     '🎯 Roadmap',
+    subText:       '(Vote for next implementation: /roadmap 1)',
+    rightAligned:  false,
+    emojiShift:    -5,
   });
 }
 
