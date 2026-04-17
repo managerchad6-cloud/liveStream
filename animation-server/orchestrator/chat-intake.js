@@ -161,33 +161,36 @@ class ChatIntakeAgent {
 
   async _autoQueue(card) {
     const narratorText = card.text.substring(0, 120);
+    let narratorSeg = null;
     let segment = null;
 
     if (card.response) {
-      // Narrator reads the question, then the character answers — single segment, two lines
+      // Create narrator-cue FIRST so it sits before the response in the pipeline array
+      narratorSeg = await this.pipelineStore.createSegment({
+        type: 'narrator-cue',
+        seed: card.text.substring(0, 50),
+        script: [{ speaker: 'narrator', text: narratorText }],
+        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+      });
+
       segment = await this.pipelineStore.createSegment({
         type: 'chat-response',
         seed: card.text.substring(0, 50),
-        script: [
-          { speaker: 'narrator', text: narratorText },
-          { speaker: card.response.speaker, text: card.response.text }
-        ],
-        estimatedDuration:
-          Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60)) +
-          Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60))
+        script: [{ speaker: card.response.speaker, text: card.response.text }],
+        estimatedDuration: Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60))
       });
       const topicSummary = this._extractTopicSummary(card.text, card.response.text);
       await this.pipelineStore.updateSegment(segment.id, { exitContext: topicSummary });
     } else if (this.scriptGenerator) {
-      // No pre-written response — expand via LLM, then prepend narrator line
+      // No pre-written response — narrator-cue precedes the LLM-expanded segment
+      narratorSeg = await this.pipelineStore.createSegment({
+        type: 'narrator-cue',
+        seed: card.text.substring(0, 50),
+        script: [{ speaker: 'narrator', text: narratorText }],
+        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+      });
+
       segment = await this.scriptGenerator.expandChatMessage(card.text);
-      if (segment) {
-        const updatedScript = [
-          { speaker: 'narrator', text: narratorText },
-          ...(segment.script || [])
-        ];
-        await this.pipelineStore.updateSegment(segment.id, { script: updatedScript });
-      }
     }
 
     if (!segment) return;
@@ -218,9 +221,19 @@ class ChatIntakeAgent {
 
     if (!queueFn) return;
 
-    Promise.resolve(queueFn(segment.id)).catch(err => {
-      console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
-    });
+    if (narratorSeg) {
+      // Narrator through bridge machinery first, response direct after
+      Promise.resolve(queueFn(narratorSeg.id)).catch(err => {
+        console.warn(`[ChatIntake] Narrator render failed: ${err.message}`);
+      });
+      Promise.resolve(this.segmentRenderer?.queueRender(segment.id)).catch(err => {
+        console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
+      });
+    } else {
+      Promise.resolve(queueFn(segment.id)).catch(err => {
+        console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
+      });
+    }
   }
 
   getInbox() {

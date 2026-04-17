@@ -2275,21 +2275,27 @@ app.post('/api/orchestrator/expand-chat', async (req, res) => {
   try {
     const segment = await scriptGenerator.expandChatMessage(message);
 
-    // Prepend narrator line so the viewer message is read aloud first
+    // Create a separate narrator-cue segment to read the viewer message aloud
+    let narratorSeg = null;
     if (segment && pipelineStore) {
       const narratorText = message.substring(0, 120);
-      const updatedScript = [
-        { speaker: 'narrator', text: narratorText },
-        ...(segment.script || [])
-      ];
-      await pipelineStore.updateSegment(segment.id, { script: updatedScript });
+      narratorSeg = await pipelineStore.createSegment({
+        type: 'narrator-cue',
+        seed: message.substring(0, 50),
+        script: [{ speaker: 'narrator', text: narratorText }],
+        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60)),
+      });
+      await pipelineStore.updateSegment(narratorSeg.id, {
+        metadata: { ...(narratorSeg.metadata || {}), companionFor: segment.id }
+      });
     }
 
     if (orchestratorSocket) {
       orchestratorSocket.broadcast('segment:draft-ready', segment);
+      if (narratorSeg) orchestratorSocket.broadcast('segment:draft-ready', narratorSeg);
     }
     broadcastPipelineUpdate();
-    res.json(segment);
+    res.json({ ...segment, narratorSegmentId: narratorSeg?.id || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2440,19 +2446,23 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
   }
 
   try {
-    // Narrator reads the viewer's question, then the character answers — single segment
+    // narratorText reads the viewer's seed/message; fall back to response text if no seed
     const narratorText = (seed || text).substring(0, 120);
 
+    // Create narrator-cue FIRST so it naturally precedes the response in pipeline order.
+    const narratorSeg = await pipelineStore.createSegment({
+      type: 'narrator-cue',
+      seed: seed || text.substring(0, 50),
+      script: [{ speaker: 'narrator', text: narratorText }],
+      estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+    });
+
+    // Create the character response segment second
     const responseSeg = await pipelineStore.createSegment({
       type: 'chat-response',
       seed: seed || text.substring(0, 50),
-      script: [
-        { speaker: 'narrator', text: narratorText },
-        { speaker: speaker.toLowerCase(), text }
-      ],
-      estimatedDuration:
-        Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60)) +
-        Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
+      script: [{ speaker: speaker.toLowerCase(), text }],
+      estimatedDuration: Math.max(1, Math.ceil(text.split(/\s+/).length / 150 * 60))
     });
 
     try {
@@ -2461,13 +2471,17 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
       });
     } catch (_) {}
 
-    // Slot the segment right after on-air
+    // Jump the pair to the front: narrator right after on-air, response right after narrator.
     if (pipelineStore.prioritizeSegment) {
       try {
-        await pipelineStore.prioritizeSegment(responseSeg.id, {
+        await pipelineStore.prioritizeSegment(narratorSeg.id, {
           afterOnAir: true,
           avoidTransitionSplit: true
         });
+        const narratorIdx = pipelineStore.getSegmentIndex(narratorSeg.id);
+        if (narratorIdx !== -1) {
+          await pipelineStore.insertAt(responseSeg.id, narratorIdx + 1);
+        }
       } catch (_) {}
     }
 
@@ -2480,17 +2494,20 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
       }
     }
 
-    console.log(`[Orchestrator] Queued chat-response: ${responseSeg.id} (${speaker})`);
+    console.log(`[Orchestrator] Queued narrator+response: ${narratorSeg.id} → ${responseSeg.id} (${speaker})`);
     broadcastPipelineUpdate();
 
     const queueFn = orchestrator?.queueSegmentWithBridge
       ? (id => orchestrator.queueSegmentWithBridge(id))
       : (id => segmentRenderer.queueRender(id));
-    Promise.resolve(queueFn(responseSeg.id)).catch(err => {
+    Promise.resolve(queueFn(narratorSeg.id)).catch(err => {
+      console.error(`[Orchestrator] Narrator render failed for ${narratorSeg.id}: ${err.message}`);
+    });
+    Promise.resolve(segmentRenderer.queueRender(responseSeg.id)).catch(err => {
       console.error(`[Orchestrator] Response render failed for ${responseSeg.id}: ${err.message}`);
     });
 
-    res.json({ queued: true, segmentId: responseSeg.id });
+    res.json({ queued: true, segmentId: responseSeg.id, narratorSegmentId: narratorSeg.id });
   } catch (err) {
     console.error('[Orchestrator] queue-response error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2567,6 +2584,11 @@ app.post('/api/orchestrator/render/:id', async (req, res) => {
     return res.status(400).json({ error: 'Segment has no script' });
   }
 
+  // Check for a narrator-cue companion segment (created by expand-chat)
+  const narratorCompanion = pipelineStore.getAllSegments().find(
+    s => s.type === 'narrator-cue' && s.metadata?.companionFor === segmentId && s.status === 'forming'
+  );
+
   // Accept immediately, render in background
   res.json({ id: segmentId, status: 'rendering', message: 'Render queued' });
 
@@ -2575,7 +2597,18 @@ app.post('/api/orchestrator/render/:id', async (req, res) => {
     : (id => segmentRenderer.queueRender(id));
 
   Promise.resolve((async () => {
-    await queueFn(segmentId);
+    if (narratorCompanion) {
+      // Prioritize response first so narrator ends up ahead of it
+      if (pipelineStore.prioritizeSegment) {
+        try { await pipelineStore.prioritizeSegment(segmentId, { afterOnAir: true, avoidTransitionSplit: true }); } catch (_) {}
+        try { await pipelineStore.prioritizeSegment(narratorCompanion.id, { afterOnAir: true, avoidTransitionSplit: true }); } catch (_) {}
+      }
+      // Queue narrator through bridge machinery, response directly
+      await queueFn(narratorCompanion.id);
+      await segmentRenderer.queueRender(segmentId);
+    } else {
+      await queueFn(segmentId);
+    }
     broadcastPipelineUpdate();
   })()).catch(err => {
     console.error(`[Render] Background render failed for ${segmentId}: ${err.message}`);
