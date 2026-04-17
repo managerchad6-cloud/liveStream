@@ -180,7 +180,10 @@ class ChatIntakeAgent {
         estimatedDuration: Math.max(1, Math.ceil(card.response.text.split(/\s+/).length / 150 * 60))
       });
       const topicSummary = this._extractTopicSummary(card.text, card.response.text);
-      await this.pipelineStore.updateSegment(segment.id, { exitContext: topicSummary });
+      await this.pipelineStore.updateSegment(segment.id, {
+        exitContext: topicSummary,
+        metadata: { ...(segment.metadata || {}), hasNarratorPair: true }
+      });
     } else if (this.scriptGenerator) {
       // No pre-written response — narrator-cue precedes the LLM-expanded segment
       narratorSeg = await this.pipelineStore.createSegment({
@@ -191,6 +194,10 @@ class ChatIntakeAgent {
       });
 
       segment = await this.scriptGenerator.expandChatMessage(card.text);
+      // Tag as having a narrator pair so expand chain skips it
+      await this.pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), hasNarratorPair: true }
+      });
     }
 
     if (!segment) return;

@@ -38,8 +38,8 @@ class SfxMatcher {
     const sounds = this.sfxService.list();
     if (!sounds.length) return null;
 
-    // Skip types that are unlikely to benefit (bridges, fillers, narrator cues are too short/contextless)
-    const skipTypes = new Set(['bridge', 'filler', 'transition', 'narrator-cue']);
+    // Skip types that are unlikely to benefit (bridges, fillers are too short/contextless)
+    const skipTypes = new Set(['bridge', 'filler', 'transition']);
     if (skipTypes.has(segment.type)) return null;
 
     try {

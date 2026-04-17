@@ -79,7 +79,8 @@ class PlaybackController {
     if (this.currentSegmentId !== segmentId) {
       const previousSegmentId = this.currentSegmentId;  // Save before updating
       this.currentSegmentId = segmentId;
-      console.log(`[PlaybackController] On-air: ${segmentId}`);
+      const seg = this.pipelineStore.getSegment(segmentId);
+      console.log(`[PlaybackController] On-air: ${segmentId.slice(0,8)} type=${seg?.type || '?'} hasNarratorPair=${seg?.metadata?.hasNarratorPair || false}`);
       this._broadcastUpdate();
 
       // Fire registered on-air hooks (e.g. TV media cue)
@@ -250,6 +251,15 @@ class PlaybackController {
     const humanInputTypes = ['chat-response', 'auto-convo', 'custom-script'];
     const isHumanInput = humanInputTypes.includes(sourceSegment.type);
     const isExpand = this._isExpandSegment(sourceSegment);
+
+    // chat-response segments paired with a narrator-cue should NOT spawn an expand —
+    // the viewer hasn't even heard the response yet (HLS delay). Expanding immediately
+    // creates a confusing 3rd on-air event right after the narrator+response pair.
+    if (isHumanInput && sourceSegment.type === 'chat-response' && sourceSegment.metadata?.hasNarratorPair) {
+      console.log(`[PlaybackController] Skipping expand for narrator-paired chat-response ${segmentId.slice(0,8)}`);
+      this.expandChain = null;
+      return;
+    }
 
     if (isHumanInput) {
       // Compute maxExpands deterministically from source word count — no LLM dependency.

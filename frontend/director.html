@@ -1054,6 +1054,12 @@
         <span id="playback-status">Connecting...</span>
       </div>
       <span id="buffer-info">Buffer: 0s</span>
+      <label style="font-size:0.72rem;color:#555;display:flex;align-items:center;gap:4px;user-select:none;">
+        VIEWER DELAY
+        <input type="number" id="pipeline-delay-input" min="0" max="30" step="1" value="0"
+          style="width:38px;background:#0f1014;border:1px solid #2a3040;border-radius:4px;color:#aaa;font-size:0.78rem;padding:2px 4px;text-align:center;font-family:inherit;">
+        s
+      </label>
       <button class="btn-small" id="ticker-toggle-btn">TICKER ▲</button>
     </div>
   </div>
@@ -1062,6 +1068,42 @@
     const API_BASE = window.DIRECTOR_API_BASE || `${window.location.protocol}//${window.location.hostname}:3003`;
     let ws = null;
     let currentSegmentId = null;
+
+    // ---- Pipeline delay (viewer delay calibration) ----
+    let pipelineDelaySec = 0;
+    const _onAirHistory = [];   // Array<{ ts: number, segId: string|null }>
+    let _latestSegments = [];   // most recent segments list for periodic re-render
+
+    function _pushOnAir(segId) {
+      _onAirHistory.push({ ts: Date.now(), segId: segId || null });
+      // Prune entries older than 35s (max delay is 30s)
+      const cutoff = Date.now() - 35_000;
+      while (_onAirHistory.length > 1 && _onAirHistory[0].ts < cutoff) {
+        _onAirHistory.shift();
+      }
+    }
+
+    function _getDelayedOnAir() {
+      if (pipelineDelaySec <= 0 || _onAirHistory.length === 0) {
+        return _onAirHistory.length > 0
+          ? _onAirHistory[_onAirHistory.length - 1].segId
+          : null;
+      }
+      const targetTs = Date.now() - pipelineDelaySec * 1000;
+      // Walk backwards to find the most recent entry at or before targetTs
+      for (let i = _onAirHistory.length - 1; i >= 0; i--) {
+        if (_onAirHistory[i].ts <= targetTs) return _onAirHistory[i].segId;
+      }
+      // All entries are newer than the target — return the oldest we have
+      return _onAirHistory[0].segId;
+    }
+
+    // 250ms tick: advances the delayed on-air badge between WebSocket events
+    setInterval(() => {
+      if (pipelineDelaySec > 0 && _latestSegments.length > 0) {
+        renderPipeline(_latestSegments, _getDelayedOnAir());
+      }
+    }, 250);
 
     // ---- Media attach state ----
     // attachState[tab] = { id, name, type, file } or null
@@ -1566,9 +1608,11 @@
           apiGet('/api/orchestrator/chat/config')
         ]);
 
-        renderRendering(pipeline.segments || []);
-        renderPipeline(pipeline.segments || [], status.currentSegmentId);
-        renderArchive(pipeline.segments || []);
+        _latestSegments = pipeline.segments || [];
+        _pushOnAir(status.currentSegmentId);
+        renderRendering(_latestSegments);
+        renderPipeline(_latestSegments, _getDelayedOnAir());
+        renderArchive(_latestSegments);
         renderChatInbox(inbox.inbox || []);
         updateStatus(status, pipeline.bufferHealth);
 
@@ -1593,9 +1637,11 @@
         const payload = JSON.parse(event.data);
         if (payload.event === 'pipeline:update') {
           const data = payload.data;
-          renderRendering(data.segments || []);
-          renderPipeline(data.segments || [], data.currentSegmentId);
-          renderArchive(data.segments || []);
+          _latestSegments = data.segments || [];
+          _pushOnAir(data.currentSegmentId);
+          renderRendering(_latestSegments);
+          renderPipeline(_latestSegments, _getDelayedOnAir());
+          renderArchive(_latestSegments);
           updateStatus(data.playbackStatus || {}, data.bufferHealth);
         }
         if (payload.event === 'meme:queue-update') {
@@ -1617,6 +1663,13 @@
         setTimeout(connectWebSocket, 2000);
       };
     }
+
+    // Pipeline delay calibration input
+    document.getElementById('pipeline-delay-input').addEventListener('change', (e) => {
+      pipelineDelaySec = Math.max(0, Math.min(30, Number(e.target.value) || 0));
+      e.target.value = pipelineDelaySec;
+      renderPipeline(_latestSegments, _getDelayedOnAir());
+    });
 
     // Event handlers
     document.getElementById('play-btn').addEventListener('click', async () => {

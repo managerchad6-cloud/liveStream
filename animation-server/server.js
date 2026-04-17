@@ -836,6 +836,8 @@ function handleAudioComplete() {
   const completedTotalLines = currentTotalLines;
   const isLastLine = completedLineIndex >= completedTotalLines - 1;
 
+  console.log(`[Playback] DONE seg=${completedSegId?.slice(0,8) || 'none'} line=${completedLineIndex}/${completedTotalLines} isLastLine=${isLastLine}`);
+
   currentSpeaker = null;
   currentCaption = null;
   captionUntil = 0;
@@ -1050,6 +1052,8 @@ async function startPlayback(item) {
   playbackStartFrame = frameCount;
   idleExprStartMs = 0; // cancel idle clock
   expressionEvaluator.clear();
+
+  console.log(`[Playback] START seg=${currentPlayingSegmentId?.slice(0,8) || 'none'} type=${item.segmentType || '?'} char=${item.character} line=${currentLineIndex}/${currentTotalLines} dur=${item.duration?.toFixed(2)}s`);
 
   // Notify playback controller when a new segment starts playing.
   // Only fire setOnAir on the FIRST line so expand generation isn't triggered for every line.
@@ -2288,6 +2292,10 @@ app.post('/api/orchestrator/expand-chat', async (req, res) => {
       await pipelineStore.updateSegment(narratorSeg.id, {
         metadata: { ...(narratorSeg.metadata || {}), companionFor: segment.id }
       });
+      // Tag the chat-response so expand chain skips it (narrator+chat pair)
+      await pipelineStore.updateSegment(segment.id, {
+        metadata: { ...(segment.metadata || {}), hasNarratorPair: true }
+      });
     }
 
     if (orchestratorSocket) {
@@ -2467,7 +2475,7 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
 
     try {
       await pipelineStore.updateSegment(responseSeg.id, {
-        metadata: { ...(responseSeg.metadata || {}), priority: 'high', source: 'chat' }
+        metadata: { ...(responseSeg.metadata || {}), priority: 'high', source: 'chat', hasNarratorPair: true }
       });
     } catch (_) {}
 
