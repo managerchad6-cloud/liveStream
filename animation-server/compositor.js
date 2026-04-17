@@ -200,7 +200,7 @@ const CHAT_EXPIRE_MS = 45000; // 45 seconds
 let tickerMessages = [];       // array of strings, plays in order
 let tickerCurrentIndex = 0;    // index into tickerMessages of currently playing slot
 let tickerSlotStartMs = 0;     // when the current slot started scrolling
-const TICKER_SPEED = 22;      // px/sec, right to left
+const TICKER_SPEED = 0;       // px/sec, right to left (0 = static, fully visible)
 const TICKER_FONT_SIZE = 20;  // px
 const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
 
@@ -227,7 +227,7 @@ const roadmapGlow = new Map(); // id -> glowStartMs
 
 // Scroll state — auto-scrolls panels when content exceeds half screen height
 // scrollOffset is a continuous pixel value; advances at SCROLL_PX_PER_SEC px/s
-const SCROLL_PX_PER_SEC = 2;  // slow, readable pace
+const SCROLL_PX_PER_SEC = 0;  // 0 = static at top
 const SCROLL_PAUSE_MS   = 2000; // pause at top before cycling again
 let videosScrollPx   = 0;
 let roadmapScrollPx  = 0;
@@ -837,25 +837,32 @@ function buildTickerSvg() {
 
   const estimatedTextWidth = Math.ceil(plainLength * TICKER_FONT_SIZE * 0.6);
   const cycleWidthPx = outputWidth + estimatedTextWidth;
-  const cycleDurationMs = (cycleWidthPx / TICKER_SPEED) * 1000;
 
   const now = Date.now();
   if (!tickerSlotStartMs) tickerSlotStartMs = now;
-  const elapsed = now - tickerSlotStartMs;
 
-  // Advance to next slot when this one completes a full scroll cycle
-  if (elapsed >= cycleDurationMs) {
-    const next = findNextActive(tickerCurrentIndex + 1);
-    if (next !== -1 && next !== tickerCurrentIndex) {
-      tickerCurrentIndex = next;
-      tickerSlotStartMs = now;
-      return buildTickerSvg(); // recurse with new slot
+  // Static mode: pin text to left edge so it's fully readable
+  let scrollX;
+  if (TICKER_SPEED <= 0) {
+    scrollX = 20; // left-aligned with padding
+  } else {
+    const cycleDurationMs = (cycleWidthPx / TICKER_SPEED) * 1000;
+    const elapsed = now - tickerSlotStartMs;
+
+    // Advance to next slot when this one completes a full scroll cycle
+    if (elapsed >= cycleDurationMs) {
+      const next = findNextActive(tickerCurrentIndex + 1);
+      if (next !== -1 && next !== tickerCurrentIndex) {
+        tickerCurrentIndex = next;
+        tickerSlotStartMs = now;
+        return buildTickerSvg(); // recurse with new slot
+      }
+      // Single active message: reset slot clock for seamless loop
+      tickerSlotStartMs = now - (elapsed % cycleDurationMs);
     }
-    // Single active message: reset slot clock for seamless loop
-    tickerSlotStartMs = now - (elapsed % cycleDurationMs);
-  }
 
-  const scrollX = Math.round(outputWidth - ((now - tickerSlotStartMs) / cycleDurationMs) * cycleWidthPx);
+    scrollX = Math.round(outputWidth - ((now - tickerSlotStartMs) / cycleDurationMs) * cycleWidthPx);
+  }
   // textY is relative to the strip SVG's own origin (top of strip = y=0 in the mini SVG)
   const textY = Math.round((TICKER_HEIGHT + TICKER_FONT_SIZE) / 2) - 2;
 
