@@ -23,7 +23,7 @@ function getAnimationServerUrl() {
   if (animOverride) return animOverride.replace(/\/$/, '');
   if (isFileProtocol) return 'http://localhost:3003';
   if (isLocalhost) return 'http://localhost:3003';
-  return 'http://93.127.214.75:3003';
+  return `http://${window.location.hostname}:3003`;
 }
 
 const CONFIG = {
