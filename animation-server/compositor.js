@@ -235,6 +235,36 @@ let videosScrollPauseUntil  = 0;
 let roadmapScrollPauseUntil = 0;
 let lastScrollTick = Date.now();
 
+// Panel raster cache — pre-rasterized RGBA to avoid per-frame SVG rasterization.
+// Each entry: { rgba: Buffer|null, width, height, left, top, key: string|null, pending: bool }
+// Updated asynchronously: fired when the panel key changes, never awaited in the frame loop.
+const _panelRaster = {
+  videos:  { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false },
+  roadmap: { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false }
+};
+
+function _maybeUpdatePanelRaster(name, buildFn, newKey) {
+  const s = _panelRaster[name];
+  if (s.key === newKey || s.pending) return; // already current or render in flight
+  s.pending = true;
+  const svgOp = buildFn();
+  if (!svgOp) { s.rgba = null; s.key = newKey; s.pending = false; return; }
+  sharp(svgOp.input)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+    .then(({ data, info }) => {
+      s.rgba   = data;
+      s.width  = info.width;
+      s.height = info.height;
+      s.left   = svgOp.left;
+      s.top    = svgOp.top;
+      s.key    = newKey;
+    })
+    .catch(err => console.warn(`[Compositor] Panel raster failed (${name}):`, err.message))
+    .finally(() => { s.pending = false; });
+}
+
 // Fire animation state
 let fireState = { frame: 0, mode: 'circular', fps: 8, playing: true, pingPongDir: 1 };
 let lightingState = { nightOpacity: 1.0, dayOpacity: 0.0 };
@@ -2008,14 +2038,24 @@ async function compositeFrame(state) {
   const rScroll = tickScroll(roadmapScrollPx, roadmapScrollPauseUntil, roadmapList.length);
   roadmapScrollPx = rScroll.scrollPx; roadmapScrollPauseUntil = rScroll.pauseUntil;
 
-  // Active whenever a panel has items and isn't in its reset pause
-  const hasActiveScroll = (videosList.length > 0 && now >= videosScrollPauseUntil) ||
-                          (roadmapList.length > 0 && now >= roadmapScrollPauseUntil);
+  // Integer scroll positions — only re-composite when pixel actually advances (≈18×/sec max)
+  const scrollVInt = Math.floor(videosScrollPx);
+  const scrollRInt = Math.floor(roadmapScrollPx);
 
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-rl${roadmapListVersion}`;
+  // Kick off async panel pre-rasterization when content changes.
+  // Skipped during glow (glow path uses SVG directly for per-frame accuracy).
+  if (!hasActiveGlow) {
+    _maybeUpdatePanelRaster('videos',  buildVideosListSvg,  `vl${videosListVersion}-s${scrollVInt}`);
+    _maybeUpdatePanelRaster('roadmap', buildRoadmapListSvg, `rl${roadmapListVersion}-s${scrollRInt}`);
+  }
 
-  // Fast path: skip all compositing if nothing changed and no animated overlays running
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveScroll && outputKey === lastOutputKey && lastOutputBuffer) {
+  // outputKey now includes scroll integers so the fast path correctly reflects scroll position.
+  // hasActiveScroll is intentionally removed — the key captures scroll state precisely.
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vs${scrollVInt}-rl${roadmapListVersion}-rs${scrollRInt}`;
+
+  // Fast path: skip all compositing if nothing changed and no animated overlays running.
+  // hasActiveScroll removed — scroll is now tracked via scroll integers in outputKey.
+  if (!hasActiveTicker && !hasActiveGlow && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -2106,11 +2146,26 @@ async function compositeFrame(state) {
   const chatOp = buildChatOverlaySvg();
   if (chatOp) overlayOps.push({ ...chatOp, blend: 'over' });
 
-  const videosListOp = buildVideosListSvg();
-  if (videosListOp) overlayOps.push({ ...videosListOp, blend: 'over' });
-
-  const roadmapListOp = buildRoadmapListSvg();
-  if (roadmapListOp) overlayOps.push({ ...roadmapListOp, blend: 'over' });
+  // Videos + Roadmap panels: use pre-rasterized RGBA when available (avoids per-frame librsvg call).
+  // During glow events, fall back to SVG so the per-frame glow animation renders correctly.
+  {
+    const vr = _panelRaster.videos;
+    if (!hasActiveGlow && vr.rgba) {
+      overlayOps.push({ input: vr.rgba, raw: { width: vr.width, height: vr.height, channels: 4 }, left: vr.left, top: vr.top, blend: 'over' });
+    } else {
+      const op = buildVideosListSvg();
+      if (op) overlayOps.push({ ...op, blend: 'over' });
+    }
+  }
+  {
+    const rr = _panelRaster.roadmap;
+    if (!hasActiveGlow && rr.rgba) {
+      overlayOps.push({ input: rr.rgba, raw: { width: rr.width, height: rr.height, channels: 4 }, left: rr.left, top: rr.top, blend: 'over' });
+    } else {
+      const op = buildRoadmapListSvg();
+      if (op) overlayOps.push({ ...op, blend: 'over' });
+    }
+  }
 
   const memeQueueOp = buildMemeQueueSvg();
   if (memeQueueOp) overlayOps.push({ ...memeQueueOp, blend: 'over' });
@@ -2125,9 +2180,9 @@ async function compositeFrame(state) {
     if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  // Check output cache — skip when ticker, glow, or scroll is animating (all change every frame)
+  // Check output cache — skip during ticker/glow (scroll is now tracked via outputKey)
   let result;
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveScroll) {
+  if (!hasActiveTicker && !hasActiveGlow) {
     result = outputCache[outputKey];
   }
 
