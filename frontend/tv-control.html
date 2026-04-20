@@ -669,6 +669,14 @@
       </div>
     </div>
 
+    <!-- TV Visibility -->
+    <div class="panel">
+      <h2>TV Display</h2>
+      <div class="controls">
+        <button onclick="toggleTVVisibility()" id="tv-visibility-btn" class="secondary" style="font-size:1.1em; padding: 10px 24px;">📺 HIDE</button>
+      </div>
+    </div>
+
     <!-- Playback Controls -->
     <div class="panel">
       <h2>Playback</h2>
@@ -995,6 +1003,47 @@
       } catch (err) {
         alert('Control failed: ' + err.message);
       }
+    }
+
+    // Toggle TV visibility (slide in/out)
+    let _tvVisible = true;
+    async function toggleTVVisibility() {
+      try {
+        _tvVisible = !_tvVisible;
+        await fetch(`${API_BASE}/tv/visibility`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ visible: _tvVisible })
+        });
+        updateVisibilityBtn();
+      } catch (err) {
+        _tvVisible = !_tvVisible; // revert on failure
+        alert('Toggle visibility failed: ' + err.message);
+      }
+    }
+
+    function updateVisibilityBtn() {
+      const btn = document.getElementById('tv-visibility-btn');
+      if (!btn) return;
+      if (_tvVisible) {
+        btn.textContent = '📺 HIDE';
+        btn.classList.remove('danger');
+        btn.classList.add('secondary');
+      } else {
+        btn.textContent = '📺 SHOW';
+        btn.classList.remove('secondary');
+        btn.classList.add('danger');
+      }
+    }
+
+    // Sync initial visibility state on load
+    async function fetchTVVisibility() {
+      try {
+        const r = await fetch(`${API_BASE}/tv/visibility`);
+        const data = await r.json();
+        _tvVisible = data.visible;
+        updateVisibilityBtn();
+      } catch (e) {}
     }
 
     // Toggle hold mode
@@ -1800,6 +1849,7 @@
     fetchStatus();
     fetchViewport();
     fetchVolume();
+    fetchTVVisibility();
 
     // Auto-refresh every 2 seconds
     refreshInterval = setInterval(fetchStatus, 2000);

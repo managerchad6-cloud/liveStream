@@ -18,6 +18,8 @@ const {
   preloadLayers,
   setTVFrame,
   getTVViewport,
+  setTVVisible,
+  isTVVisible,
   setExpressionOffset,
   getExpressionOffsets,
   resetExpressionOffsets,
@@ -1864,6 +1866,25 @@ app.post('/tv/hold', (req, res) => {
   const { enabled } = req.body;
   const hold = tvService.setHold(enabled);
   res.json({ success: true, hold, status: tvService.getStatus() });
+});
+
+// TV visibility (slide in/out animation)
+app.post('/tv/visibility', (req, res) => {
+  const { visible } = req.body;
+  if (typeof visible !== 'boolean') {
+    return res.status(400).json({ error: 'visible must be a boolean' });
+  }
+  if (!visible && tvService) {
+    // Stop content before sliding away
+    tvService.stop();
+    setTVFrame(null);
+  }
+  setTVVisible(visible);
+  res.json({ success: true, visible });
+});
+
+app.get('/tv/visibility', (req, res) => {
+  res.json({ visible: isTVVisible() });
 });
 
 // Set/get TV volume

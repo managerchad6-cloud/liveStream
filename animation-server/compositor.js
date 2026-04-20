@@ -190,6 +190,46 @@ let _tvVersionCounter = 0; // Monotonic counter for assigning new version number
 let tvReflectionBuffer = null; // TV reflection layer (composited above TV content)
 let tvReflectionPos = { x: 0, y: 0 }; // Position of TV reflection layer
 
+// TV slide animation state
+const tvSlide = {
+  visible: true,       // logical target state
+  offsetY: 0,          // current pixel offset (0=fully shown, TV_SLIDE_DIST=fully hidden)
+  animFromY: 0,
+  animToY: 0,
+  animStartMs: 0,
+  animDurMs: 600,
+};
+const TV_SLIDE_DIST = 600; // px — enough to push content + reflection off-screen at 720p
+
+function _tickTVSlide() {
+  if (tvSlide.animFromY === tvSlide.animToY) return false;
+  const elapsed = Date.now() - tvSlide.animStartMs;
+  const t = Math.min(1, elapsed / tvSlide.animDurMs);
+  // Ease in-out cubic
+  const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  tvSlide.offsetY = Math.round(tvSlide.animFromY + (tvSlide.animToY - tvSlide.animFromY) * ease);
+  if (t >= 1) {
+    tvSlide.offsetY = tvSlide.animToY;
+    tvSlide.animFromY = tvSlide.animToY;
+    lastOutputKey = null; // bust cache after animation settles
+    return false;
+  }
+  return true;
+}
+
+function setTVVisible(visible) {
+  if (tvSlide.visible === visible && tvSlide.animFromY === tvSlide.animToY) return;
+  tvSlide.visible = visible;
+  tvSlide.animFromY = tvSlide.offsetY;
+  tvSlide.animToY = visible ? 0 : TV_SLIDE_DIST;
+  tvSlide.animStartMs = Date.now();
+  lastOutputKey = null;
+}
+
+function isTVVisible() {
+  return tvSlide.visible;
+}
+
 // Chat overlay state (Twitch-style message log)
 let chatMessages = [];       // Array of { character, text, addedAt }
 let chatVersion = 0;         // Bumped on add/expire (cache invalidation)
@@ -2109,14 +2149,17 @@ async function compositeFrame(state) {
     _maybeUpdatePanelRaster('roadmap', buildRoadmapListSvg, `rl${roadmapListVersion}-p${_roadmapPage}-f${rFadeQ}`);
   }
 
+  // TV slide: check if animation is in progress (without ticking — tick happens in overlay section)
+  const hasActiveTVSlide = tvSlide.animFromY !== tvSlide.animToY;
+
   // outputKey tracks page + quantised fade so the fast path fires correctly between transitions.
   const _videoMinute = videosList.length > 0 ? Math.floor(Date.now() / 60000) : 0;
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}`;
+  const _tvSlideKey = tvSlide.visible ? 0 : 1; // changes when fully settled
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-tvs${_tvSlideKey}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}`;
 
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
-  // Fast path: skip compositing when nothing changed.
-  // hasActiveFade bypasses it during crossfades (pre-raster updates each quantised step).
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && outputKey === lastOutputKey && lastOutputBuffer) {
+  // hasActiveFade/TVSlide bypass it during their animations.
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
@@ -2181,19 +2224,23 @@ async function compositeFrame(state) {
   // Overlays: TV content, captions, leaderboard, chat
   const overlayOps = [];
 
-  if (currentTVFrame && TV_VIEWPORT) {
-    overlayOps.push({
-      input: currentTVFrame,
-      left: TV_VIEWPORT.x,
-      top: TV_VIEWPORT.y,
-      blend: 'over'
-    });
+  const hasActiveTVSlide = _tickTVSlide();
+  const tvOffsetY = tvSlide.offsetY;
 
+  if (TV_VIEWPORT && tvOffsetY < TV_SLIDE_DIST) {
+    if (currentTVFrame) {
+      overlayOps.push({
+        input: currentTVFrame,
+        left: TV_VIEWPORT.x,
+        top: TV_VIEWPORT.y + tvOffsetY,
+        blend: 'over'
+      });
+    }
     if (tvReflectionBuffer) {
       overlayOps.push({
         input: tvReflectionBuffer,
         left: tvReflectionPos.x,
-        top: tvReflectionPos.y,
+        top: tvReflectionPos.y + tvOffsetY,
         blend: 'over'
       });
     }
@@ -2243,7 +2290,7 @@ async function compositeFrame(state) {
 
   // Check output cache — skip during ticker/glow/fade
   let result;
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade) {
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide) {
     result = outputCache[outputKey];
   }
 
@@ -2526,6 +2573,8 @@ module.exports = {
   setTVFrame,
   getTVFrame,
   getTVViewport,
+  setTVVisible,
+  isTVVisible,
   setExpressionOffset,
   getExpressionOffsets,
   resetExpressionOffsets,
