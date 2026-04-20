@@ -159,33 +159,60 @@ class TwitterIngestService {
 
   // ── Stats fetching ────────────────────────────────────────────────────────
 
-  // Direct HTTP call (no browser) — uses cookies + public web bearer token
+  // Puppeteer browser scrape of the X profile page — same session as tweet fetching
   async fetchXUserStats() {
     const { ct0, authToken, xHandle } = this._config;
     if (!xHandle || !ct0 || !authToken) return null;
     const handle = xHandle.replace(/^@/, '').trim();
-    const BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I7ssbmtoJ44%3DekiB6kNwZfmJRzu7bxCKz4VDSBjgxC4kJr36MhaSYHJbT5tZ0D';
+    let browser;
     try {
-      const res = await axios.get(`https://api.twitter.com/1.1/users/show.json?screen_name=${encodeURIComponent(handle)}`, {
-        headers: {
-          'Authorization': `Bearer ${BEARER}`,
-          'Cookie': `ct0=${ct0}; auth_token=${authToken}`,
-          'X-Csrf-Token': ct0,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Referer': 'https://x.com/',
-          'x-twitter-active-user': 'yes',
-          'x-twitter-auth-type': 'OAuth2Session',
-        },
-        timeout: 10000,
-      });
-      return {
-        followers: res.data.followers_count ?? null,
-        tweets:    res.data.statuses_count   ?? null,
-        name:      res.data.name             || handle,
-      };
+      browser = await this._launchBrowser();
+      const page = await this._openPage(browser);
+      await page.goto(`https://x.com/${handle}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      try { await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 12000 }); } catch {}
+      await new Promise(r => setTimeout(r, 2500));
+
+      const stats = await page.evaluate((h) => {
+        const result = { followers: null, tweets: null };
+
+        // Followers link: href="/{handle}/followers"
+        const fLink = document.querySelector(`a[href="/${h}/followers"]`);
+        if (fLink) {
+          for (const span of fLink.querySelectorAll('span')) {
+            const t = span.innerText.trim();
+            if (/^[\d,\.]+[KMBkmb]?$/.test(t)) { result.followers = t; break; }
+          }
+        }
+
+        // Tweet/post count: shown in profile header stats area
+        // Walk all spans looking for "Posts" label then grab the sibling number
+        const allSpans = Array.from(document.querySelectorAll('span'));
+        for (let i = 0; i < allSpans.length; i++) {
+          const t = allSpans[i].innerText.trim();
+          if (/^(posts|tweets)$/i.test(t)) {
+            // Number is in a sibling/cousin span before this one in the same parent
+            const parent = allSpans[i].parentElement;
+            const grandparent = parent?.parentElement;
+            for (const el of [parent?.previousElementSibling, grandparent?.previousElementSibling]) {
+              if (!el) continue;
+              const numSpan = el.querySelector('span') || el;
+              const num = numSpan.innerText.trim();
+              if (/^[\d,\.]+[KMBkmb]?$/.test(num)) { result.tweets = num; break; }
+            }
+            if (result.tweets) break;
+          }
+        }
+
+        return result;
+      }, handle);
+
+      console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
+      return stats;
     } catch (err) {
       console.warn('[TwitterIngest] fetchXUserStats failed:', err.message);
       return null;
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
   }
 

@@ -792,20 +792,59 @@ const PUMP_HEADERS = {
 };
 
 async function fetchHolderCount(tokenAddress) {
+  // 1. Try pump.fun (works for bonding-curve tokens)
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     const res = await fetch(`https://frontend-api.pump.fun/coins/${tokenAddress}`, {
-      headers: PUMP_HEADERS,
+      headers: PUMP_HEADERS, signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.holder_count) return data.holder_count;
+    }
+  } catch {}
+
+  // 2. Fallback: count token accounts via Solana RPC (works for migrated tokens)
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch('https://api.mainnet-beta.solana.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'getProgramAccounts',
+        params: ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', {
+          filters: [
+            { dataSize: 165 },
+            { memcmp: { offset: 0, bytes: tokenAddress } },
+            // Only non-zero balance accounts: amount field at offset 64, must be > 0
+            // We filter 0-balance by checking the 8-byte amount is not all zeros
+          ],
+          encoding: 'base64',
+          dataSlice: { offset: 64, length: 8 }, // fetch only the amount field
+          withContext: false,
+        }]
+      }),
       signal: controller.signal,
     });
     clearTimeout(timer);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.holder_count ?? null;
-  } catch {
-    return null;
+    const json = await res.json();
+    const accounts = json?.result || [];
+    if (!Array.isArray(accounts)) return null;
+    // Filter out 0-balance accounts (amount bytes are all zeros → base64 "AAAAAAAAAAA=")
+    const active = accounts.filter(a => {
+      const b64 = a?.account?.data?.[0];
+      return b64 && b64 !== 'AAAAAAAAAAA=';
+    });
+    return active.length || accounts.length;
+  } catch (err) {
+    console.warn('[Token] Solana RPC holder count failed:', err.message);
   }
+
+  return null;
 }
 
 async function fetchSocialStats() {
@@ -834,12 +873,73 @@ async function fetchSocialStats() {
 
 async function fetchTradeStats() {
   if (!activePumpToken) return null;
+
+  // Use GeckoTerminal for migrated tokens (have a pairAddress from DexScreener)
+  const pairAddress = tokenStatsCache?.pairAddress;
+  if (pairAddress) {
+    return fetchTradeStatsGecko(pairAddress);
+  }
+  // Fallback: pump.fun for bonding-curve tokens
+  return fetchTradeStatsPump(activePumpToken);
+}
+
+async function fetchTradeStatsGecko(poolAddress) {
+  const nowMs = Date.now();
+  const buyTrades = [];
+
+  for (let page = 1; page <= 5; page++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(
+        `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/trades?page=${page}`,
+        { headers: { 'Accept': 'application/json;version=20230302' }, signal: controller.signal }
+      );
+      clearTimeout(timer);
+      if (!res.ok) break;
+      const data = await res.json();
+      const trades = data?.data || [];
+      if (!trades.length) break;
+
+      let allOlderThan24h = true;
+      for (const t of trades) {
+        const attrs = t.attributes;
+        const tsMs = new Date(attrs.block_timestamp).getTime();
+        if (nowMs - tsMs <= 24 * 3600 * 1000) allOlderThan24h = false;
+        if (attrs.kind === 'buy') {
+          buyTrades.push({ tsMs, usd: parseFloat(attrs.volume_in_usd) || 0 });
+        }
+      }
+      if (allOlderThan24h) break;
+    } catch (err) {
+      console.warn('[Token] GeckoTerminal trades page', page, 'failed:', err.message);
+      break;
+    }
+  }
+
+  if (!buyTrades.length) return null;
+
+  const findBiggest = (windowMs) => {
+    const recent = buyTrades.filter(t => nowMs - t.tsMs <= windowMs);
+    if (!recent.length) return null;
+    const best = recent.reduce((a, b) => b.usd > a.usd ? b : a);
+    return { usd: best.usd, solAmt: null };
+  };
+
+  return {
+    buy1h:  findBiggest(3600 * 1000),
+    buy8h:  findBiggest(8 * 3600 * 1000),
+    buy24h: findBiggest(24 * 3600 * 1000),
+    lastUpdated: Date.now(),
+  };
+}
+
+async function fetchTradeStatsPump(tokenAddress) {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(`https://frontend-api.pump.fun/coins/${activePumpToken}/trades?limit=1000&offset=0`, {
-      headers: PUMP_HEADERS,
-      signal: controller.signal,
+    const res = await fetch(`https://frontend-api.pump.fun/coins/${tokenAddress}/trades?limit=1000&offset=0`, {
+      headers: PUMP_HEADERS, signal: controller.signal,
     });
     clearTimeout(timer);
     if (!res.ok) return null;
@@ -847,24 +947,16 @@ async function fetchTradeStats() {
     if (!Array.isArray(trades) || !trades.length) return null;
 
     const nowSec = Date.now() / 1000;
+    const solPriceUsd = (tokenStatsCache?.priceUsd && tokenStatsCache?.priceSol)
+      ? Number(tokenStatsCache.priceUsd) / Number(tokenStatsCache.priceSol) : null;
     const buys = trades.filter(t => t.is_buy);
 
-    // sol_amount is in lamports; get SOL price from DexScreener cache
-    const solPriceUsd = (tokenStatsCache?.priceUsd && tokenStatsCache?.priceSol)
-      ? Number(tokenStatsCache.priceUsd) / Number(tokenStatsCache.priceSol)
-      : null;
-
     const findBiggest = (windowSecs) => {
-      const cutoff = nowSec - windowSecs;
-      const recent = buys.filter(t => t.timestamp >= cutoff);
+      const recent = buys.filter(t => t.timestamp >= nowSec - windowSecs);
       if (!recent.length) return null;
-      const biggest = recent.reduce((a, b) => (b.sol_amount > a.sol_amount ? b : a));
-      const solAmt = biggest.sol_amount / 1e9;
-      return {
-        solAmt,
-        usd: solPriceUsd ? solAmt * solPriceUsd : null,
-        timestamp: biggest.timestamp,
-      };
+      const best = recent.reduce((a, b) => b.sol_amount > a.sol_amount ? b : a);
+      const solAmt = best.sol_amount / 1e9;
+      return { solAmt, usd: solPriceUsd ? solAmt * solPriceUsd : null };
     };
 
     return {
@@ -874,7 +966,7 @@ async function fetchTradeStats() {
       lastUpdated: Date.now(),
     };
   } catch (err) {
-    console.warn('[Token] fetchTradeStats failed:', err.message);
+    console.warn('[Token] pump.fun trade stats failed:', err.message);
     return null;
   }
 }
