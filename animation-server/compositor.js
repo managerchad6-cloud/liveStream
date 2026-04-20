@@ -1037,7 +1037,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
   const relDividerY  = PAD_Y + TITLE_H;
   const maxPanelH   = Math.floor(outputHeight / 4) + 4;
   const clipH       = maxPanelH - relDividerY;
-  const COUNTDOWN_H = countdownText ? 20 : 0;
+  const COUNTDOWN_H = countdownText ? 26 : 0;
   const svgH        = relDividerY + clipH + COUNTDOWN_H;
   const now         = Date.now();
 
@@ -1121,7 +1121,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
     : '';
   const titleEl = svgEmojiTitle({ text: labelText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, emojiShift });
   const countdownEl = countdownText
-    ? `<text x="${PANEL_W / 2}" y="${svgH - 4}" text-anchor="middle" fill="rgba(255,255,255,0.30)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="10" font-weight="400" letter-spacing="0.5">${escapeSvgText('next video release in ' + countdownText)}</text>`
+    ? `<text x="${PANEL_W / 2}" y="${svgH - 4}" text-anchor="middle" fill="rgba(255,255,255,0.75)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400" letter-spacing="0.5">${escapeSvgText('next video release in ' + countdownText)}</text>`
     : '';
   const svg = `<svg width="${PANEL_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
     ${FRIENDSZONE_FACE}
