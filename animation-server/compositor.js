@@ -1419,11 +1419,10 @@ function buildChatOverlaySvg() {
  * Only ~6 Sharp composite ops regardless of how many static layers exist.
  * Called both from preloadLayers (direct await) and _rebuildStaticBase (hot path).
  */
-async function _buildBaseFromParts(fireFrame = fireState.frame) {
+async function _buildBaseFromParts(fireFrame = fireState.frame, tvOffY = Math.round(tvSlide.offsetY)) {
   if (!lowerStaticBase || !outputWidth) return staticBaseBuffer; // Not ready yet
 
   // Cache key includes TV offset so slide animation frames don't reuse stale base
-  const tvOffY = Math.round(tvSlide.offsetY);
   const baseCacheKey = tvOffY === 0 ? `${fireFrame}` : `${fireFrame}-tv${tvOffY}`;
   const cached = fireFrameBaseCache[baseCacheKey];
   if (cached) return cached;
@@ -1700,7 +1699,7 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
  * Uses caching for common frame states (most frames are identical)
  * TV content is composited before character layers (appears behind them)
  */
-async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = fireState.frame) {
+async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = fireState.frame, tvOffY = 0) {
   // Build expression layer composite ops
   const l1Start = Date.now();
   const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
@@ -1872,7 +1871,7 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
   // Using _buildBaseFromParts(fireFrame) rather than the global staticBaseBuffer prevents
   // a race where fireState.frame advances between the L1 cache-key generation and this build,
   // which would cache a frame-N+1 buffer under a frame-N key and stall the fire animation.
-  const sceneBase = await _buildBaseFromParts(fireFrame);
+  const sceneBase = await _buildBaseFromParts(fireFrame, tvOffY);
   if (!sceneBase) return null;
 
   // Composite Level 1: sceneBase (raw RGBA) + expression layers + nose → raw RGBA buffer
@@ -2048,6 +2047,11 @@ function _runPreWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
 
 async function compositeFrame(state) {
   stepExpressionOffsets(Date.now());
+  // Tick TV slide once per frame — capture offset before any cache key computation
+  // so the frame layer (in base) and overlay layers (content/reflection) use identical offsetY.
+  const hasActiveTVSlide = _tickTVSlide();
+  const tvOffsetY = tvSlide.offsetY;
+
   const {
     chadPhoneme = 'A',
     virginPhoneme = 'A',
@@ -2082,8 +2086,8 @@ async function compositeFrame(state) {
   // Capture fire frame at key-generation time so the L1 build uses the same frame
   // the key was generated for — prevents caching a wrong-frame buffer under a stale key.
   const capturedFireFrame = fireState.frame;
-  const _tvOffYSnap = Math.round(tvSlide.offsetY);
-  const exprBaseCacheKey = _tvOffYSnap === 0 ? `v${staticBaseVersion}-f${capturedFireFrame}-${exprKey}` : `v${staticBaseVersion}-f${capturedFireFrame}-tv${_tvOffYSnap}-${exprKey}`;
+  const _tvOffYRounded = Math.round(tvOffsetY);
+  const exprBaseCacheKey = _tvOffYRounded === 0 ? `v${staticBaseVersion}-f${capturedFireFrame}-${exprKey}` : `v${staticBaseVersion}-f${capturedFireFrame}-tv${_tvOffYRounded}-${exprKey}`;
   const l1Hit = exprBaseCache[exprBaseCacheKey]; // { data, info } raw RGBA or undefined
   let exprBaseRaw;
   let effectiveExprBaseKey;
@@ -2092,7 +2096,7 @@ async function compositeFrame(state) {
     // L1 miss — fire background build (+ pre-warm → committed swap)
     if (!exprBaseInFlight.has(exprBaseCacheKey)) {
       const snapshot = JSON.parse(JSON.stringify(exprSnapshot));
-      const task = buildExpressionBase(exprBaseCacheKey, snapshot, capturedFireFrame)
+      const task = buildExpressionBase(exprBaseCacheKey, snapshot, capturedFireFrame, _tvOffYRounded)
         .catch(err => {
           console.warn('[Compositor] L1 build failed:', err.message);
         })
@@ -2236,9 +2240,6 @@ async function compositeFrame(state) {
 
   // Overlays: TV content, captions, leaderboard, chat
   const overlayOps = [];
-
-  const hasActiveTVSlide = _tickTVSlide();
-  const tvOffsetY = tvSlide.offsetY;
 
   // TV content + reflection slide with TV frame (frame itself is in _buildBaseFromParts at correct z)
   if (tvOffsetY < TV_SLIDE_DIST) {
