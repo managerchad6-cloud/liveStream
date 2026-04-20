@@ -137,7 +137,11 @@ async function renderChartScreenshot(candles, { symbol, priceLabel, tempDir }) {
 
   const browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
+    args: [
+      '--no-sandbox', '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage', '--disable-gpu',
+      '--no-zygote', '--disable-web-security',
+    ],
   });
   try {
     const page = await browser.newPage();
