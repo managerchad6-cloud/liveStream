@@ -993,6 +993,23 @@ function getChatVersion() {
   return chatVersion;
 }
 
+// Returns "HH:MM" remaining until 17:00 CET/CEST each day.
+function getNextReleaseCountdown() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Paris',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const get = (t) => parseInt(parts.find(p => p.type === t).value, 10);
+  const elapsed = get('hour') * 3600 + get('minute') * 60 + get('second');
+  let diff = 17 * 3600 - elapsed;
+  if (diff <= 0) diff += 86400;
+  const hh = Math.floor(diff / 3600);
+  const mm = Math.floor((diff % 3600) / 60);
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
 /**
  * Build the Videos list SVG — leftmost slot (slot 1).
  * Shows all available videos with a numerical index. Not cropped.
@@ -1000,7 +1017,7 @@ function getChatVersion() {
 // Shared helper — builds a paged list SVG for either panel.
 // currentItems = items for the visible page, nextItems = items for the incoming page (during fade).
 // fadeT = 0 (fully showing current) → 1 (fully showing next).
-function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextOffset = 0, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0 }) {
+function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextOffset = 0, glowMap, glowKey, panelX, labelText, subText, rightAligned, emojiShift = 0, countdownText = null }) {
   if (!outputWidth || !outputHeight || currentItems.length === 0) return null;
 
   const PANEL_W       = Math.floor(outputWidth / 4);
@@ -1020,7 +1037,8 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
   const relDividerY  = PAD_Y + TITLE_H;
   const maxPanelH   = Math.floor(outputHeight / 4) + 4;
   const clipH       = maxPanelH - relDividerY;
-  const svgH        = relDividerY + clipH;
+  const COUNTDOWN_H = countdownText ? 20 : 0;
+  const svgH        = relDividerY + clipH + COUNTDOWN_H;
   const now         = Date.now();
 
   const cleanTitle = (s) => s.length > MAX_CHARS ? s.slice(0, MAX_CHARS - 1) + '\u2026' : s;
@@ -1102,6 +1120,9 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
     ? `<text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">${escapeSvgText(subText)}</text>`
     : '';
   const titleEl = svgEmojiTitle({ text: labelText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, emojiShift });
+  const countdownEl = countdownText
+    ? `<text x="${PANEL_W / 2}" y="${svgH - 4}" text-anchor="middle" fill="rgba(255,255,255,0.30)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="10" font-weight="400" letter-spacing="0.5">${escapeSvgText('next video release in ' + countdownText)}</text>`
+    : '';
   const svg = `<svg width="${PANEL_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
     ${FRIENDSZONE_FACE}
     ${titleEl}
@@ -1109,6 +1130,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
     <line x1="${lineX1}" y1="${relDividerY}" x2="${lineX2}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
     <g opacity="${curOp}">${currentRows}</g>
     ${nextRows ? `<g opacity="${nextOp}">${nextRows}</g>` : ''}
+    ${countdownEl}
   </svg>`;
 
   return { input: Buffer.from(svg), left: panelX, top: panelY };
@@ -1125,15 +1147,16 @@ function buildVideosListSvg() {
   const nextItems    = videosList.slice(nextPage * ITEMS_PER_PAGE, (nextPage + 1) * ITEMS_PER_PAGE);
   return buildListSvg({
     currentItems, nextItems, fadeT,
-    currentOffset: page * ITEMS_PER_PAGE,
-    nextOffset:    nextPage * ITEMS_PER_PAGE,
-    glowMap:       videosGlow,
-    glowKey:       'file',
-    panelX:        Math.floor(outputWidth * 3 / 4),
-    labelText:     '⭐️ Videos',
-    subText:       '(Vote for next release: /video 1)',
-    rightAligned:  false,
-    emojiShift:    4,
+    currentOffset:  page * ITEMS_PER_PAGE,
+    nextOffset:     nextPage * ITEMS_PER_PAGE,
+    glowMap:        videosGlow,
+    glowKey:        'file',
+    panelX:         Math.floor(outputWidth * 3 / 4),
+    labelText:      '⭐️ Videos',
+    subText:        '(Vote for next release: /video 1)',
+    rightAligned:   false,
+    emojiShift:     4,
+    countdownText:  getNextReleaseCountdown(),
   });
 }
 
@@ -2082,12 +2105,13 @@ async function compositeFrame(state) {
   // Kick off async panel pre-rasterization when content changes.
   // Skipped during glow (glow path uses SVG directly for per-frame accuracy).
   if (!hasActiveGlow) {
-    _maybeUpdatePanelRaster('videos',  buildVideosListSvg,  `vl${videosListVersion}-p${_videosPage}-f${vFadeQ}`);
+    _maybeUpdatePanelRaster('videos',  buildVideosListSvg,  `vl${videosListVersion}-p${_videosPage}-f${vFadeQ}-t${Math.floor(Date.now() / 60000)}`);
     _maybeUpdatePanelRaster('roadmap', buildRoadmapListSvg, `rl${roadmapListVersion}-p${_roadmapPage}-f${rFadeQ}`);
   }
 
   // outputKey tracks page + quantised fade so the fast path fires correctly between transitions.
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}`;
+  const _videoMinute = videosList.length > 0 ? Math.floor(Date.now() / 60000) : 0;
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}`;
 
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
   // Fast path: skip compositing when nothing changed.
