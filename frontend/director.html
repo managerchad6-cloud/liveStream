@@ -1634,7 +1634,7 @@
     }
 
     function connectWebSocket() {
-      const base = new URL(API_BASE);
+      const base = new URL(API_BASE || window.location.href);
       const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${wsProtocol}//${base.host}/ws/orchestrator`);
 
