@@ -1065,7 +1065,7 @@
   </div>
 
   <script>
-    const API_BASE = window.DIRECTOR_API_BASE || `${window.location.protocol}//${window.location.hostname}:3003`;
+    const API_BASE = window.DIRECTOR_API_BASE || (window.location.hostname === 'localhost' ? 'http://localhost:3003' : '');
     let ws = null;
     let currentSegmentId = null;
 

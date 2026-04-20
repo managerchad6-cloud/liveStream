@@ -23,7 +23,12 @@ function getAnimationServerUrl() {
   if (animOverride) return animOverride.replace(/\/$/, '');
   if (isFileProtocol) return 'http://localhost:3003';
   if (isLocalhost) return 'http://localhost:3003';
-  return `http://${window.location.hostname}:3003`;
+  const port = window.location.port;
+  if (port && port !== '80' && port !== '443') {
+    // Accessed directly on a non-standard port (e.g. :3002); animation is behind nginx on port 80
+    return `${window.location.protocol}//${window.location.hostname}`;
+  }
+  return '';
 }
 
 const CONFIG = {

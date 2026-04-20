@@ -541,7 +541,7 @@ The TV visible in the background can display images and videos with audio.
 
 ## VPS Deployment
 
-**Production URL:** `http://93.127.214.75`
+**Production URL:** `http://94.130.36.242`
 
 ### Systemd Services
 
