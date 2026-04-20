@@ -36,6 +36,7 @@ class TwitterIngestService {
     if (merged.ct0 !== undefined) toSave.ct0 = merged.ct0;
     if (merged.authToken !== undefined) toSave.authToken = merged.authToken;
     if (merged.communityUrl !== undefined) toSave.communityUrl = merged.communityUrl;
+    if (merged.xHandle !== undefined) toSave.xHandle = merged.xHandle;
     if (merged.pollIntervalMinutes !== undefined) toSave.pollIntervalMinutes = merged.pollIntervalMinutes;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(toSave, null, 2), 'utf8');
     this._config = toSave;
@@ -44,6 +45,7 @@ class TwitterIngestService {
   getConfig() {
     return {
       communityUrl: this._config.communityUrl || '',
+      xHandle: this._config.xHandle || '',
       pollIntervalMinutes: this._config.pollIntervalMinutes ?? 5,
       hasCookies: !!(this._config.ct0 && this._config.authToken)
     };
@@ -61,6 +63,7 @@ class TwitterIngestService {
     const update = {};
     if (data.ct0 !== undefined) update.ct0 = data.ct0;
     if (data.authToken !== undefined) update.authToken = data.authToken;
+    if (data.xHandle !== undefined) update.xHandle = data.xHandle;
     if (data.communityUrl !== undefined) update.communityUrl = data.communityUrl;
     if (data.pollIntervalMinutes !== undefined) update.pollIntervalMinutes = Number(data.pollIntervalMinutes) || 5;
     this._saveConfig(update);
@@ -152,6 +155,78 @@ class TwitterIngestService {
       { name: 'ct0', value: ct0, domain: '.x.com', path: '/' },
       { name: 'auth_token', value: authToken, domain: '.x.com', path: '/' }
     );
+  }
+
+  // ── Stats fetching ────────────────────────────────────────────────────────
+
+  // Direct HTTP call (no browser) — uses cookies + public web bearer token
+  async fetchXUserStats() {
+    const { ct0, authToken, xHandle } = this._config;
+    if (!xHandle || !ct0 || !authToken) return null;
+    const handle = xHandle.replace(/^@/, '').trim();
+    const BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I7ssbmtoJ44%3DekiB6kNwZfmJRzu7bxCKz4VDSBjgxC4kJr36MhaSYHJbT5tZ0D';
+    try {
+      const res = await axios.get(`https://api.twitter.com/1.1/users/show.json?screen_name=${encodeURIComponent(handle)}`, {
+        headers: {
+          'Authorization': `Bearer ${BEARER}`,
+          'Cookie': `ct0=${ct0}; auth_token=${authToken}`,
+          'X-Csrf-Token': ct0,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Referer': 'https://x.com/',
+          'x-twitter-active-user': 'yes',
+          'x-twitter-auth-type': 'OAuth2Session',
+        },
+        timeout: 10000,
+      });
+      return {
+        followers: res.data.followers_count ?? null,
+        tweets:    res.data.statuses_count   ?? null,
+        name:      res.data.name             || handle,
+      };
+    } catch (err) {
+      console.warn('[TwitterIngest] fetchXUserStats failed:', err.message);
+      return null;
+    }
+  }
+
+  // Puppeteer-based scrape of community member count from the community page
+  async fetchCommunityMemberCount() {
+    const { communityUrl, ct0, authToken } = this._config;
+    if (!communityUrl || !ct0 || !authToken) return null;
+    let browser;
+    try {
+      browser = await this._launchBrowser();
+      const page = await this._openPage(browser);
+      await page.goto(communityUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      try { await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 10000 }); } catch {}
+      await new Promise(r => setTimeout(r, 2000));
+
+      const count = await page.evaluate(() => {
+        // Walk all text nodes looking for "N members" or "N,NNN Members"
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const t = node.textContent.trim();
+          if (/member/i.test(t)) {
+            const m = t.match(/([\d,\.]+\s*[KMBkmb]?)\s+[Mm]ember/);
+            if (m) return m[1].replace(/\s/g, '');
+          }
+        }
+        // Fallback: any link/span that ends in Members
+        for (const el of document.querySelectorAll('a, span')) {
+          const t = el.innerText?.trim() || '';
+          const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Mm]embers?$/);
+          if (m) return m[1];
+        }
+        return null;
+      });
+      return count;
+    } catch (err) {
+      console.warn('[TwitterIngest] fetchCommunityMemberCount failed:', err.message);
+      return null;
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
   }
 
   // Extract tweet data from all visible articles on the current page

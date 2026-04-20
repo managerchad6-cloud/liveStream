@@ -727,6 +727,24 @@
       </div>
       <!-- No data placeholder -->
       <div id="ts-no-data" style="color:#333;font-size:0.8rem;padding:6px 0;">Awaiting market data — token may be on bonding curve or not yet indexed by DexScreener.</div>
+      <!-- Social + Trade Stats -->
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #0d2030;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;color:#2a5a7a;text-transform:uppercase;">Social &amp; Trade Stats</span>
+          <button id="refresh-extended-stats-btn" style="background:none;border:1px solid #1a3a5a;color:#3a7a9a;font-size:0.65rem;padding:2px 7px;border-radius:4px;cursor:pointer;font-family:inherit;">↻ Refresh</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;">
+          <div class="ts-cell"><div class="ts-label">HOLDERS</div><div class="ts-val" id="xs-holders">--</div></div>
+          <div class="ts-cell"><div class="ts-label">BIGGEST BUY 24H 🐳</div><div class="ts-val" id="xs-buy24">--</div></div>
+          <div class="ts-cell"><div class="ts-label">X FOLLOWERS</div><div class="ts-val" id="xs-xfollowers">--</div></div>
+          <div class="ts-cell"><div class="ts-label">BIGGEST BUY 8H 🦈</div><div class="ts-val" id="xs-buy8">--</div></div>
+          <div class="ts-cell"><div class="ts-label">COMMUNITY MEMBERS</div><div class="ts-val" id="xs-community">--</div></div>
+          <div class="ts-cell"><div class="ts-label">BIGGEST BUY 1H 🐠</div><div class="ts-val" id="xs-buy1">--</div></div>
+          <div class="ts-cell"><div class="ts-label">X POSTS</div><div class="ts-val" id="xs-xtweets">--</div></div>
+          <div class="ts-cell"><div class="ts-label">CHG 5M</div><div class="ts-val" id="xs-ch5m">--</div></div>
+        </div>
+        <div id="xs-status" style="font-size:0.65rem;color:#2a5a7a;margin-top:4px;"></div>
+      </div>
       <!-- Analyze chart button -->
       <div style="display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid #0d2030;">
         <button id="analyze-chart-btn" style="background:#0a3a5a;border:1px solid #1a6a9a;color:#7fb3d3;font-size:0.8rem;font-weight:700;letter-spacing:0.08em;padding:5px 14px;border-radius:6px;cursor:pointer;font-family:inherit;transition:background 0.15s;">ANALYZE CHART</button>
@@ -847,6 +865,7 @@
       <div class="twitter-col">
         <input id="tw-ct0" class="twitter-field" type="password" placeholder="ct0 cookie" />
         <input id="tw-auth-token" class="twitter-field" type="password" placeholder="auth_token cookie" />
+        <input id="tw-x-handle" class="twitter-field" placeholder="@handle (for stats)" style="margin-top:4px;" />
         <button class="btn-primary" id="tw-save-btn" style="margin-top:4px;">Save</button>
         <div id="tw-auth-status" class="twitter-status">—</div>
       </div>
@@ -2073,6 +2092,62 @@
     refreshTokenStats();
     setInterval(refreshTokenStats, 60000);
 
+    // ── Extended stats (social + trade) ──────────────────────────────────────
+    function fmtNum(n) {
+      if (n == null) return '--';
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return Number(n).toLocaleString();
+    }
+    function fmtUsdShort(usd) {
+      if (usd == null) return '--';
+      if (usd >= 1e6) return '$' + (usd / 1e6).toFixed(2) + 'M';
+      if (usd >= 1e3) return '$' + (usd / 1e3).toFixed(1) + 'K';
+      return '$' + usd.toFixed(2);
+    }
+
+    async function refreshExtendedStats(force = false) {
+      const statusEl = document.getElementById('xs-status');
+      statusEl.textContent = 'Fetching…';
+      try {
+        const suffix = force ? '?force=1' : '';
+        const [social, trade] = await Promise.allSettled([
+          apiGet('/token/social-stats' + suffix),
+          apiGet('/token/trade-stats' + suffix),
+        ]);
+        const s = social.status === 'fulfilled' ? social.value : {};
+        const t = trade.status === 'fulfilled' ? trade.value : {};
+
+        document.getElementById('xs-holders').textContent   = fmtNum(s.holders);
+        document.getElementById('xs-xfollowers').textContent = fmtNum(s.xFollowers);
+        document.getElementById('xs-community').textContent  = s.communityMembers ?? '--';
+        document.getElementById('xs-xtweets').textContent   = fmtNum(s.xTweets);
+
+        document.getElementById('xs-buy24').textContent = t.buy24h?.usd != null ? fmtUsdShort(t.buy24h.usd) : (t.buy24h?.solAmt != null ? t.buy24h.solAmt.toFixed(2) + ' SOL' : '--');
+        document.getElementById('xs-buy8').textContent  = t.buy8h?.usd  != null ? fmtUsdShort(t.buy8h.usd)  : (t.buy8h?.solAmt  != null ? t.buy8h.solAmt.toFixed(2)  + ' SOL' : '--');
+        document.getElementById('xs-buy1').textContent  = t.buy1h?.usd  != null ? fmtUsdShort(t.buy1h.usd)  : (t.buy1h?.solAmt  != null ? t.buy1h.solAmt.toFixed(2)  + ' SOL' : '--');
+
+        const ch5 = window.liveTokenData?.priceChange?.m5;
+        const ch5El = document.getElementById('xs-ch5m');
+        if (ch5 != null) {
+          ch5El.textContent = (ch5 >= 0 ? '+' : '') + ch5.toFixed(2) + '%';
+          ch5El.style.color = ch5 >= 0 ? '#26a69a' : '#ef5350';
+        } else {
+          ch5El.textContent = '--';
+          ch5El.style.color = '';
+        }
+
+        const updated = s.lastUpdated || t.lastUpdated;
+        statusEl.textContent = updated ? 'Updated ' + new Date(updated).toLocaleTimeString() : '';
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    document.getElementById('refresh-extended-stats-btn').addEventListener('click', () => refreshExtendedStats(true));
+    refreshExtendedStats();
+    setInterval(refreshExtendedStats, 5 * 60 * 1000);
+
     document.getElementById('analyze-chart-btn').addEventListener('click', async () => {
       const btn = document.getElementById('analyze-chart-btn');
       const statusEl = document.getElementById('analyze-chart-status');
@@ -2154,6 +2229,7 @@
       try {
         const cfg = await apiGet('/api/orchestrator/twitter/config');
         if (cfg.communityUrl) document.getElementById('tw-community-url').value = cfg.communityUrl;
+        if (cfg.xHandle) document.getElementById('tw-x-handle').value = cfg.xHandle;
         if (cfg.pollIntervalMinutes) document.getElementById('tw-poll-interval').value = cfg.pollIntervalMinutes;
         setAuthStatus(cfg.hasCookies);
       } catch {}
@@ -2285,8 +2361,10 @@
       const body = {};
       const ct0 = document.getElementById('tw-ct0').value.trim();
       const authToken = document.getElementById('tw-auth-token').value.trim();
+      const xHandle = document.getElementById('tw-x-handle').value.trim();
       if (ct0) body.ct0 = ct0;
       if (authToken) body.authToken = authToken;
+      if (xHandle) body.xHandle = xHandle;
       try {
         await apiPost('/api/orchestrator/twitter/config', body);
         document.getElementById('tw-ct0').value = '';

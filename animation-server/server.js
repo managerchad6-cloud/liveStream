@@ -611,6 +611,14 @@ let tokenStatsLastFetch = 0;
 let tokenStatsSessionHigh = 0;
 const TOKEN_STATS_TTL_MS = 60 * 1000;
 
+let socialStatsCache = null;
+let socialStatsLastFetch = 0;
+const SOCIAL_STATS_TTL_MS = 5 * 60 * 1000;
+
+let tradeStatsCache = null;
+let tradeStatsLastFetch = 0;
+const TRADE_STATS_TTL_MS = 2 * 60 * 1000;
+
 async function fetchTokenStatsFromDex() {
   if (!activePumpToken) return null;
   const url = `https://api.dexscreener.com/latest/dex/tokens/${activePumpToken}`;
@@ -647,6 +655,12 @@ async function fetchTokenStatsFromDex() {
       dex: pair.dexId || null,
       pairAddress: pair.pairAddress || null,
       imageUrl: pair.info?.imageUrl || null,
+      // Extract X handle from DexScreener socials if present
+      xHandleFromDex: (() => {
+        const s = (pair.info?.socials || []).find(s => s.type === 'twitter');
+        if (!s?.url) return null;
+        return s.url.replace(/^https?:\/\/(www\.)?(twitter|x)\.com\/@?/, '').split('/')[0] || null;
+      })(),
       sessionHigh: tokenStatsSessionHigh,
       isAtSessionHigh: mcap > 0 && mcap >= tokenStatsSessionHigh,
       lastUpdated: Date.now()
@@ -667,10 +681,14 @@ app.post('/token/set-address', (req, res) => {
   if (typeof address !== 'string') return res.status(400).json({ error: 'address must be a string' });
   const trimmed = address.trim();
   activePumpToken = trimmed;
-  // Reset stats cache so next poll fetches fresh data for the new token
+  // Reset all stats caches so next poll fetches fresh data for the new token
   tokenStatsCache = null;
   tokenStatsLastFetch = 0;
   tokenStatsSessionHigh = 0;
+  socialStatsCache = null;
+  socialStatsLastFetch = 0;
+  tradeStatsCache = null;
+  tradeStatsLastFetch = 0;
   // Restart pump chat listener on the new token if orchestrator is running
   if (orchestrator && typeof orchestrator.setToken === 'function') {
     orchestrator.setToken(trimmed);
@@ -764,6 +782,123 @@ app.post('/token/analyze-chart', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ── Social Stats (holders + X) ────────────────────────────────────────────────
+
+const PUMP_HEADERS = {
+  'Accept': 'application/json',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Referer': 'https://www.pump.fun/',
+  'Origin': 'https://www.pump.fun',
+};
+
+async function fetchHolderCount(tokenAddress) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`https://frontend-api.pump.fun/coins/${tokenAddress}`, {
+      headers: PUMP_HEADERS,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.holder_count ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSocialStats() {
+  const result = { holders: null, xFollowers: null, xTweets: null, communityMembers: null, lastUpdated: Date.now() };
+
+  if (activePumpToken) {
+    result.holders = await fetchHolderCount(activePumpToken);
+  }
+
+  if (twitterIngest) {
+    const [xStats, communityMembers] = await Promise.allSettled([
+      twitterIngest.fetchXUserStats(),
+      twitterIngest.fetchCommunityMemberCount(),
+    ]);
+    if (xStats.status === 'fulfilled' && xStats.value) {
+      result.xFollowers = xStats.value.followers;
+      result.xTweets    = xStats.value.tweets;
+    }
+    if (communityMembers.status === 'fulfilled') {
+      result.communityMembers = communityMembers.value;
+    }
+  }
+
+  return result;
+}
+
+async function fetchTradeStats() {
+  if (!activePumpToken) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(`https://frontend-api.pump.fun/coins/${activePumpToken}/trades?limit=1000&offset=0`, {
+      headers: PUMP_HEADERS,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const trades = await res.json();
+    if (!Array.isArray(trades) || !trades.length) return null;
+
+    const nowSec = Date.now() / 1000;
+    const buys = trades.filter(t => t.is_buy);
+
+    // sol_amount is in lamports; get SOL price from DexScreener cache
+    const solPriceUsd = (tokenStatsCache?.priceUsd && tokenStatsCache?.priceSol)
+      ? Number(tokenStatsCache.priceUsd) / Number(tokenStatsCache.priceSol)
+      : null;
+
+    const findBiggest = (windowSecs) => {
+      const cutoff = nowSec - windowSecs;
+      const recent = buys.filter(t => t.timestamp >= cutoff);
+      if (!recent.length) return null;
+      const biggest = recent.reduce((a, b) => (b.sol_amount > a.sol_amount ? b : a));
+      const solAmt = biggest.sol_amount / 1e9;
+      return {
+        solAmt,
+        usd: solPriceUsd ? solAmt * solPriceUsd : null,
+        timestamp: biggest.timestamp,
+      };
+    };
+
+    return {
+      buy1h:  findBiggest(3600),
+      buy8h:  findBiggest(8 * 3600),
+      buy24h: findBiggest(24 * 3600),
+      lastUpdated: Date.now(),
+    };
+  } catch (err) {
+    console.warn('[Token] fetchTradeStats failed:', err.message);
+    return null;
+  }
+}
+
+app.get('/token/social-stats', async (req, res) => {
+  const now = Date.now();
+  const force = req.query.force === '1';
+  if (force || !socialStatsCache || now - socialStatsLastFetch > SOCIAL_STATS_TTL_MS) {
+    socialStatsCache = await fetchSocialStats();
+    socialStatsLastFetch = now;
+  }
+  res.json(socialStatsCache);
+});
+
+app.get('/token/trade-stats', async (req, res) => {
+  const now = Date.now();
+  const force = req.query.force === '1';
+  if (force || !tradeStatsCache || now - tradeStatsLastFetch > TRADE_STATS_TTL_MS) {
+    tradeStatsCache = await fetchTradeStats();
+    tradeStatsLastFetch = now;
+  }
+  res.json(tradeStatsCache || { lastUpdated: now });
+});
+
 // ── End Token Stats Service ───────────────────────────────────────────────────
 
 // Global state
@@ -2819,8 +2954,8 @@ app.get('/api/orchestrator/twitter/config', (req, res) => {
 
 app.post('/api/orchestrator/twitter/config', (req, res) => {
   if (!twitterIngest) return res.status(503).json({ error: 'Twitter ingest not initialized' });
-  const { ct0, authToken, communityUrl, pollIntervalMinutes } = req.body || {};
-  const result = twitterIngest.setConfig({ ct0, authToken, communityUrl, pollIntervalMinutes });
+  const { ct0, authToken, communityUrl, xHandle, pollIntervalMinutes } = req.body || {};
+  const result = twitterIngest.setConfig({ ct0, authToken, communityUrl, xHandle, pollIntervalMinutes });
   res.json(result);
 });
 
