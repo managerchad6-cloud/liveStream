@@ -189,6 +189,7 @@ const _tvFrameVersionMap = new WeakMap(); // Buffer → stable version number (G
 let _tvVersionCounter = 0; // Monotonic counter for assigning new version numbers
 let tvReflectionBuffer = null; // TV reflection layer (composited above TV content)
 let tvReflectionPos = { x: 0, y: 0 }; // Position of TV reflection layer
+let tvFrameLayerBuffer = null; // TV physical frame layer (separate from upperStaticBuffer for slide animation)
 
 // TV slide animation state
 const tvSlide = {
@@ -598,6 +599,7 @@ async function preloadLayers() {
   for (const k of Object.keys(lightingOpacityCache)) delete lightingOpacityCache[k];
   lowerStaticBase = null;
   upperStaticBuffer = null;
+  tvFrameLayerBuffer = null;
 
   for (const layer of m.layers) {
     const layerPath = path.join(LAYERS_DIR, ...layer.path.split('/'));
@@ -620,8 +622,12 @@ async function preloadLayers() {
         scaledLayerBuffers[layer.id] = buffer;
 
         // Categorize layer
+        // TV frame — extracted from upperStaticBuffer so it can be animated (slide in/out)
+        if (layer.id === 'TV') {
+          tvFrameLayerBuffer = buffer;
+          console.log('[Compositor] TV frame layer stored for slide animation');
         // TV Reflection is handled separately (composited above TV content)
-        if (layer.id === 'TV_Reflection_') {
+        } else if (layer.id === 'TV_Reflection_') {
           tvReflectionBuffer = await applyOpacityToBuffer(
             buffer,
             { width: scaledWidth, height: scaledHeight },
@@ -2227,8 +2233,17 @@ async function compositeFrame(state) {
   const hasActiveTVSlide = _tickTVSlide();
   const tvOffsetY = tvSlide.offsetY;
 
-  if (TV_VIEWPORT && tvOffsetY < TV_SLIDE_DIST) {
-    if (currentTVFrame) {
+  // TV frame + content + reflection all slide together
+  if (tvOffsetY < TV_SLIDE_DIST) {
+    if (tvFrameLayerBuffer) {
+      overlayOps.push({
+        input: tvFrameLayerBuffer,
+        left: 0,
+        top: tvOffsetY,
+        blend: 'over'
+      });
+    }
+    if (currentTVFrame && TV_VIEWPORT) {
       overlayOps.push({
         input: currentTVFrame,
         left: TV_VIEWPORT.x,
