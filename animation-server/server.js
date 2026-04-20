@@ -73,7 +73,7 @@ const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'g
 const USE_LLM_EXPRESSIONS = process.env.EXPRESSION_LLM === '1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
-let activePumpToken  = process.env.activePumpToken || '';
+let activePumpToken  = process.env.PUMP_FUN_TOKEN || '';
 const PUMP_FUN_PAIR  = process.env.PUMP_FUN_PAIR  || '';
 
 const app = express();
