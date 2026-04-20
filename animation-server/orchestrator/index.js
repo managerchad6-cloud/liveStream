@@ -80,6 +80,13 @@ class Orchestrator {
     this.pumpChatListener.start();
   }
 
+  setToken(newToken) {
+    console.log(`[Orchestrator] Switching pump token to: ${newToken ? newToken.slice(0, 12) + '…' : '(none)'}`);
+    this.pumpChatListener.stop();
+    this.pumpChatListener.token = newToken || null;
+    if (newToken) this.pumpChatListener.start();
+  }
+
   /**
    * Queue a segment for rendering, generating a bridge before it if needed.
    * Bridge is not generated for fillers, transitions, or when no preceding exitContext.

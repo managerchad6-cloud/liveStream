@@ -73,7 +73,7 @@ const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'g
 const USE_LLM_EXPRESSIONS = process.env.EXPRESSION_LLM === '1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
-const PUMP_FUN_TOKEN = process.env.PUMP_FUN_TOKEN || '';
+let activePumpToken  = process.env.activePumpToken || '';
 const PUMP_FUN_PAIR  = process.env.PUMP_FUN_PAIR  || '';
 
 const app = express();
@@ -612,8 +612,8 @@ let tokenStatsSessionHigh = 0;
 const TOKEN_STATS_TTL_MS = 60 * 1000;
 
 async function fetchTokenStatsFromDex() {
-  if (!PUMP_FUN_TOKEN) return null;
-  const url = `https://api.dexscreener.com/latest/dex/tokens/${PUMP_FUN_TOKEN}`;
+  if (!activePumpToken) return null;
+  const url = `https://api.dexscreener.com/latest/dex/tokens/${activePumpToken}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12000);
   try {
@@ -624,7 +624,7 @@ async function fetchTokenStatsFromDex() {
 
     const pairs = data.pairs;
     if (!pairs || pairs.length === 0) {
-      return { token: PUMP_FUN_TOKEN, noData: true, lastUpdated: Date.now() };
+      return { token: activePumpToken, noData: true, lastUpdated: Date.now() };
     }
 
     // Pick the pair with highest liquidity as the canonical one
@@ -633,7 +633,7 @@ async function fetchTokenStatsFromDex() {
     if (mcap > tokenStatsSessionHigh) tokenStatsSessionHigh = mcap;
 
     return {
-      token: PUMP_FUN_TOKEN,
+      token: activePumpToken,
       name: pair.baseToken?.name || null,
       symbol: pair.baseToken?.symbol || null,
       priceUsd: pair.priceUsd || null,
@@ -658,6 +658,27 @@ async function fetchTokenStatsFromDex() {
   }
 }
 
+app.get('/token/address', (req, res) => {
+  res.json({ address: activePumpToken || null });
+});
+
+app.post('/token/set-address', (req, res) => {
+  const { address } = req.body;
+  if (typeof address !== 'string') return res.status(400).json({ error: 'address must be a string' });
+  const trimmed = address.trim();
+  activePumpToken = trimmed;
+  // Reset stats cache so next poll fetches fresh data for the new token
+  tokenStatsCache = null;
+  tokenStatsLastFetch = 0;
+  tokenStatsSessionHigh = 0;
+  // Restart pump chat listener on the new token if orchestrator is running
+  if (orchestrator && typeof orchestrator.setToken === 'function') {
+    orchestrator.setToken(trimmed);
+  }
+  console.log(`[Token] Address updated to: ${trimmed || '(cleared)'}`);
+  res.json({ ok: true, address: trimmed });
+});
+
 app.get('/token/stats', async (req, res) => {
   const now = Date.now();
   if (!tokenStatsCache || now - tokenStatsLastFetch > TOKEN_STATS_TTL_MS) {
@@ -665,7 +686,7 @@ app.get('/token/stats', async (req, res) => {
     tokenStatsLastFetch = now;
   }
   if (!tokenStatsCache) {
-    return res.json({ token: PUMP_FUN_TOKEN || null, noData: true, lastUpdated: now });
+    return res.json({ token: activePumpToken || null, noData: true, lastUpdated: now });
   }
   res.json(tokenStatsCache);
 });
@@ -688,10 +709,10 @@ app.post('/token/analyze-chart', async (req, res) => {
     const chartImageMimeType = 'image/png';
     let chartMediaId = null;
 
-    if (PUMP_FUN_TOKEN) {
+    if (activePumpToken) {
       try {
         const { buffer, hasChart } = await getChartScreenshot({
-          tokenAddress: PUMP_FUN_TOKEN,
+          tokenAddress: activePumpToken,
           pairAddress:  tokenData?.pairAddress || null,
           symbol:       tokenData?.symbol || 'VVC',
           tokenData,
