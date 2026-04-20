@@ -1978,5 +1978,41 @@
     "fileSize": 414850,
     "addedAt": "2026-04-16T07:13:11.921Z",
     "metadata": {}
+  },
+  {
+    "id": "c52068d7-aec6-4c54-8067-5baa39f8f14f",
+    "originalName": "tweet_1776705405867.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "c52068d7-aec6-4c54-8067-5baa39f8f14f.png",
+    "thumbnailFilename": "c52068d7-aec6-4c54-8067-5baa39f8f14f.jpg",
+    "fileSize": 84549,
+    "addedAt": "2026-04-20T17:16:45.906Z",
+    "metadata": {}
+  },
+  {
+    "id": "db608127-45ee-4ac7-adb7-6c8fd78b260b",
+    "originalName": "chart_1776706344709.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "db608127-45ee-4ac7-adb7-6c8fd78b260b.png",
+    "thumbnailFilename": "db608127-45ee-4ac7-adb7-6c8fd78b260b.jpg",
+    "fileSize": 10792,
+    "addedAt": "2026-04-20T17:32:24.733Z",
+    "metadata": {}
+  },
+  {
+    "id": "b6525875-81d1-4c9e-b731-6393885d8a7d",
+    "originalName": "tweet_1776706696677.png",
+    "type": "image",
+    "mimeType": "image/png",
+    "ext": ".png",
+    "filename": "b6525875-81d1-4c9e-b731-6393885d8a7d.png",
+    "thumbnailFilename": "b6525875-81d1-4c9e-b731-6393885d8a7d.jpg",
+    "fileSize": 309967,
+    "addedAt": "2026-04-20T17:38:16.710Z",
+    "metadata": {}
   }
 ]

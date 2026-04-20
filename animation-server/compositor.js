@@ -319,8 +319,14 @@ function tickPage(state, itemCount, listVersion) {
 // Updated asynchronously: fired when the panel key changes, never awaited in the frame loop.
 const _panelRaster = {
   videos:  { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false },
-  roadmap: { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false }
+  roadmap: { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false },
+  socialStats: { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false },
+  tradeStats:  { rgba: null, width: 0, height: 0, left: 0, top: 0, key: null, pending: false }
 };
+
+// Token stat data pushed from server.js
+let _tokenStatsPanelData = { social: null, trade: null };
+let _tokenStatsVersion = 0;
 
 function _maybeUpdatePanelRaster(name, buildFn, newKey) {
   const s = _panelRaster[name];
@@ -864,6 +870,71 @@ function buildCaptionSvg(text) {
 
   // Return composite op directly — caller uses { input, left, top } to position in output
   return { input: Buffer.from(svg), left: bannerX, top: bannerY };
+}
+
+/**
+ * Build a compact key-value stats panel SVG.
+ * rows = [{ label, value }]
+ * Returns { input: Buffer, left, top } or null.
+ */
+function buildStatsPanelSvg({ rows, left, top, title }) {
+  if (!outputWidth || !outputHeight || !rows || rows.length === 0) return null;
+
+  const PAD_X    = 10;
+  const PAD_Y    = 8;
+  const TITLE_H  = title ? 22 : 0;
+  const ROW_H    = 18;
+  const FONT_SZ  = 11;
+  const TITLE_SZ = 12;
+  const PANEL_W  = 160;
+  const PANEL_H  = PAD_Y * 2 + TITLE_H + rows.length * ROW_H;
+
+  const titleEl = title
+    ? `<text x="${PAD_X}" y="${PAD_Y + TITLE_SZ}" font-size="${TITLE_SZ}" font-weight="700" fill="#c8a84b" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(title)}</text>`
+    : '';
+
+  const rowEls = rows.map((r, i) => {
+    const y = PAD_Y + TITLE_H + i * ROW_H + FONT_SZ + 2;
+    const val = (r.value == null || r.value === '' || r.value === null) ? '\u2014' : String(r.value);
+    return [
+      `<text x="${PAD_X}" y="${y}" font-size="${FONT_SZ}" fill="#888" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(r.label)}</text>`,
+      `<text x="${PANEL_W - PAD_X}" y="${y}" text-anchor="end" font-size="${FONT_SZ}" font-weight="600" fill="#e8e8e8" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(val)}</text>`
+    ].join('');
+  }).join('');
+
+  const dividerY = PAD_Y + TITLE_H;
+  const divider  = title ? `<line x1="${PAD_X}" y1="${dividerY}" x2="${PANEL_W - PAD_X}" y2="${dividerY}" stroke="#333" stroke-width="1"/>` : '';
+
+  const svg = `<svg width="${PANEL_W}" height="${PANEL_H}" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="${PANEL_W}" height="${PANEL_H}" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>
+  ${titleEl}${divider}${rowEls}
+</svg>`;
+
+  return { input: Buffer.from(svg), left, top };
+}
+
+function buildSocialStatsSvg() {
+  const d = _tokenStatsPanelData.social;
+  const rows = [
+    { label: 'HOLDERS',   value: d?.holders     != null ? Number(d.holders).toLocaleString()   : null },
+    { label: 'FOLLOWERS', value: d?.followers    != null ? Number(d.followers).toLocaleString() : null },
+    { label: 'COMMUNITY', value: d?.communityMembers != null ? Number(d.communityMembers).toLocaleString() : null },
+    { label: 'X POSTS',   value: d?.postCount    != null ? Number(d.postCount).toLocaleString()  : null },
+  ];
+  return buildStatsPanelSvg({ rows, left: 455, top: 508, title: 'SOCIAL' });
+}
+
+function buildTradeStatsSvg() {
+  const d = _tokenStatsPanelData.trade;
+  const fmt = (v) => v != null ? `$${Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : null;
+  const fmtPct = (v) => v != null ? `${Number(v).toFixed(2)}%` : null;
+  const rows = [
+    { label: 'BIG BUY 24H', value: fmt(d?.biggestBuy24h) },
+    { label: 'BIG BUY 8H',  value: fmt(d?.biggestBuy8h)  },
+    { label: 'BIG BUY 1H',  value: fmt(d?.biggestBuy1h)  },
+    { label: 'CHG 5M',      value: fmtPct(d?.priceChange5m) },
+  ];
+  return buildStatsPanelSvg({ rows, left: 665, top: 508, title: 'TRADING' });
 }
 
 /**
@@ -2176,6 +2247,8 @@ async function compositeFrame(state) {
   if (!hasActiveGlow) {
     _maybeUpdatePanelRaster('videos',  buildVideosListSvg,  `vl${videosListVersion}-p${_videosPage}-f${vFadeQ}-t${Math.floor(Date.now() / 60000)}`);
     _maybeUpdatePanelRaster('roadmap', buildRoadmapListSvg, `rl${roadmapListVersion}-p${_roadmapPage}-f${rFadeQ}`);
+    _maybeUpdatePanelRaster('socialStats', buildSocialStatsSvg, `ss${_tokenStatsVersion}`);
+    _maybeUpdatePanelRaster('tradeStats',  buildTradeStatsSvg,  `ts${_tokenStatsVersion}`);
   }
 
   // TV slide: check if animation is in progress (without ticking — tick happens in overlay section)
@@ -2184,7 +2257,7 @@ async function compositeFrame(state) {
   // outputKey tracks page + quantised fade so the fast path fires correctly between transitions.
   const _videoMinute = videosList.length > 0 ? Math.floor(Date.now() / 60000) : 0;
   const _tvSlideKey = tvSlide.visible ? 0 : 1; // changes when fully settled
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-tvs${_tvSlideKey}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}`;
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-tvs${_tvSlideKey}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}-tkv${_tokenStatsVersion}`;
 
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
   // hasActiveFade/TVSlide bypass it during their animations.
@@ -2288,6 +2361,26 @@ async function compositeFrame(state) {
       overlayOps.push({ input: rr.rgba, raw: { width: rr.width, height: rr.height, channels: 4 }, left: rr.left, top: rr.top, blend: 'over' });
     } else {
       const op = buildRoadmapListSvg();
+      if (op) overlayOps.push({ ...op, blend: 'over' });
+    }
+  }
+
+  // Token stat panels (social left, trade right) — use pre-rasterized RGBA
+  {
+    const sr = _panelRaster.socialStats;
+    if (sr.rgba) {
+      overlayOps.push({ input: sr.rgba, raw: { width: sr.width, height: sr.height, channels: 4 }, left: sr.left, top: sr.top, blend: 'over' });
+    } else {
+      const op = buildSocialStatsSvg();
+      if (op) overlayOps.push({ ...op, blend: 'over' });
+    }
+  }
+  {
+    const tr = _panelRaster.tradeStats;
+    if (tr.rgba) {
+      overlayOps.push({ input: tr.rgba, raw: { width: tr.width, height: tr.height, channels: 4 }, left: tr.left, top: tr.top, blend: 'over' });
+    } else {
+      const op = buildTradeStatsSvg();
       if (op) overlayOps.push({ ...op, blend: 'over' });
     }
   }
@@ -2642,6 +2735,11 @@ module.exports = {
   triggerGlow: (list, id) => {
     if (list === 'video') videosGlow.set(id, Date.now());
     else if (list === 'roadmap') roadmapGlow.set(id, Date.now());
+    lastOutputKey = null;
+  },
+  setTokenStats: (social, trade) => {
+    _tokenStatsPanelData = { social: social || null, trade: trade || null };
+    _tokenStatsVersion++;
     lastOutputKey = null;
   }
 };

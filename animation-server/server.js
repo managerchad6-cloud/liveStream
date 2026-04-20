@@ -42,7 +42,8 @@ const {
   setSuggestionQueue,
   setVideosList,
   setRoadmapList,
-  triggerGlow
+  triggerGlow,
+  setTokenStats
 } = require('./compositor');
 const { decodeAudio } = require('./audio-decoder');
 const AnimationState = require('./state');
@@ -946,6 +947,7 @@ app.get('/token/social-stats', async (req, res) => {
   if (force || !socialStatsCache || now - socialStatsLastFetch > SOCIAL_STATS_TTL_MS) {
     socialStatsCache = await fetchSocialStats();
     socialStatsLastFetch = now;
+    setTokenStats(socialStatsCache, tradeStatsCache);
   }
   res.json(socialStatsCache);
 });
@@ -956,6 +958,7 @@ app.get('/token/trade-stats', async (req, res) => {
   if (force || !tradeStatsCache || now - tradeStatsLastFetch > TRADE_STATS_TTL_MS) {
     tradeStatsCache = await fetchTradeStats();
     tradeStatsLastFetch = now;
+    setTokenStats(socialStatsCache, tradeStatsCache);
   }
   res.json(tradeStatsCache || { lastUpdated: now });
 });
