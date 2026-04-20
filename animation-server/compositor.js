@@ -2156,7 +2156,7 @@ async function compositeFrame(state) {
   }
 
   // TV slide: check if animation is in progress (without ticking — tick happens in overlay section)
-  const hasActiveTVSlide = tvSlide.animFromY !== tvSlide.animToY;
+  const hasActiveTVSlidePending = tvSlide.animFromY !== tvSlide.animToY;
 
   // outputKey tracks page + quantised fade so the fast path fires correctly between transitions.
   const _videoMinute = videosList.length > 0 ? Math.floor(Date.now() / 60000) : 0;
@@ -2165,7 +2165,7 @@ async function compositeFrame(state) {
 
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
   // hasActiveFade/TVSlide bypass it during their animations.
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide && outputKey === lastOutputKey && lastOutputBuffer) {
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlidePending && outputKey === lastOutputKey && lastOutputBuffer) {
     return lastOutputBuffer;
   }
 
