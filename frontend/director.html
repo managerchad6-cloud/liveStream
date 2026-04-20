@@ -2109,6 +2109,9 @@
     async function refreshExtendedStats(force = false) {
       const statusEl = document.getElementById('xs-status');
       statusEl.textContent = 'Fetching…';
+      // Only update a field if the new value is real — never overwrite good data with null
+      const setVal = (id, val) => { if (val != null) document.getElementById(id).textContent = val; };
+      const buyStr = (e) => e?.usd != null ? fmtUsdShort(e.usd) : e?.solAmt != null ? e.solAmt.toFixed(2) + ' SOL' : null;
       try {
         const suffix = force ? '?force=1' : '';
         const [social, trade] = await Promise.allSettled([
@@ -2118,23 +2121,19 @@
         const s = social.status === 'fulfilled' ? social.value : {};
         const t = trade.status === 'fulfilled' ? trade.value : {};
 
-        document.getElementById('xs-holders').textContent   = fmtNum(s.holders);
-        document.getElementById('xs-xfollowers').textContent = fmtNum(s.xFollowers);
-        document.getElementById('xs-community').textContent  = s.communityMembers ?? '--';
-        document.getElementById('xs-xtweets').textContent   = fmtNum(s.xTweets);
-
-        document.getElementById('xs-buy24').textContent = t.buy24h?.usd != null ? fmtUsdShort(t.buy24h.usd) : (t.buy24h?.solAmt != null ? t.buy24h.solAmt.toFixed(2) + ' SOL' : '--');
-        document.getElementById('xs-buy8').textContent  = t.buy8h?.usd  != null ? fmtUsdShort(t.buy8h.usd)  : (t.buy8h?.solAmt  != null ? t.buy8h.solAmt.toFixed(2)  + ' SOL' : '--');
-        document.getElementById('xs-buy1').textContent  = t.buy1h?.usd  != null ? fmtUsdShort(t.buy1h.usd)  : (t.buy1h?.solAmt  != null ? t.buy1h.solAmt.toFixed(2)  + ' SOL' : '--');
+        setVal('xs-holders',    s.holders     != null ? fmtNum(s.holders)    : null);
+        setVal('xs-xfollowers', s.xFollowers  != null ? fmtNum(s.xFollowers) : null);
+        setVal('xs-community',  s.communityMembers != null ? String(s.communityMembers) : null);
+        setVal('xs-xtweets',    s.xTweets     != null ? fmtNum(s.xTweets)    : null);
+        setVal('xs-buy24', buyStr(t.buy24h));
+        setVal('xs-buy8',  buyStr(t.buy8h));
+        setVal('xs-buy1',  buyStr(t.buy1h));
 
         const ch5 = window.liveTokenData?.priceChange?.m5;
         const ch5El = document.getElementById('xs-ch5m');
         if (ch5 != null) {
           ch5El.textContent = (ch5 >= 0 ? '+' : '') + ch5.toFixed(2) + '%';
           ch5El.style.color = ch5 >= 0 ? '#26a69a' : '#ef5350';
-        } else {
-          ch5El.textContent = '--';
-          ch5El.style.color = '';
         }
 
         const updated = s.lastUpdated || t.lastUpdated;

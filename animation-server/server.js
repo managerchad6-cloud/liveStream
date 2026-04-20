@@ -792,7 +792,7 @@ const PUMP_HEADERS = {
 };
 
 async function fetchHolderCount(tokenAddress) {
-  // 1. Try pump.fun (works for bonding-curve tokens)
+  // pump.fun API (works for bonding-curve tokens; migrated tokens return null)
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
@@ -805,49 +805,18 @@ async function fetchHolderCount(tokenAddress) {
       if (data?.holder_count) return data.holder_count;
     }
   } catch {}
-
-  // 2. Fallback: count token accounts via Solana RPC (works for migrated tokens)
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch('https://api.mainnet-beta.solana.com', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1,
-        method: 'getProgramAccounts',
-        params: ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', {
-          filters: [
-            { dataSize: 165 },
-            { memcmp: { offset: 0, bytes: tokenAddress } },
-            // Only non-zero balance accounts: amount field at offset 64, must be > 0
-            // We filter 0-balance by checking the 8-byte amount is not all zeros
-          ],
-          encoding: 'base64',
-          dataSlice: { offset: 64, length: 8 }, // fetch only the amount field
-          withContext: false,
-        }]
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    const json = await res.json();
-    const accounts = json?.result || [];
-    if (!Array.isArray(accounts)) return null;
-    // Filter out 0-balance accounts (amount bytes are all zeros → base64 "AAAAAAAAAAA=")
-    const active = accounts.filter(a => {
-      const b64 = a?.account?.data?.[0];
-      return b64 && b64 !== 'AAAAAAAAAAA=';
-    });
-    return active.length || accounts.length;
-  } catch (err) {
-    console.warn('[Token] Solana RPC holder count failed:', err.message);
-  }
-
-  return null;
+  return null; // migrated tokens: show -- rather than a wrong number
 }
 
+let _socialStatsFetchPromise = null; // prevent concurrent Puppeteer sessions
+
 async function fetchSocialStats() {
+  if (_socialStatsFetchPromise) return _socialStatsFetchPromise;
+  _socialStatsFetchPromise = _doFetchSocialStats().finally(() => { _socialStatsFetchPromise = null; });
+  return _socialStatsFetchPromise;
+}
+
+async function _doFetchSocialStats() {
   const result = { holders: null, xFollowers: null, xTweets: null, communityMembers: null, lastUpdated: Date.now() };
 
   if (activePumpToken) {
