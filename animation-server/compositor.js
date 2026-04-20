@@ -1422,8 +1422,10 @@ function buildChatOverlaySvg() {
 async function _buildBaseFromParts(fireFrame = fireState.frame) {
   if (!lowerStaticBase || !outputWidth) return staticBaseBuffer; // Not ready yet
 
-  // Cache hit: same fire frame already built for this staticBaseVersion
-  const cached = fireFrameBaseCache[fireFrame];
+  // Cache key includes TV offset so slide animation frames don't reuse stale base
+  const tvOffY = Math.round(tvSlide.offsetY);
+  const baseCacheKey = tvOffY === 0 ? `${fireFrame}` : `${fireFrame}-tv${tvOffY}`;
+  const cached = fireFrameBaseCache[baseCacheKey];
   if (cached) return cached;
 
   const ops = [];
@@ -1479,7 +1481,12 @@ async function _buildBaseFromParts(fireFrame = fireState.frame) {
     }
   }
 
-  // Upper static (TV + characters + props) as a single pre-composited transparent PNG
+  // TV physical frame — z=14, between fire (z≤13) and characters/props (z≥17)
+  if (tvFrameLayerBuffer && tvOffY < TV_SLIDE_DIST) {
+    ops.push({ input: tvFrameLayerBuffer, left: 0, top: tvOffY, blend: 'over' });
+  }
+
+  // Upper static (characters + props, without TV) as a single pre-composited transparent PNG
   if (upperStaticBuffer) {
     ops.push({ input: upperStaticBuffer, left: 0, top: 0, blend: 'over' });
   }
@@ -1493,8 +1500,7 @@ async function _buildBaseFromParts(fireFrame = fireState.frame) {
     .toBuffer({ resolveWithObject: true });
 
   const base = { data: result.data, info: result.info };
-  // Cache by fire frame — valid until next _rebuildStaticBase clears it
-  fireFrameBaseCache[fireFrame] = base;
+  fireFrameBaseCache[baseCacheKey] = base;
   return base;
 }
 
@@ -2076,7 +2082,8 @@ async function compositeFrame(state) {
   // Capture fire frame at key-generation time so the L1 build uses the same frame
   // the key was generated for — prevents caching a wrong-frame buffer under a stale key.
   const capturedFireFrame = fireState.frame;
-  const exprBaseCacheKey = `v${staticBaseVersion}-f${capturedFireFrame}-${exprKey}`;
+  const _tvOffYSnap = Math.round(tvSlide.offsetY);
+  const exprBaseCacheKey = _tvOffYSnap === 0 ? `v${staticBaseVersion}-f${capturedFireFrame}-${exprKey}` : `v${staticBaseVersion}-f${capturedFireFrame}-tv${_tvOffYSnap}-${exprKey}`;
   const l1Hit = exprBaseCache[exprBaseCacheKey]; // { data, info } raw RGBA or undefined
   let exprBaseRaw;
   let effectiveExprBaseKey;
@@ -2233,16 +2240,8 @@ async function compositeFrame(state) {
   const hasActiveTVSlide = _tickTVSlide();
   const tvOffsetY = tvSlide.offsetY;
 
-  // TV frame + content + reflection all slide together
+  // TV content + reflection slide with TV frame (frame itself is in _buildBaseFromParts at correct z)
   if (tvOffsetY < TV_SLIDE_DIST) {
-    if (tvFrameLayerBuffer) {
-      overlayOps.push({
-        input: tvFrameLayerBuffer,
-        left: 0,
-        top: tvOffsetY,
-        blend: 'over'
-      });
-    }
     if (currentTVFrame && TV_VIEWPORT) {
       overlayOps.push({
         input: currentTVFrame,
