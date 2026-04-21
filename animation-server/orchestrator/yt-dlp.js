@@ -4,11 +4,11 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const YTDLP_PATH    = process.env.YTDLP_PATH    || 'yt-dlp';
-const YTDLP_COOKIES = process.env.YTDLP_COOKIES || null; // path to cookies.txt
+const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 
 function buildArgs(args) {
-  return YTDLP_COOKIES ? ['--cookies', YTDLP_COOKIES, ...args] : args;
+  const cookies = process.env.YTDLP_COOKIES || null; // read dynamically — may be set after startup
+  return cookies ? ['--cookies', cookies, ...args] : args;
 }
 
 function run(args, { timeout = 60000 } = {}) {
