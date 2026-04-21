@@ -14,16 +14,18 @@
 const path = require('path');
 const fs   = require('fs');
 
-const STATS_PATH    = path.join(__dirname, '..', 'sfx-stats.json');
-const MATCH_TIMEOUT = 5000; // ms — never hold up rendering longer than this
-const SCORE_THRESHOLD = 0.00; // DEBUG: set to 0 to hear every match, raise to 0.70 for production
+const STATS_PATH      = path.join(__dirname, '..', 'sfx-stats.json');
+const MATCH_TIMEOUT   = 5000;  // ms — never hold up rendering longer than this
+const SCORE_THRESHOLD = 0.70;  // minimum score to attach an SFX
+const COOLDOWN_SIZE   = 8;     // how many recent plays to suppress from candidate list
 
 class SfxMatcher {
   constructor({ sfxService, openai, pipelineStore }) {
-    this.sfxService    = sfxService;
-    this.openai        = openai;
-    this.pipelineStore = pipelineStore;
-    this._stats        = this._loadStats();
+    this.sfxService      = sfxService;
+    this.openai          = openai;
+    this.pipelineStore   = pipelineStore;
+    this._stats          = this._loadStats();
+    this._recentlyPlayed = []; // cooldown ring — last COOLDOWN_SIZE played sfxIds
   }
 
   // ── Public ──────────────────────────────────────────────────────────────────
@@ -60,6 +62,10 @@ class SfxMatcher {
     this._stats[sfxId].autoPlayed  = (this._stats[sfxId].autoPlayed  || 0) + 1;
     this._stats[sfxId].lastAutoPlayed = new Date().toISOString();
     this._saveStats();
+
+    // Push to cooldown ring
+    this._recentlyPlayed.push(sfxId);
+    if (this._recentlyPlayed.length > COOLDOWN_SIZE) this._recentlyPlayed.shift();
   }
 
   /** Record that an SFX was the LLM's top pick but fell below the threshold. */
@@ -102,9 +108,26 @@ class SfxMatcher {
       .map(l => `[${l.speaker.toUpperCase()}]: ${l.text}`)
       .join('\n');
 
-    const sfxList = sounds
+    // Suppress recently played sounds — forces variety
+    const cooldownSet = new Set(this._recentlyPlayed);
+    const candidates = sounds.filter(s => !cooldownSet.has(s.id));
+    const activeSounds = candidates.length > 0 ? candidates : sounds;
+
+    const sfxList = activeSounds
       .map(s => `"${s.id}" — ${s.label}: ${s.meaning || ''}`)
       .join('\n');
+
+    // Build usage hint so the LLM can see which sounds are starving
+    const totalPlays = sounds.reduce((sum, s) => sum + (this._stats[s.id]?.autoPlayed || 0), 0);
+    const overused = sounds
+      .filter(s => (this._stats[s.id]?.autoPlayed || 0) > 0)
+      .sort((a, b) => (this._stats[b.id]?.autoPlayed || 0) - (this._stats[a.id]?.autoPlayed || 0))
+      .slice(0, 6)
+      .map(s => `  ${s.id} (${this._stats[s.id].autoPlayed} plays)`)
+      .join('\n');
+    const usageHint = totalPlays > 5 && overused
+      ? `\nDIVERSITY NOTE — these sounds have been overused; prefer underused alternatives when fit is comparable:\n${overused}\nSounds absent from this list have 0 plays and should be favored when the match quality is similar.\n`
+      : '';
 
     const prompt = `You are a livestream comedy director selecting a sound effect for a scripted segment.
 
@@ -112,7 +135,7 @@ SEGMENT TYPE: ${segment.type}
 SCRIPT:
 ${scriptText}
 ${recentContext ? `\nRECENT PRIOR CONTENT (for context):\n${recentContext}` : ''}
-
+${usageHint}
 AVAILABLE SOUND EFFECTS:
 ${sfxList}
 
