@@ -1392,10 +1392,9 @@ function buildMemeQueueSvg() {
 
   // ── Normal MIMO queue ────────────────────────────────────────────────────
   const items = memeQueueItems.slice(0, 20);
-  if (!items.length) return null;
 
   const cleanTitle = (s) => {
-    const stripped = s.replace(/s*([^)]*)/g, '').trim();
+    const stripped = s.replace(/\s*\([^)]*\)/g, '').trim();
     return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '…' : stripped;
   };
 
