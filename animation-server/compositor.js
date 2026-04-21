@@ -1338,10 +1338,13 @@ function buildMemeQueueSvg() {
   if (memeVotingData && memeVotingData.state !== 'idle') {
     const { state, pool, countdownSecs } = memeVotingData;
     const isRolling = state === 'rolling';
-    const subtitleText = isRolling ? 'Rolling out winner...' : '(/voteMeme 1, 2, 3...)';
-    const countdownText = (!isRolling && countdownSecs != null)
-      ? '⏱ ' + Math.floor(countdownSecs / 60) + ':' + String(countdownSecs % 60).padStart(2, '0') + ' remaining'
+
+    // Countdown folded into title; subtitle stays as the command hint
+    const cdStr = (!isRolling && countdownSecs != null)
+      ? ' (' + Math.floor(countdownSecs / 60) + ':' + String(countdownSecs % 60).padStart(2, '0') + ')'
       : '';
+    const titleText = '😆 Meme Vote' + cdStr; // 😆 same emoji as Queued Memes
+    const subtitleText = isRolling ? 'Rolling out winner...' : '(/voteMeme 1, 2, 3...)';
 
     const cleanDesc = (s) => {
       const stripped = s.trim();
@@ -1349,43 +1352,34 @@ function buildMemeQueueSvg() {
     };
 
     const votingItems = pool.slice(0, 20);
-    const COUNTDOWN_H = countdownText ? ITEM_H + 4 : 0;
     let lastVoteIdx = -1;
     for (let i = 0; i < votingItems.length; i++) {
-      if (relDividerY + i * ITEM_H + COUNTDOWN_H >= delimiterY) break;
+      if (relDividerY + i * ITEM_H >= delimiterY) break;
       lastVoteIdx = i;
     }
 
     const voteRows = [];
     for (let i = 0; i <= lastVoteIdx; i++) {
-      const itemBottomRel = relDividerY + (i + 1) * ITEM_H + COUNTDOWN_H;
+      const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
       const distFromLimit = delimiterY - itemBottomRel;
       const op = (i === lastVoteIdx) ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H)) : 1.0;
       const y = relDividerY + (i + 1) * ITEM_H - 4;
       const item = votingItems[i];
-      const voteLabel = item.votes > 0 ? ' (' + item.votes + ')' : '';
+      const voteStr = '(' + item.votes + ' votes)';
+      // Title left-aligned, vote count right-aligned — same style as Roadmap/Videos panels
       voteRows.push(
-        '<text x="' + PAD_X + '" y="' + y + '" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" opacity="' + op.toFixed(2) + '">' +
-        '<tspan fill="rgba(255,200,50,0.9)" font-weight="600">#' + item.number + ' </tspan>' +
-        '<tspan fill="rgba(255,255,255,0.9)">' + escapeSvgText(cleanDesc(item.description)) + '</tspan>' +
-        '<tspan fill="rgba(100,255,150,0.9)">' + escapeSvgText(voteLabel) + '</tspan>' +
-        '</text>'
+        '<text x="' + PAD_X + '" y="' + y + '" text-anchor="start" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="400" opacity="' + op.toFixed(2) + '">' + escapeSvgText('#' + item.number + '. ' + cleanDesc(item.description)) + '</text>' +
+        '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600" opacity="' + op.toFixed(2) + '">' + escapeSvgText(voteStr) + '</text>'
       );
     }
 
-    const listBottomY = relDividerY + Math.max(votingItems.length, 0) * ITEM_H;
-    const countdownRow = countdownText
-      ? '<text x="' + (PANEL_W / 2) + '" y="' + (listBottomY + ITEM_H - 4) + '" text-anchor="middle" fill="rgba(255,140,0,0.9)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + (ITEM_FONT + 1) + '" font-weight="600">' + escapeSvgText(countdownText) + '</text>'
-      : '';
-
-    const votePanelH = Math.min(listBottomY + COUNTDOWN_H + PAD_Y, delimiterY);
+    const votePanelH = Math.min(PAD_Y + TITLE_H + Math.max(votingItems.length, 0) * ITEM_H + PAD_Y, delimiterY);
     const voteSvg = '<svg width="' + PANEL_W + '" height="' + votePanelH + '" xmlns="http://www.w3.org/2000/svg">' +
       FRIENDSZONE_FACE +
-      svgEmojiTitle({ text: '🗳️ Meme Vote', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
+      svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
       '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
       '<line x1="' + PAD_X + '" y1="' + relDividerY + '" x2="' + (PANEL_W - PAD_X) + '" y2="' + relDividerY + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>' +
       voteRows.join('') +
-      countdownRow +
       '</svg>';
     return { input: Buffer.from(voteSvg), left: panelX, top: panelY };
   }
