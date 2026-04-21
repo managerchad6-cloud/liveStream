@@ -182,7 +182,7 @@ let staticBaseVersion = 0;
 
 // Vertical offset applied to the TV group at load time (pixels at output resolution).
 // Positive = move TV down. Adjust this to control how many panel item rows are visible above the TV.
-const TV_Y_OFFSET = 20;
+const TV_Y_OFFSET = 28;
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
@@ -931,7 +931,7 @@ function buildSocialStatsSvg() {
     { label: 'COMMUNITY', value: d?.communityMembers != null ? Number(d.communityMembers).toLocaleString() : null },
     { label: 'X POSTS',   value: d?.postCount    != null ? Number(d.postCount).toLocaleString()  : null },
   ];
-  return buildStatsPanelSvg({ rows, left: 455, top: 519, title: 'SOCIAL' });
+  return buildStatsPanelSvg({ rows, left: 455, top: 525, title: 'SOCIAL' });
 }
 
 function buildTradeStatsSvg() {
@@ -944,7 +944,7 @@ function buildTradeStatsSvg() {
     { label: 'BIG BUY 1H',  value: fmt(d?.biggestBuy1h)  },
     { label: 'CHG 5M',      value: fmtPct(d?.priceChange5m) },
   ];
-  return buildStatsPanelSvg({ rows, left: 665, top: 519, title: 'TRADING' });
+  return buildStatsPanelSvg({ rows, left: 665, top: 525, title: 'TRADING' });
 }
 
 /**
