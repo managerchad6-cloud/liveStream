@@ -131,10 +131,7 @@ document.body.setAttribute('data-ready', '1');
 
 async function renderChartScreenshot(candles, { symbol, priceLabel }) {
   const puppeteer = require('puppeteer');
-  const html    = buildChartHtml(candles, symbol, priceLabel);
-  // Use a data: URL — avoids file:// access restrictions on Linux VPS entirely.
-  // The HTML is already self-contained (LightweightCharts inlined), so this is safe.
-  const dataUrl = 'data:text/html;base64,' + Buffer.from(html).toString('base64');
+  const html = buildChartHtml(candles, symbol, priceLabel);
 
   const browser = await puppeteer.launch({
     headless: true,
@@ -147,7 +144,8 @@ async function renderChartScreenshot(candles, { symbol, priceLabel }) {
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
-    await page.goto(dataUrl, { waitUntil: 'load', timeout: 15000 });
+    // setContent injects HTML directly — no file:// or data: URL, fastest possible load
+    await page.setContent(html, { waitUntil: 'load', timeout: 15000 });
     await page.waitForFunction(() => document.body.getAttribute('data-ready') === '1', { timeout: 8000 });
     await new Promise(r => setTimeout(r, 300)); // let canvas paint
     return await page.screenshot({ type: 'png' });
