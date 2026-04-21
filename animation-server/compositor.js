@@ -281,14 +281,16 @@ const PAGE_SHOW_MS   = 5000; // hold each page for 5 seconds
 const PAGE_FADE_MS   = 700;  // crossfade duration between pages
 
 const _pageState = {
-  videos:  { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 },
-  roadmap: { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 }
+  videos:   { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 },
+  roadmap:  { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 },
+  memeVote: { page: 0, phase: 'show', phaseStartMs: 0, lastVersion: -1 }
 };
 
 // Current resolved page/fadeT — set by tickPage() calls in compositeFrame,
 // read by buildVideosListSvg / buildRoadmapListSvg (also called from async pre-raster)
 let _videosPage = 0, _videosFadeT = 0;
 let _roadmapPage = 0, _roadmapFadeT = 0;
+let _memeVotePage = 0, _memeVoteFadeT = 0;
 
 function tickPage(state, itemCount, listVersion) {
   const now = Date.now();
@@ -1340,11 +1342,10 @@ function buildMemeQueueSvg() {
     const { state, pool, countdownSecs } = memeVotingData;
     const isRolling = state === 'rolling';
 
-    // Countdown folded into title; subtitle stays as the command hint
     const cdStr = (!isRolling && countdownSecs != null)
       ? ' (' + Math.floor(countdownSecs / 60) + ':' + String(countdownSecs % 60).padStart(2, '0') + ')'
       : '';
-    const titleText = '😆 Meme Vote' + cdStr; // 😆 same emoji as Queued Memes
+    const titleText = '😆 Meme Vote' + cdStr;
     const subtitleText = isRolling ? 'Rolling out winner...' : '(/voteMeme 1, 2, 3...)';
 
     const cleanDesc = (s) => {
@@ -1352,63 +1353,70 @@ function buildMemeQueueSvg() {
       return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '…' : stripped;
     };
 
-    const votingItems = pool.slice(0, 20);
-    let lastVoteIdx = -1;
-    for (let i = 0; i < votingItems.length; i++) {
-      if (relDividerY + i * ITEM_H >= delimiterY) break;
-      lastVoteIdx = i;
-    }
+    // How many items fit in the available vertical space
+    const perPage = Math.max(1, Math.floor((delimiterY - relDividerY) / ITEM_H));
+    const totalVotePages = Math.max(1, Math.ceil(pool.length / perPage));
+    const curPage = _memeVotePage % totalVotePages;
+    const nxtPage = (curPage + 1) % totalVotePages;
+    const fadeT   = _memeVoteFadeT;
+    const curItems = pool.slice(curPage * perPage, (curPage + 1) * perPage);
+    const nxtItems = pool.slice(nxtPage * perPage, (nxtPage + 1) * perPage);
 
     const now = Date.now();
-    const voteRows = [];
-    for (let i = 0; i <= lastVoteIdx; i++) {
-      const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
-      const distFromLimit = delimiterY - itemBottomRel;
-      const op = (i === lastVoteIdx) ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H)) : 1.0;
-      const rowY = relDividerY + i * ITEM_H;
-      const y = rowY + ITEM_H - 4;
-      const item = votingItems[i];
-      const voteStr = '(' + item.votes + ' votes)';
 
-      // Glow + +1 particle (same logic as buildListSvg)
-      const glowAge = memeVoteGlow.has(item.number) ? now - memeVoteGlow.get(item.number) : GLOW_CLEANUP_MS;
-      const glowT   = glowAge < GLOW_DURATION_MS    ? 1 - glowAge / GLOW_DURATION_MS    : 0;
-      const plusT   = glowAge < PLUS_ONE_DURATION_MS ? 1 - glowAge / PLUS_ONE_DURATION_MS : 0;
-      const glowOp  = glowT * 0.55;
-      const glowRect = glowOp > 0
-        ? '<rect x="0" y="' + rowY + '" width="' + PANEL_W + '" height="' + ITEM_H + '" fill="rgba(255,210,60,' + glowOp.toFixed(3) + ')"/>'
-        : '';
-      let plusOne = '';
-      if (plusT > 0) {
-        const seed  = memeVoteGlow.get(item.number) || 0;
-        const rA    = (seed * 9301    + 49297)   % 233280 / 233280;
-        const rB    = (seed * 1234567 + 7654321) % 999983 / 999983;
-        const popT  = Math.min(1, glowAge / 120);
-        const fontSize = Math.round((14 + rA * 4) * (0.4 + popT * 0.6));
-        const sway  = Math.abs(Math.sin(glowAge * (0.007 + rB * 0.004) + rA * Math.PI * 2)) * (5 + rA * 7);
-        const rise  = glowAge * (0.04 + rA * 0.03);
-        const pX    = PANEL_W - PAD_X - sway;
-        const pY    = y - rise;
-        const pOp   = (plusT * plusT).toFixed(3);
-        plusOne = '<text x="' + pX.toFixed(1) + '" y="' + pY.toFixed(1) + '" text-anchor="end" fill="rgba(255,220,40,' + pOp + ')" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + fontSize + '" font-weight="900" stroke="rgba(0,0,0,0.5)" stroke-width="1.5" paint-order="stroke">+1</text>';
+    const renderVotePageItems = (items) => {
+      const rows = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const rowY = relDividerY + i * ITEM_H;
+        const y = rowY + ITEM_H - 4;
+        const voteStr = '(' + item.votes + ' votes)';
+
+        const glowAge = memeVoteGlow.has(item.number) ? now - memeVoteGlow.get(item.number) : GLOW_CLEANUP_MS;
+        const glowT   = glowAge < GLOW_DURATION_MS     ? 1 - glowAge / GLOW_DURATION_MS     : 0;
+        const plusT   = glowAge < PLUS_ONE_DURATION_MS ? 1 - glowAge / PLUS_ONE_DURATION_MS : 0;
+        const glowOp  = glowT * 0.55;
+        const glowRect = glowOp > 0
+          ? '<rect x="0" y="' + rowY + '" width="' + PANEL_W + '" height="' + ITEM_H + '" fill="rgba(255,210,60,' + glowOp.toFixed(3) + ')"/>'
+          : '';
+        let plusOne = '';
+        if (plusT > 0) {
+          const seed = memeVoteGlow.get(item.number) || 0;
+          const rA   = (seed * 9301    + 49297)   % 233280 / 233280;
+          const rB   = (seed * 1234567 + 7654321) % 999983 / 999983;
+          const popT = Math.min(1, glowAge / 120);
+          const fontSize = Math.round((14 + rA * 4) * (0.4 + popT * 0.6));
+          const sway = Math.abs(Math.sin(glowAge * (0.007 + rB * 0.004) + rA * Math.PI * 2)) * (5 + rA * 7);
+          const rise = glowAge * (0.04 + rA * 0.03);
+          const pX   = PANEL_W - PAD_X - sway;
+          const pY   = y - rise;
+          const pOp  = (plusT * plusT).toFixed(3);
+          plusOne = '<text x="' + pX.toFixed(1) + '" y="' + pY.toFixed(1) + '" text-anchor="end" fill="rgba(255,220,40,' + pOp + ')" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + fontSize + '" font-weight="900" stroke="rgba(0,0,0,0.5)" stroke-width="1.5" paint-order="stroke">+1</text>';
+        }
+
+        const vOp = Math.min(1, 0.85 + glowT * 0.15).toFixed(3);
+        rows.push(
+          glowRect +
+          '<text x="' + PAD_X + '" y="' + y + '" text-anchor="start" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="400">' + escapeSvgText('#' + item.number + '. ' + cleanDesc(item.description)) + '</text>' +
+          '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,' + vOp + ')" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600">' + escapeSvgText(voteStr) + '</text>' +
+          plusOne
+        );
       }
+      return rows.join('');
+    };
 
-      const vOp = Math.min(1, 0.85 + glowT * 0.15).toFixed(3);
-      voteRows.push(
-        glowRect +
-        '<text x="' + PAD_X + '" y="' + y + '" text-anchor="start" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="400" opacity="' + op.toFixed(2) + '">' + escapeSvgText('#' + item.number + '. ' + cleanDesc(item.description)) + '</text>' +
-        '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,' + vOp + ')" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600" opacity="' + op.toFixed(2) + '">' + escapeSvgText(voteStr) + '</text>' +
-        plusOne
-      );
-    }
+    const curGroup = '<g opacity="' + (1 - fadeT).toFixed(3) + '">' + renderVotePageItems(curItems) + '</g>';
+    const nxtGroup = fadeT > 0
+      ? '<g opacity="' + fadeT.toFixed(3) + '">' + renderVotePageItems(nxtItems) + '</g>'
+      : '';
 
-    const votePanelH = Math.min(PAD_Y + TITLE_H + Math.max(votingItems.length, 0) * ITEM_H + PAD_Y, delimiterY);
+    const votePanelH = Math.min(relDividerY + perPage * ITEM_H + PAD_Y, delimiterY);
     const voteSvg = '<svg width="' + PANEL_W + '" height="' + votePanelH + '" xmlns="http://www.w3.org/2000/svg">' +
       FRIENDSZONE_FACE +
       svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
       '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
       '<line x1="' + PAD_X + '" y1="' + relDividerY + '" x2="' + (PANEL_W - PAD_X) + '" y2="' + relDividerY + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>' +
-      voteRows.join('') +
+      curGroup + nxtGroup +
       '</svg>';
     return { input: Buffer.from(voteSvg), left: panelX, top: panelY };
   }
@@ -2319,13 +2327,15 @@ async function compositeFrame(state) {
   const hasActiveGlow = videosGlow.size > 0 || roadmapGlow.size > 0 || memeVoteGlow.size > 0;
 
   // Tick page state — advances phase timers, resolves current page + fadeT
-  { const r = tickPage(_pageState.videos,  videosList.length,  videosListVersion);  _videosPage  = r.page; _videosFadeT  = r.fadeT; }
-  { const r = tickPage(_pageState.roadmap, roadmapList.length, roadmapListVersion); _roadmapPage = r.page; _roadmapFadeT = r.fadeT; }
+  { const r = tickPage(_pageState.videos,   videosList.length,                videosListVersion);  _videosPage   = r.page; _videosFadeT   = r.fadeT; }
+  { const r = tickPage(_pageState.roadmap,  roadmapList.length,               roadmapListVersion); _roadmapPage  = r.page; _roadmapFadeT  = r.fadeT; }
+  { const r = tickPage(_pageState.memeVote, memeVotingData?.pool?.length || 0, memeQueueVersion);  _memeVotePage = r.page; _memeVoteFadeT = r.fadeT; }
 
   // Quantise fadeT to 0.05 steps → limits pre-raster updates to ≤20 per fade transition
-  const vFadeQ = Math.round(_videosFadeT  / 0.05);
-  const rFadeQ = Math.round(_roadmapFadeT / 0.05);
-  const hasActiveFade = _videosFadeT > 0 || _roadmapFadeT > 0;
+  const vFadeQ = Math.round(_videosFadeT   / 0.05);
+  const rFadeQ = Math.round(_roadmapFadeT  / 0.05);
+  const mFadeQ = Math.round(_memeVoteFadeT / 0.05);
+  const hasActiveFade = _videosFadeT > 0 || _roadmapFadeT > 0 || _memeVoteFadeT > 0;
 
   // Kick off async panel pre-rasterization when content changes.
   // Skipped during glow (glow path uses SVG directly for per-frame accuracy).
@@ -2342,7 +2352,7 @@ async function compositeFrame(state) {
   // outputKey tracks page + quantised fade so the fast path fires correctly between transitions.
   const _videoMinute = videosList.length > 0 ? Math.floor(Date.now() / 60000) : 0;
   const _tvSlideKey = tvSlide.visible ? 0 : 1; // changes when fully settled
-  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-tvs${_tvSlideKey}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}-tkv${_tokenStatsVersion}`;
+  const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-tvs${_tvSlideKey}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}-mvp${_memeVotePage}-mvf${mFadeQ}-tkv${_tokenStatsVersion}`;
 
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
   // hasActiveFade/TVSlide bypass it during their animations.
