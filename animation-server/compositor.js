@@ -180,6 +180,10 @@ let expressionLayerEntries = []; // Eye/eyebrow layers composited dynamically wi
 let noseLayerEntries = [];       // Nose layers composited above eye_cover (z-order)
 let staticBaseVersion = 0;
 
+// Vertical offset applied to the TV group at load time (pixels at output resolution).
+// Positive = move TV down. Adjust this to control how many panel item rows are visible above the TV.
+const TV_Y_OFFSET = 20;
+
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
 let currentTVFrame = null; // Current TV frame buffer for compositing
@@ -600,8 +604,9 @@ async function preloadLayers() {
   outputWidth = Math.round(m.width * OUTPUT_SCALE);
   outputHeight = Math.round(m.height * OUTPUT_SCALE);
 
-  // Extract TV viewport bounds from mask.png
+  // Extract TV viewport bounds from mask.png, then apply load-time vertical offset
   TV_VIEWPORT = await extractTVViewport();
+  if (TV_VIEWPORT) TV_VIEWPORT.y += TV_Y_OFFSET;
 
   console.log('Preloading layer images...');
 
@@ -1678,11 +1683,11 @@ async function _buildBaseFromParts(fireFrame = fireState.frame, tvOffY = Math.ro
   if (tvOffY < TV_SLIDE_DIST) {
     // TV physical frame — z=14, between fire (z≤13) and characters/props (z≥17)
     if (tvFrameLayerBuffer) {
-      ops.push({ input: tvFrameLayerBuffer, left: 0, top: tvOffY, blend: 'over' });
+      ops.push({ input: tvFrameLayerBuffer, left: 0, top: tvOffY + TV_Y_OFFSET, blend: 'over' });
     }
     // TV reflection — z=16, above TV frame, below characters
     if (tvReflectionBuffer) {
-      ops.push({ input: tvReflectionBuffer, left: tvReflectionPos.x, top: tvReflectionPos.y + tvOffY, blend: 'over' });
+      ops.push({ input: tvReflectionBuffer, left: tvReflectionPos.x, top: tvReflectionPos.y + tvOffY + TV_Y_OFFSET, blend: 'over' });
     }
   }
 
