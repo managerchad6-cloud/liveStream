@@ -292,7 +292,7 @@ let _videosPage = 0, _videosFadeT = 0;
 let _roadmapPage = 0, _roadmapFadeT = 0;
 let _memeVotePage = 0, _memeVoteFadeT = 0;
 
-function tickPage(state, itemCount, listVersion) {
+function tickPage(state, itemCount, listVersion, perPage = ITEMS_PER_PAGE) {
   const now = Date.now();
   // Reset when list is replaced
   if (state.lastVersion !== listVersion) {
@@ -300,7 +300,7 @@ function tickPage(state, itemCount, listVersion) {
     state.lastVersion = listVersion;
   }
   if (!state.phaseStartMs) state.phaseStartMs = now;
-  const totalPages = Math.max(1, Math.ceil(itemCount / ITEMS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(itemCount / perPage));
   const elapsed = now - state.phaseStartMs;
   if (totalPages > 1) {
     if (state.phase === 'show' && elapsed >= PAGE_SHOW_MS) {
@@ -2355,7 +2355,7 @@ async function compositeFrame(state) {
   // Tick page state — advances phase timers, resolves current page + fadeT
   { const r = tickPage(_pageState.videos,   videosList.length,                videosListVersion);  _videosPage   = r.page; _videosFadeT   = r.fadeT; }
   { const r = tickPage(_pageState.roadmap,  roadmapList.length,               roadmapListVersion); _roadmapPage  = r.page; _roadmapFadeT  = r.fadeT; }
-  { const r = tickPage(_pageState.memeVote, memeVotingData?.pool?.length || 0, memeVotingData?.pool?.length ?? -1); _memeVotePage = r.page; _memeVoteFadeT = r.fadeT; }
+  { const _mvDelimiterY = (TV_VIEWPORT ? TV_VIEWPORT.y : 130) - 4; const _mvPerPage = Math.max(1, Math.floor((_mvDelimiterY - 62) / 20)); const r = tickPage(_pageState.memeVote, memeVotingData?.pool?.length || 0, memeVotingData?.pool?.length ?? -1, _mvPerPage); _memeVotePage = r.page; _memeVoteFadeT = r.fadeT; }
 
   // Quantise fadeT to 0.05 steps → limits pre-raster updates to ≤20 per fade transition
   const vFadeQ = Math.round(_videosFadeT   / 0.05);
