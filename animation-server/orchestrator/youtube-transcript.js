@@ -9,6 +9,11 @@ const { spawn } = require('child_process');
 
 const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 
+function ytdlpArgs(args) {
+  const cookies = process.env.YTDLP_COOKIES || null;
+  return cookies ? ['--cookies', cookies, ...args] : args;
+}
+
 let YoutubeTranscript;
 try {
   ({ YoutubeTranscript } = require('youtube-transcript'));
@@ -87,7 +92,7 @@ async function fetchViaYtdlp(url) {
   try {
     await new Promise((resolve, reject) => {
       // Try auto-subs first, also request manual subs as fallback
-      const proc = spawn(YTDLP_PATH, [
+      const proc = spawn(YTDLP_PATH, ytdlpArgs([
         '--write-auto-subs',
         '--write-subs',
         '--skip-download',
@@ -96,7 +101,7 @@ async function fetchViaYtdlp(url) {
         '--no-playlist',
         '-o', path.join(tmpDir, 'sub'),
         url
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      ]), { stdio: ['ignore', 'pipe', 'pipe'] });
 
       proc.on('error', err => reject(new Error(`yt-dlp error: ${err.message}`)));
       proc.on('close', code => {
@@ -142,6 +147,63 @@ function parseJson3(data) {
   return entries;
 }
 
+// ── Whisper fallback ─────────────────────────────────────────────────────────
+
+async function fetchViaWhisper(url) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY not set — cannot use Whisper fallback');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-audio-'));
+  const audioPath = path.join(tmpDir, 'audio.mp3');
+
+  try {
+    // Download first 10 minutes of audio only
+    await new Promise((resolve, reject) => {
+      const proc = spawn(YTDLP_PATH, ytdlpArgs([
+        '-x', '--audio-format', 'mp3', '--audio-quality', '5',
+        '--download-sections', '*0:00-600',
+        '--no-playlist',
+        '-o', audioPath,
+        url
+      ]), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const errs = [];
+      proc.stderr.on('data', d => errs.push(d));
+      proc.on('error', err => reject(new Error(`yt-dlp audio error: ${err.message}`)));
+      proc.on('close', code => {
+        if (code !== 0 && !fs.existsSync(audioPath)) {
+          reject(new Error(`yt-dlp audio exit ${code}: ${Buffer.concat(errs).toString().slice(-200)}`));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    if (!fs.existsSync(audioPath)) throw new Error('Audio file not created by yt-dlp');
+
+    // Transcribe via OpenAI Whisper
+    const OpenAI = require('openai');
+    const openai = new OpenAI({ apiKey });
+    console.log('[Transcript] Sending audio to Whisper...');
+    const resp = await openai.audio.transcriptions.create({
+      model: 'whisper-1',
+      file: fs.createReadStream(audioPath),
+      response_format: 'verbose_json',
+      timestamp_granularities: ['segment'],
+    });
+
+    const segments = resp.segments || [];
+    if (segments.length === 0) throw new Error('Whisper returned no segments');
+
+    return segments.map(s => ({
+      text: (s.text || '').trim(),
+      start: s.start || 0,
+      end: s.end || (s.start + 2),
+    })).filter(s => s.text);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -166,13 +228,25 @@ async function fetchTranscript(url) {
     console.warn(`[Transcript] npm package failed (${err.message}), trying yt-dlp...`);
   }
 
-  // Fall back to yt-dlp
+  // Fall back to yt-dlp subtitles
   if (!entries) {
     try {
       entries = await fetchViaYtdlp(url);
       console.log(`[Transcript] Fetched via yt-dlp: ${entries.length} entries`);
     } catch (err) {
       lastError = err;
+    }
+  }
+
+  // Fall back to Whisper (downloads audio + transcribes — works for any video)
+  if (!entries) {
+    try {
+      console.log(`[Transcript] No captions found, falling back to Whisper transcription...`);
+      entries = await fetchViaWhisper(url);
+      console.log(`[Transcript] Fetched via Whisper: ${entries.length} segments`);
+    } catch (err) {
+      lastError = err;
+      console.warn(`[Transcript] Whisper failed: ${err.message}`);
     }
   }
 
