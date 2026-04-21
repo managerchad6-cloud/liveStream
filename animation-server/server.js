@@ -206,6 +206,7 @@ const memeVotingPool = new Map(); // id → { id, number, userId, text, descript
 let memeVotingPoolCounter = 0;
 let memeVotingCountdown = null; // { endsAt, timer } | null
 let memeVotingWinnerSegId = null; // segment ID of winner while 'rolling'
+let memeVotingWinner = null; // { number, description, votes } of the winner during 'rolling'
 const VOTING_DURATION_MS = 5 * 60 * 1000;
 
 function getMimoStatus() {
@@ -291,6 +292,7 @@ async function finalizeVoting() {
     }
   }
   memeVotingState = 'rolling';
+  memeVotingWinner = { number: winner.number, description: winner.description, votes: winner.votes };
   memeVotingPool.clear();
   memeVotingWinnerSegId = null;
   broadcastMemeIntakeUpdate();
@@ -321,6 +323,7 @@ function resetVotingAfterMeme() {
   if (memeVotingState !== 'rolling') return;
   console.log('[MimoVote] Meme aired — resetting voting cycle');
   memeVotingState = 'idle';
+  memeVotingWinner = null;
   memeVotingPool.clear();
   memeVotingPoolCounter = 0;
   memeVotingWinnerSegId = null;
@@ -335,7 +338,7 @@ function syncVotingToCompositor() {
   }
   const pool = Array.from(memeVotingPool.values()).map(({ number, description, votes }) => ({ number, description, votes }));
   const countdownSecs = memeVotingCountdown ? Math.max(0, Math.round((memeVotingCountdown.endsAt - Date.now()) / 1000)) : null;
-  setMemeVotingData({ state: memeVotingState, pool, countdownSecs });
+  setMemeVotingData({ state: memeVotingState, pool, countdownSecs, winner: memeVotingWinner || null });
 }
 
 function addToMemeIntake(userId, text) {

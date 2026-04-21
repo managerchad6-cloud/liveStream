@@ -1339,30 +1339,47 @@ function buildMemeQueueSvg() {
 
   // ── Voting mode ──────────────────────────────────────────────────────────
   if (memeVotingData && memeVotingData.state !== 'idle') {
-    const { state, pool, countdownSecs } = memeVotingData;
+    const { state, pool, countdownSecs, winner } = memeVotingData;
     const isRolling = state === 'rolling';
 
     const cdStr = (!isRolling && countdownSecs != null)
       ? ' (' + Math.floor(countdownSecs / 60) + ':' + String(countdownSecs % 60).padStart(2, '0') + ')'
       : '';
     const titleText = '😆 Meme Vote' + cdStr;
-    const subtitleText = isRolling ? 'Rolling out winner...' : '(/voteMeme 1, 2, 3...)';
 
     const cleanDesc = (s) => {
       const stripped = s.trim();
       return stripped.length > MAX_CHARS ? stripped.slice(0, MAX_CHARS - 1) + '…' : stripped;
     };
 
-    // How many items fit in the available vertical space
-    const perPage = Math.max(1, Math.floor((delimiterY - relDividerY) / ITEM_H));
-    const totalVotePages = Math.max(1, Math.ceil(pool.length / perPage));
-    const curPage = _memeVotePage % totalVotePages;
-    const nxtPage = (curPage + 1) % totalVotePages;
-    const fadeT   = _memeVoteFadeT;
-    const curItems = pool.slice(curPage * perPage, (curPage + 1) * perPage);
-    const nxtItems = pool.slice(nxtPage * perPage, (nxtPage + 1) * perPage);
-
     const now = Date.now();
+
+    // ── Rolling state: show winner prominently ───────────────────────────────
+    if (isRolling && winner) {
+      const subtitleText = 'Rolling out winner...';
+      const winnerDesc = cleanDesc(winner.description);
+      const winnerVotes = '(' + winner.votes + ' vote' + (winner.votes !== 1 ? 's' : '') + ')';
+      const rowY = relDividerY;
+      const y = rowY + ITEM_H - 4;
+      // Persistent golden glow on winner row
+      const glowRect = '<rect x="0" y="' + rowY + '" width="' + PANEL_W + '" height="' + ITEM_H + '" fill="rgba(255,210,60,0.22)"/>';
+      const winnerRow =
+        glowRect +
+        '<text x="' + PAD_X + '" y="' + y + '" text-anchor="start" fill="rgba(255,235,120,1)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="700">' + escapeSvgText('#' + winner.number + '. ' + winnerDesc) + '</text>' +
+        '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,1)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600">' + escapeSvgText(winnerVotes) + '</text>';
+      const rollingH = Math.min(relDividerY + ITEM_H + PAD_Y, delimiterY);
+      const rollingSvg = '<svg width="' + PANEL_W + '" height="' + rollingH + '" xmlns="http://www.w3.org/2000/svg">' +
+        FRIENDSZONE_FACE +
+        svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
+        '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
+        '<line x1="' + PAD_X + '" y1="' + relDividerY + '" x2="' + (PANEL_W - PAD_X) + '" y2="' + relDividerY + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>' +
+        winnerRow +
+        '</svg>';
+      return { input: Buffer.from(rollingSvg), left: panelX, top: panelY };
+    }
+
+    // ── Voting state: paginated pool ─────────────────────────────────────────
+    const subtitleText = '(/voteMeme 1, 2, 3...)';
 
     const renderVotePageItems = (items) => {
       const rows = [];
@@ -1404,6 +1421,15 @@ function buildMemeQueueSvg() {
       }
       return rows.join('');
     };
+
+    // How many items fit in the available vertical space
+    const perPage = Math.max(1, Math.floor((delimiterY - relDividerY) / ITEM_H));
+    const totalVotePages = Math.max(1, Math.ceil(pool.length / perPage));
+    const curPage = _memeVotePage % totalVotePages;
+    const nxtPage = (curPage + 1) % totalVotePages;
+    const fadeT   = _memeVoteFadeT;
+    const curItems = pool.slice(curPage * perPage, (curPage + 1) * perPage);
+    const nxtItems = pool.slice(nxtPage * perPage, (nxtPage + 1) * perPage);
 
     const curGroup = '<g opacity="' + (1 - fadeT).toFixed(3) + '">' + renderVotePageItems(curItems) + '</g>';
     const nxtGroup = fadeT > 0
