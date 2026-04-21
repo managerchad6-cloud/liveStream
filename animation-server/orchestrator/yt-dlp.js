@@ -4,9 +4,15 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
+const YTDLP_PATH    = process.env.YTDLP_PATH    || 'yt-dlp';
+const YTDLP_COOKIES = process.env.YTDLP_COOKIES || null; // path to cookies.txt
+
+function buildArgs(args) {
+  return YTDLP_COOKIES ? ['--cookies', YTDLP_COOKIES, ...args] : args;
+}
 
 function run(args, { timeout = 60000 } = {}) {
+  args = buildArgs(args);
   return new Promise((resolve, reject) => {
     const chunks = [];
     const errChunks = [];
@@ -80,13 +86,13 @@ async function getVideoInfo(url) {
 function downloadVideo(url, outputPath, onProgress) {
   return new Promise((resolve, reject) => {
     const errChunks = [];
-    const proc = spawn(YTDLP_PATH, [
+    const proc = spawn(YTDLP_PATH, buildArgs([
       '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
       '--merge-output-format', 'mp4',
       '--no-playlist',
       '-o', outputPath,
       url
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ]), { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let killed = false;
     // 30-minute download timeout
