@@ -8,9 +8,10 @@
  * Same cookie approach as TwitterIngestService (ct0 + auth_token).
  */
 class XChatListener {
-  constructor({ chatIntake, onMemeCommand, getCredentials }) {
+  constructor({ chatIntake, onMemeCommand, onVoteMemeCommand, getCredentials }) {
     this.chatIntake = chatIntake;
     this.onMemeCommand = onMemeCommand || null;
+    this.onVoteMemeCommand = onVoteMemeCommand || null;
     this.getCredentials = getCredentials || (() => null);
     this.browser = null;
     this.page = null;
@@ -133,6 +134,12 @@ class XChatListener {
     await this.page.exposeFunction('__xChatOnMessage', (username, text) => {
       if (!text || !username) return;
       console.log(`[XChat] ${username}: ${text.substring(0, 80)}`);
+
+      const voteMemeMatch = text.match(/^\/voteMeme\s+(\d+)/i);
+      if (voteMemeMatch) {
+        if (this.onVoteMemeCommand) this.onVoteMemeCommand(username, voteMemeMatch[1]);
+        return;
+      }
 
       const memeMatch = text.match(/^\/meme\s+(.+)/is);
       if (memeMatch) {

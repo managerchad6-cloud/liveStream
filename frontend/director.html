@@ -1043,10 +1043,20 @@
       <h2 style="margin:0;">Meme Intake</h2>
       <div style="display:flex;gap:6px;">
         <button id="meme-intake-auto-btn" style="padding:4px 10px;border:1px solid #555;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:0.78rem;">Auto: OFF</button>
+        <button id="mimo-toggle-btn" style="padding:4px 10px;border:1px solid #555;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:0.78rem;">Mimo: ON</button>
       </div>
     </div>
     <div id="meme-intake-section">
       <span class="empty-state">No pending meme requests</span>
+    </div>
+    <!-- Voting pool (shown when Mimo OFF) -->
+    <div id="meme-voting-section" style="display:none;margin-top:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <span style="font-size:0.8rem;font-weight:600;color:var(--accent);">🗳️ Vote Pool</span>
+        <span id="voting-countdown" style="font-size:0.78rem;color:rgba(255,140,0,0.9);font-weight:600;"></span>
+      </div>
+      <div id="voting-pool-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+      <div id="voting-status-msg" style="margin-top:8px;font-size:0.78rem;color:var(--muted);"></div>
     </div>
   </div>
 
@@ -1360,8 +1370,82 @@
 
     // ── Meme Intake ───────────────────────────────────────────────────────────
     let memeIntakeAutoMode = false;
+    let mimoEnabled = true;
+    let _votingCountdownInterval = null;
 
-    function renderMemeIntake(items, auto) {
+    function renderMemoVoting(mimo) {
+      if (!mimo) return;
+      mimoEnabled = !!mimo.mimoEnabled;
+      const mimoBtn = document.getElementById('mimo-toggle-btn');
+      if (mimoBtn) {
+        mimoBtn.textContent = `Mimo: ${mimoEnabled ? 'ON' : 'OFF'}`;
+        mimoBtn.style.borderColor = mimoEnabled ? '#555' : 'var(--primary)';
+        mimoBtn.style.color = mimoEnabled ? 'var(--muted)' : 'var(--primary)';
+      }
+
+      const intakeSection = document.getElementById('meme-intake-section');
+      const votingSection = document.getElementById('meme-voting-section');
+      if (!votingSection) return;
+
+      if (mimoEnabled) {
+        votingSection.style.display = 'none';
+        if (intakeSection) intakeSection.style.display = '';
+        if (_votingCountdownInterval) { clearInterval(_votingCountdownInterval); _votingCountdownInterval = null; }
+        return;
+      }
+
+      // MIMO OFF — show voting UI
+      if (intakeSection) intakeSection.style.display = 'none';
+      votingSection.style.display = '';
+
+      const { votingState, pool, countdownEndsAt } = mimo;
+      const statusEl = document.getElementById('voting-status-msg');
+      const poolEl = document.getElementById('voting-pool-list');
+      const cdEl = document.getElementById('voting-countdown');
+
+      if (votingState === 'rolling') {
+        if (statusEl) statusEl.textContent = 'Rolling out winner...';
+        if (poolEl) poolEl.innerHTML = '';
+        if (cdEl) cdEl.textContent = '';
+        if (_votingCountdownInterval) { clearInterval(_votingCountdownInterval); _votingCountdownInterval = null; }
+        return;
+      }
+
+      if (votingState === 'idle') {
+        if (statusEl) statusEl.textContent = 'Waiting for /meme submissions...';
+        if (poolEl) poolEl.innerHTML = '';
+        if (cdEl) cdEl.textContent = '';
+        if (_votingCountdownInterval) { clearInterval(_votingCountdownInterval); _votingCountdownInterval = null; }
+        return;
+      }
+
+      // voting state
+      if (statusEl) statusEl.textContent = pool.length ? '' : 'Waiting for /meme submissions...';
+      if (poolEl) {
+        poolEl.innerHTML = (pool || []).map(item => `
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:rgba(255,255,255,0.04);border-radius:5px;">
+            <span style="color:rgba(255,200,50,0.9);font-weight:600;font-size:0.78rem;min-width:24px;">#${item.number}</span>
+            <span style="flex:1;font-size:0.78rem;color:var(--text);">${escHtml((item.description || '').slice(0, 70))}</span>
+            <span style="font-size:0.78rem;color:rgba(100,255,150,0.9);min-width:28px;text-align:right;">${item.votes > 0 ? item.votes + '✓' : ''}</span>
+          </div>
+        `).join('');
+      }
+
+      // Countdown ticker
+      if (_votingCountdownInterval) { clearInterval(_votingCountdownInterval); _votingCountdownInterval = null; }
+      if (countdownEndsAt && cdEl) {
+        const tick = () => {
+          const secs = Math.max(0, Math.round((countdownEndsAt - Date.now()) / 1000));
+          const m = Math.floor(secs / 60), s = secs % 60;
+          cdEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+          if (secs === 0 && _votingCountdownInterval) { clearInterval(_votingCountdownInterval); _votingCountdownInterval = null; }
+        };
+        tick();
+        _votingCountdownInterval = setInterval(tick, 1000);
+      }
+    }
+
+    function renderMemeIntake(items, auto, mimo) {
       memeIntakeAutoMode = !!auto;
       const autoBtn = document.getElementById('meme-intake-auto-btn');
       if (autoBtn) {
@@ -1369,6 +1453,10 @@
         autoBtn.style.borderColor = memeIntakeAutoMode ? 'var(--primary)' : '#555';
         autoBtn.style.color = memeIntakeAutoMode ? 'var(--primary)' : 'var(--muted)';
       }
+
+      renderMemoVoting(mimo);
+
+      if (mimo && !mimo.mimoEnabled) return; // voting mode — intake section hidden
 
       const container = document.getElementById('meme-intake-section');
       if (!items || !items.length) {
@@ -1410,8 +1498,12 @@
       await apiPost('/api/meme-intake/auto', { enabled: !memeIntakeAutoMode }).catch(() => {});
     });
 
+    document.getElementById('mimo-toggle-btn').addEventListener('click', async () => {
+      await apiPost('/api/meme-intake/mimo', { enabled: !mimoEnabled }).catch(() => {});
+    });
+
     // Initial load
-    apiGet('/api/meme-intake').then(data => renderMemeIntake(data.items, data.auto)).catch(() => {});
+    apiGet('/api/meme-intake').then(data => renderMemeIntake(data.items, data.auto, data.mimo)).catch(() => {});
 
     let currentMemeJobs = [];
     const memeElapsedInterval = setInterval(() => {
@@ -1696,7 +1788,7 @@
           renderMemeGen(payload.data?.jobs || []);
         }
         if (payload.event === 'meme:intake-update') {
-          renderMemeIntake(payload.data?.items || [], payload.data?.auto);
+          renderMemeIntake(payload.data?.items || [], payload.data?.auto, payload.data?.mimo);
         }
         if (payload.event === 'chat:new-card') {
           refreshAll();

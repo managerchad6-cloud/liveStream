@@ -39,6 +39,7 @@ const {
   tickDayCycle,
   getSceneState,
   setMemeQueue,
+  setMemeVotingData,
   setSuggestionQueue,
   setVideosList,
   setRoadmapList,
@@ -194,12 +195,145 @@ setInterval(pollExternalLists, 60 * 1000);
 let memeIntakeAutoMode = false;
 const memeIntakeQueue = new Map(); // id → { id, userId, text, description, receivedAt }
 let memeIntakeCounter = 0;
+
+// ── MIMO Voting Mode ──────────────────────────────────────────────────────────
+// mimoEnabled=true → current behavior (director queue / auto-process)
+// mimoEnabled=false → voting mode: pool + countdown + winner queued to pipeline
+let mimoEnabled = true;
+let memeVotingState = 'idle'; // 'idle' | 'voting' | 'rolling'
+const memeVotingPool = new Map(); // id → { id, number, userId, text, description, receivedAt, votes }
+let memeVotingPoolCounter = 0;
+let memeVotingCountdown = null; // { endsAt, timer } | null
+let memeVotingWinnerSegId = null; // segment ID of winner while 'rolling'
+const VOTING_DURATION_MS = 5 * 60 * 1000;
+
+function getMimoStatus() {
+  const pool = Array.from(memeVotingPool.values()).map(({ id, number, userId, description, votes }) => ({
+    id, number, userId, description, votes
+  }));
+  return {
+    mimoEnabled,
+    votingState: memeVotingState,
+    pool,
+    countdownEndsAt: memeVotingCountdown?.endsAt || null
+  };
+}
+
 function broadcastMemeIntakeUpdate() {
   if (!orchestratorSocket) return;
   orchestratorSocket.broadcast('meme:intake-update', {
     items: Array.from(memeIntakeQueue.values()),
-    auto: memeIntakeAutoMode
+    auto: memeIntakeAutoMode,
+    mimo: getMimoStatus()
   });
+}
+
+function addToVotingPool(userId, text) {
+  if (memeVotingState !== 'idle' && memeVotingState !== 'voting') return null;
+  const id = `vote-${++memeVotingPoolCounter}-${Date.now()}`;
+  const number = memeVotingPool.size + 1;
+  memeVotingPool.set(id, { id, number, userId, text, description: text.slice(0, 60), receivedAt: Date.now(), votes: 0 });
+  console.log(`[MimoVote] #${number} from ${userId.slice(0, 12)}: "${text.slice(0, 60)}"`);
+  if (memeVotingState === 'idle') startVotingCountdown();
+  else broadcastMemeIntakeUpdate();
+  syncVotingToCompositor();
+  return memeVotingPool.get(id);
+}
+
+function startVotingCountdown() {
+  if (memeVotingCountdown?.timer) clearTimeout(memeVotingCountdown.timer);
+  if (memeVotingCountdown?.tickInterval) clearInterval(memeVotingCountdown.tickInterval);
+  memeVotingState = 'voting';
+  const endsAt = Date.now() + VOTING_DURATION_MS;
+  const timer = setTimeout(() => finalizeVoting(), VOTING_DURATION_MS);
+  // Tick every 5s to keep the stream overlay countdown current
+  const tickInterval = setInterval(() => {
+    if (memeVotingState === 'voting') syncVotingToCompositor();
+    else clearInterval(tickInterval);
+  }, 5000);
+  memeVotingCountdown = { endsAt, timer, tickInterval };
+  broadcastMemeIntakeUpdate();
+  syncVotingToCompositor();
+}
+
+function handleVoteMeme(userId, numStr) {
+  if (memeVotingState !== 'voting') return false;
+  const num = parseInt(numStr, 10);
+  if (isNaN(num) || num < 1) return false;
+  for (const item of memeVotingPool.values()) {
+    if (item.number === num) {
+      item.votes++;
+      console.log(`[MimoVote] ${userId.slice(0, 12)} → #${num} (${item.votes} votes)`);
+      broadcastMemeIntakeUpdate();
+      syncVotingToCompositor();
+      return true;
+    }
+  }
+  return false;
+}
+
+async function finalizeVoting() {
+  if (memeVotingCountdown?.tickInterval) clearInterval(memeVotingCountdown.tickInterval);
+  if (memeVotingCountdown?.timer) clearTimeout(memeVotingCountdown.timer);
+  memeVotingCountdown = null;
+  if (memeVotingPool.size === 0) {
+    memeVotingState = 'idle';
+    broadcastMemeIntakeUpdate();
+    syncVotingToCompositor();
+    return;
+  }
+  let winner = null;
+  for (const item of memeVotingPool.values()) {
+    if (!winner || item.votes > winner.votes || (item.votes === winner.votes && item.receivedAt < winner.receivedAt)) {
+      winner = item;
+    }
+  }
+  memeVotingState = 'rolling';
+  memeVotingPool.clear();
+  memeVotingWinnerSegId = null;
+  broadcastMemeIntakeUpdate();
+  syncVotingToCompositor();
+  console.log(`[MimoVote] Winner: #${winner.number} "${winner.description}" (${winner.votes} votes)`);
+  if (!scriptGenerator || !pipelineStore || !mediaLibrary) {
+    console.warn('[MimoVote] Pipeline not ready — resetting');
+    memeVotingState = 'idle';
+    broadcastMemeIntakeUpdate();
+    syncVotingToCompositor();
+    return;
+  }
+  try {
+    const memeJob = trackMemeJob(winner.description, winner.userId);
+    const result = await runMemeFromText(winner.text, winner.userId);
+    memeVotingWinnerSegId = result?.segmentId || null;
+    memeJob.done();
+    broadcastPipelineUpdate();
+  } catch (err) {
+    console.error('[MimoVote] Winner generation failed:', err.message);
+    memeVotingState = 'idle';
+    broadcastMemeIntakeUpdate();
+    syncVotingToCompositor();
+  }
+}
+
+function resetVotingAfterMeme() {
+  if (memeVotingState !== 'rolling') return;
+  console.log('[MimoVote] Meme aired — resetting voting cycle');
+  memeVotingState = 'idle';
+  memeVotingPool.clear();
+  memeVotingPoolCounter = 0;
+  memeVotingWinnerSegId = null;
+  broadcastMemeIntakeUpdate();
+  syncVotingToCompositor();
+}
+
+function syncVotingToCompositor() {
+  if (!mimoEnabled || memeVotingState === 'idle') {
+    setMemeVotingData(null);
+    return;
+  }
+  const pool = Array.from(memeVotingPool.values()).map(({ number, description, votes }) => ({ number, description, votes }));
+  const countdownSecs = memeVotingCountdown ? Math.max(0, Math.round((memeVotingCountdown.endsAt - Date.now()) / 1000)) : null;
+  setMemeVotingData({ state: memeVotingState, pool, countdownSecs });
 }
 
 function addToMemeIntake(userId, text) {
@@ -226,6 +360,14 @@ function processMemeIntakeItem(item) {
 
 function syncMemeQueueToCompositor() {
   const all = pipelineStore ? pipelineStore.getAllSegments() : [];
+  // Detect when voting winner has aired → reset voting cycle
+  if (memeVotingWinnerSegId) {
+    const winnerSeg = all.find(s => s.id === memeVotingWinnerSegId);
+    if (winnerSeg && (winnerSeg.status === 'aired' || winnerSeg.status === 'deleted')) {
+      resetVotingAfterMeme();
+      memeVotingWinnerSegId = null;
+    }
+  }
   // Remove titles for segments that have aired or been deleted
   for (const [id] of memeSegmentTitles) {
     const seg = all.find(s => s.id === id);
@@ -3213,6 +3355,12 @@ app.post('/api/orchestrator/meme/freestyle', async (req, res) => {
     return res.status(400).json({ error: 'text is required' });
   }
 
+  // Voting mode: add to voting pool
+  if (!mimoEnabled) {
+    const item = addToVotingPool(userId || 'chat', text.trim());
+    return res.json({ ok: true, queued: false, voting: true, id: item?.id || null });
+  }
+
   // Manual mode: route to intake queue for director approval
   if (!memeIntakeAutoMode) {
     const item = addToMemeIntake(userId || 'chat', text.trim());
@@ -3412,7 +3560,31 @@ app.get('/api/meme-library', async (req, res) => {
 // ── Meme Intake API ───────────────────────────────────────────────────────────
 
 app.get('/api/meme-intake', (req, res) => {
-  res.json({ items: Array.from(memeIntakeQueue.values()), auto: memeIntakeAutoMode });
+  res.json({ items: Array.from(memeIntakeQueue.values()), auto: memeIntakeAutoMode, mimo: getMimoStatus() });
+});
+
+app.post('/api/meme-intake/mimo', (req, res) => {
+  const { enabled } = req.body || {};
+  mimoEnabled = typeof enabled === 'boolean' ? enabled : !mimoEnabled;
+  console.log(`[MIMO] Mode: ${mimoEnabled ? 'ON (direct)' : 'OFF (voting)'}`);
+  if (mimoEnabled) {
+    // Cancel any active voting when switching back to MIMO ON
+    if (memeVotingCountdown?.tickInterval) clearInterval(memeVotingCountdown.tickInterval);
+    if (memeVotingCountdown?.timer) clearTimeout(memeVotingCountdown.timer);
+    memeVotingCountdown = null;
+    memeVotingState = 'idle';
+    memeVotingPool.clear();
+    memeVotingWinnerSegId = null;
+  }
+  broadcastMemeIntakeUpdate();
+  syncVotingToCompositor();
+  res.json(getMimoStatus());
+});
+
+app.post('/api/meme-intake/vote', (req, res) => {
+  const { userId, number } = req.body || {};
+  const ok = handleVoteMeme(userId || 'director', String(number));
+  res.json({ ok });
 });
 
 app.post('/api/meme-intake/auto', (req, res) => {
@@ -3886,6 +4058,11 @@ async function start() {
     config: orchestratorConfig,
     onChatMessage: addChatMessage,
     onMemeCommand: (userId, text) => {
+      if (!mimoEnabled) {
+        // Voting mode: add to pool
+        addToVotingPool(userId, text);
+        return;
+      }
       if (memeIntakeAutoMode) {
         console.log(`[MemeIntake] Auto — generating: "${text.slice(0, 60)}"`);
         const memeJob = trackMemeJob(text.slice(0, 60), userId);
@@ -3899,6 +4076,9 @@ async function start() {
       } else {
         addToMemeIntake(userId, text);
       }
+    },
+    onVoteMemeCommand: (userId, numStr) => {
+      handleVoteMeme(userId, numStr);
     }
   });
 
@@ -3927,6 +4107,7 @@ async function start() {
   xChatListener = new XChatListener({
     chatIntake: orchestrator.chatIntake,
     onMemeCommand: orchestrator.pumpChatListener?.onMemeCommand || null,
+    onVoteMemeCommand: orchestrator.pumpChatListener?.onVoteMemeCommand || null,
     getCredentials: () => twitterIngest?.getCredentials() || null
   });
   const xBroadcastId = process.env.X_BROADCAST_ID;

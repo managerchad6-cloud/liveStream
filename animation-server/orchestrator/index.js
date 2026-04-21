@@ -12,7 +12,7 @@ const VideoReactionPlanner = require('./video-reaction-planner');
 const VideoReactionSession = require('./video-reaction-session');
 
 class Orchestrator {
-  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onMemeCommand, tvService }) {
+  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onMemeCommand, onVoteMemeCommand, tvService }) {
     this.pipelineStore = pipelineStore;
     this.openai = openai || null;
     this.animationServerUrl = animationServerUrl;
@@ -66,7 +66,8 @@ class Orchestrator {
     this.pumpChatListener = new PumpChatListener({
       chatIntake: this.chatIntake,
       token: process.env.PUMP_FUN_TOKEN || null,
-      onMemeCommand: onMemeCommand || null
+      onMemeCommand: onMemeCommand || null,
+      onVoteMemeCommand: onVoteMemeCommand || null
     });
   }
 
