@@ -932,6 +932,18 @@
         <div id="yt-session-status" style="display:none;margin-top:6px;font-size:0.78rem;color:#ff8888;"></div>
 
         <button id="yt-cancel-btn" style="display:none;padding:6px 12px;border:1px solid #c44;border-radius:8px;background:transparent;color:#c44;cursor:pointer;font-family:inherit;font-size:0.82rem;margin-top:6px;">✕ Cancel Session</button>
+
+        <!-- Cookies auth -->
+        <div style="margin-top:12px;border-top:1px solid #222;padding-top:10px;">
+          <div style="font-size:0.72rem;color:var(--muted);margin-bottom:6px;">YouTube auth cookies (required on VPS)</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <label style="padding:5px 10px;background:#1a1a2e;border:1px solid #333;border-radius:6px;cursor:pointer;font-size:0.75rem;color:#aaa;white-space:nowrap;">
+              📄 Upload cookies.txt
+              <input type="file" id="yt-cookies-file" accept=".txt" style="display:none;">
+            </label>
+            <span id="yt-cookies-status" style="font-size:0.72rem;color:var(--muted);"></span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2710,6 +2722,41 @@
       } catch (e) {}
       ytResetUI();
     });
+
+    // Cookies upload
+    document.getElementById('yt-cookies-file').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const statusEl = document.getElementById('yt-cookies-status');
+      statusEl.style.color = 'var(--muted)';
+      statusEl.textContent = 'Uploading…';
+      try {
+        const fd = new FormData();
+        fd.append('cookies', file);
+        const res = await fetch(`${API_BASE}/video-reaction/cookies`, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        statusEl.style.color = '#4caf50';
+        statusEl.textContent = '✓ Saved';
+      } catch (err) {
+        statusEl.style.color = '#ff4444';
+        statusEl.textContent = '✗ ' + err.message;
+      }
+      e.target.value = '';
+    });
+
+    // Check if cookies already configured on load
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/video-reaction/cookies`);
+        const data = await res.json();
+        if (data.configured) {
+          const statusEl = document.getElementById('yt-cookies-status');
+          statusEl.style.color = '#4caf50';
+          statusEl.textContent = '✓ Configured';
+        }
+      } catch {}
+    })();
 
   </script>
 </body>

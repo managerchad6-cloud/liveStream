@@ -91,6 +91,13 @@ const SCENE_SETTINGS_PATH = path.join(__dirname, 'scene-settings.json');
 const LOGS_DIR = path.join(ROOT_DIR, 'logs');
 const LOGS_AUDIO_DIR = path.join(LOGS_DIR, 'audio');
 
+// Auto-load YouTube cookies if previously uploaded
+const _ytCookiesPath = path.join(__dirname, 'youtube-cookies.txt');
+if (fs.existsSync(_ytCookiesPath) && !process.env.YTDLP_COOKIES) {
+  process.env.YTDLP_COOKIES = _ytCookiesPath;
+  console.log('[YT] Auto-loaded cookies from', _ytCookiesPath);
+}
+
 // Ensure directories exist
 fs.mkdirSync(STREAMS_DIR, { recursive: true });
 fs.mkdirSync(LOGS_DIR, { recursive: true });
@@ -2180,6 +2187,26 @@ app.post('/video-reaction/cancel', (req, res) => {
   if (!orchestrator) return res.status(503).json({ error: 'Orchestrator not initialized' });
   orchestrator.cancelVideoReaction();
   res.json({ success: true });
+});
+
+const YTDLP_COOKIES_PATH = path.join(__dirname, 'youtube-cookies.txt');
+
+// GET /video-reaction/cookies — check if cookies are configured
+app.get('/video-reaction/cookies', (req, res) => {
+  res.json({ configured: fs.existsSync(YTDLP_COOKIES_PATH) });
+});
+
+// POST /video-reaction/cookies — upload cookies.txt
+app.post('/video-reaction/cookies', multer({ storage: multer.memoryStorage() }).single('cookies'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  try {
+    fs.writeFileSync(YTDLP_COOKIES_PATH, req.file.buffer);
+    process.env.YTDLP_COOKIES = YTDLP_COOKIES_PATH;
+    console.log('[YT] cookies.txt saved to', YTDLP_COOKIES_PATH);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Serve TV content audio files
