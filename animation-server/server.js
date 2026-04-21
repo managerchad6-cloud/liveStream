@@ -40,6 +40,7 @@ const {
   getSceneState,
   setMemeQueue,
   setMemeVotingData,
+  triggerMemeVoteGlow,
   setSuggestionQueue,
   setVideosList,
   setRoadmapList,
@@ -264,6 +265,7 @@ function handleVoteMeme(userId, numStr) {
     if (item.number === num) {
       item.votes++;
       console.log(`[MimoVote] ${userId.slice(0, 12)} → #${num} (${item.votes} votes)`);
+      triggerMemeVoteGlow(num);
       broadcastMemeIntakeUpdate();
       syncVotingToCompositor();
       return true;

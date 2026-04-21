@@ -273,6 +273,7 @@ const PLUS_ONE_DURATION_MS = 1700; // +1 lingers an extra second after glow fade
 const GLOW_CLEANUP_MS   = Math.max(GLOW_DURATION_MS, PLUS_ONE_DURATION_MS);
 const videosGlow = new Map(); // file -> glowStartMs
 const roadmapGlow = new Map(); // id -> glowStartMs
+const memeVoteGlow = new Map(); // proposal number -> glowStartMs
 
 // Panel paging — shows ITEMS_PER_PAGE items at a time, crossfades to next batch after PAGE_SHOW_MS
 const ITEMS_PER_PAGE = 6;
@@ -1358,18 +1359,46 @@ function buildMemeQueueSvg() {
       lastVoteIdx = i;
     }
 
+    const now = Date.now();
     const voteRows = [];
     for (let i = 0; i <= lastVoteIdx; i++) {
       const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
       const distFromLimit = delimiterY - itemBottomRel;
       const op = (i === lastVoteIdx) ? Math.min(1.0, Math.max(0.05, distFromLimit / ITEM_H)) : 1.0;
-      const y = relDividerY + (i + 1) * ITEM_H - 4;
+      const rowY = relDividerY + i * ITEM_H;
+      const y = rowY + ITEM_H - 4;
       const item = votingItems[i];
       const voteStr = '(' + item.votes + ' votes)';
-      // Title left-aligned, vote count right-aligned — same style as Roadmap/Videos panels
+
+      // Glow + +1 particle (same logic as buildListSvg)
+      const glowAge = memeVoteGlow.has(item.number) ? now - memeVoteGlow.get(item.number) : GLOW_CLEANUP_MS;
+      const glowT   = glowAge < GLOW_DURATION_MS    ? 1 - glowAge / GLOW_DURATION_MS    : 0;
+      const plusT   = glowAge < PLUS_ONE_DURATION_MS ? 1 - glowAge / PLUS_ONE_DURATION_MS : 0;
+      const glowOp  = glowT * 0.55;
+      const glowRect = glowOp > 0
+        ? '<rect x="0" y="' + rowY + '" width="' + PANEL_W + '" height="' + ITEM_H + '" fill="rgba(255,210,60,' + glowOp.toFixed(3) + ')"/>'
+        : '';
+      let plusOne = '';
+      if (plusT > 0) {
+        const seed  = memeVoteGlow.get(item.number) || 0;
+        const rA    = (seed * 9301    + 49297)   % 233280 / 233280;
+        const rB    = (seed * 1234567 + 7654321) % 999983 / 999983;
+        const popT  = Math.min(1, glowAge / 120);
+        const fontSize = Math.round((14 + rA * 4) * (0.4 + popT * 0.6));
+        const sway  = Math.abs(Math.sin(glowAge * (0.007 + rB * 0.004) + rA * Math.PI * 2)) * (5 + rA * 7);
+        const rise  = glowAge * (0.04 + rA * 0.03);
+        const pX    = PANEL_W - PAD_X - sway;
+        const pY    = y - rise;
+        const pOp   = (plusT * plusT).toFixed(3);
+        plusOne = '<text x="' + pX.toFixed(1) + '" y="' + pY.toFixed(1) + '" text-anchor="end" fill="rgba(255,220,40,' + pOp + ')" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + fontSize + '" font-weight="900" stroke="rgba(0,0,0,0.5)" stroke-width="1.5" paint-order="stroke">+1</text>';
+      }
+
+      const vOp = Math.min(1, 0.85 + glowT * 0.15).toFixed(3);
       voteRows.push(
+        glowRect +
         '<text x="' + PAD_X + '" y="' + y + '" text-anchor="start" fill="rgba(255,255,255,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="400" opacity="' + op.toFixed(2) + '">' + escapeSvgText('#' + item.number + '. ' + cleanDesc(item.description)) + '</text>' +
-        '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,0.85)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600" opacity="' + op.toFixed(2) + '">' + escapeSvgText(voteStr) + '</text>'
+        '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,' + vOp + ')" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600" opacity="' + op.toFixed(2) + '">' + escapeSvgText(voteStr) + '</text>' +
+        plusOne
       );
     }
 
@@ -2286,7 +2315,8 @@ async function compositeFrame(state) {
   // Clean up after the longest of glow or +1 duration
   for (const [k, t] of videosGlow) if (now - t >= GLOW_CLEANUP_MS) videosGlow.delete(k);
   for (const [k, t] of roadmapGlow) if (now - t >= GLOW_CLEANUP_MS) roadmapGlow.delete(k);
-  const hasActiveGlow = videosGlow.size > 0 || roadmapGlow.size > 0;
+  for (const [k, t] of memeVoteGlow) if (now - t >= GLOW_CLEANUP_MS) memeVoteGlow.delete(k);
+  const hasActiveGlow = videosGlow.size > 0 || roadmapGlow.size > 0 || memeVoteGlow.size > 0;
 
   // Tick page state — advances phase timers, resolves current page + fadeT
   { const r = tickPage(_pageState.videos,  videosList.length,  videosListVersion);  _videosPage  = r.page; _videosFadeT  = r.fadeT; }
@@ -2795,6 +2825,11 @@ module.exports = {
   triggerGlow: (list, id) => {
     if (list === 'video') videosGlow.set(id, Date.now());
     else if (list === 'roadmap') roadmapGlow.set(id, Date.now());
+    else if (list === 'memeVote') memeVoteGlow.set(id, Date.now());
+    lastOutputKey = null;
+  },
+  triggerMemeVoteGlow: (number) => {
+    memeVoteGlow.set(number, Date.now());
     lastOutputKey = null;
   },
   setTokenStats: (social, trade) => {
