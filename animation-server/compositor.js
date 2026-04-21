@@ -2355,7 +2355,7 @@ async function compositeFrame(state) {
   // Tick page state — advances phase timers, resolves current page + fadeT
   { const r = tickPage(_pageState.videos,   videosList.length,                videosListVersion);  _videosPage   = r.page; _videosFadeT   = r.fadeT; }
   { const r = tickPage(_pageState.roadmap,  roadmapList.length,               roadmapListVersion); _roadmapPage  = r.page; _roadmapFadeT  = r.fadeT; }
-  { const r = tickPage(_pageState.memeVote, memeVotingData?.pool?.length || 0, memeQueueVersion);  _memeVotePage = r.page; _memeVoteFadeT = r.fadeT; }
+  { const r = tickPage(_pageState.memeVote, memeVotingData?.pool?.length || 0, memeVotingData?.pool?.length ?? -1); _memeVotePage = r.page; _memeVoteFadeT = r.fadeT; }
 
   // Quantise fadeT to 0.05 steps → limits pre-raster updates to ≤20 per fade transition
   const vFadeQ = Math.round(_videosFadeT   / 0.05);
