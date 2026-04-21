@@ -362,10 +362,11 @@ function processMemeIntakeItem(item) {
 
 function syncMemeQueueToCompositor() {
   const all = pipelineStore ? pipelineStore.getAllSegments() : [];
-  // Detect when voting winner has aired → reset voting cycle
+  // Detect when voting winner has aired → reset voting cycle.
+  // Also reset if segment disappeared from store (cleaned up after airing).
   if (memeVotingWinnerSegId) {
     const winnerSeg = all.find(s => s.id === memeVotingWinnerSegId);
-    if (winnerSeg && (winnerSeg.status === 'aired' || winnerSeg.status === 'deleted')) {
+    if (!winnerSeg || winnerSeg.status === 'aired' || winnerSeg.status === 'deleted') {
       resetVotingAfterMeme();
       memeVotingWinnerSegId = null;
     }
