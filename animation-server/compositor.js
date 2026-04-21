@@ -931,7 +931,7 @@ function buildSocialStatsSvg() {
     { label: 'COMMUNITY', value: d?.communityMembers != null ? Number(d.communityMembers).toLocaleString() : null },
     { label: 'X POSTS',   value: d?.postCount    != null ? Number(d.postCount).toLocaleString()  : null },
   ];
-  return buildStatsPanelSvg({ rows, left: 455, top: 520, title: 'SOCIAL' });
+  return buildStatsPanelSvg({ rows, left: 455, top: 528, title: 'SOCIAL' });
 }
 
 function buildTradeStatsSvg() {
@@ -944,7 +944,7 @@ function buildTradeStatsSvg() {
     { label: 'BIG BUY 1H',  value: fmt(d?.biggestBuy1h)  },
     { label: 'CHG 5M',      value: fmtPct(d?.priceChange5m) },
   ];
-  return buildStatsPanelSvg({ rows, left: 665, top: 520, title: 'TRADING' });
+  return buildStatsPanelSvg({ rows, left: 665, top: 528, title: 'TRADING' });
 }
 
 /**
