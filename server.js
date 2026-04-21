@@ -312,6 +312,22 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
+    // /voteMeme N — vote for meme proposal in voting pool
+    const voteMemeMatch = message.match(/^\/voteMeme\s+(\d+)/i);
+    if (voteMemeMatch) {
+      const userId = req.body.userId || req.ip || 'chat';
+      try {
+        await axios.post(
+          `${animationServerUrl}/api/meme-intake/vote`,
+          { userId, number: parseInt(voteMemeMatch[1], 10) },
+          { timeout: 4000 }
+        );
+      } catch (err) {
+        console.warn('[Chat] /voteMeme forward failed:', err.message);
+      }
+      return res.json({ ok: true, type: 'voteMeme' });
+    }
+
     // /video N — vote for video at index N in the on-stream list
     const voteVideoMatch = message.match(/^\/video\s+(\d+)/i);
     if (voteVideoMatch) {
