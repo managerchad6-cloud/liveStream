@@ -62,6 +62,7 @@ async function getVideoInfo(url) {
     '--dump-json',
     '--no-playlist',
     '--no-download',
+    '--no-check-formats',
     url
   ], { timeout: 30000 });
 
@@ -87,8 +88,9 @@ function downloadVideo(url, outputPath, onProgress) {
   return new Promise((resolve, reject) => {
     const errChunks = [];
     const proc = spawn(YTDLP_PATH, buildArgs([
-      '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+      '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best[vcodec!=none]/best',
       '--merge-output-format', 'mp4',
+      '--no-check-formats',
       '--no-playlist',
       '-o', outputPath,
       url
