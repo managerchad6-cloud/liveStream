@@ -182,7 +182,7 @@ let staticBaseVersion = 0;
 
 // Vertical offset applied to the TV group at load time (pixels at output resolution).
 // Positive = move TV down. Adjust this to control how many panel item rows are visible above the TV.
-const TV_Y_OFFSET = 28;
+const TV_Y_OFFSET = 31;
 
 // TV viewport bounds (extracted from mask.png, scaled to output resolution)
 let TV_VIEWPORT = null;
