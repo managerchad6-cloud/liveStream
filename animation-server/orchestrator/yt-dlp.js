@@ -8,7 +8,8 @@ const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 
 function buildArgs(args) {
   const cookies = process.env.YTDLP_COOKIES || null; // read dynamically — may be set after startup
-  return cookies ? ['--cookies', cookies, ...args] : args;
+  const base = ['--js-runtimes', 'nodejs', ...args];
+  return cookies ? ['--cookies', cookies, ...base] : base;
 }
 
 function run(args, { timeout = 60000 } = {}) {
