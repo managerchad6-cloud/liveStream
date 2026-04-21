@@ -327,7 +327,7 @@ function resetVotingAfterMeme() {
 }
 
 function syncVotingToCompositor() {
-  if (!mimoEnabled || memeVotingState === 'idle') {
+  if (mimoEnabled || memeVotingState === 'idle') {
     setMemeVotingData(null);
     return;
   }
