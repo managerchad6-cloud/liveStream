@@ -916,7 +916,7 @@ function buildStatsPanelSvg({ rows, left, top, title }) {
   const divider  = title ? `<line x1="${PAD_X}" y1="${dividerY}" x2="${PANEL_W - PAD_X}" y2="${dividerY}" stroke="#333" stroke-width="1"/>` : '';
 
   const svg = `<svg width="${PANEL_W}" height="${PANEL_H}" xmlns="http://www.w3.org/2000/svg">
-  <rect x="0" y="0" width="${PANEL_W}" height="${PANEL_H}" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>
+  <rect x="0" y="0" width="${PANEL_W}" height="${PANEL_H}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
   ${titleEl}${divider}${rowEls}
 </svg>`;
 
@@ -1258,7 +1258,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
     ? `<text x="${PANEL_W / 2}" y="${svgH - 4}" text-anchor="middle" fill="rgba(255,255,255,0.75)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400" letter-spacing="0.5">${escapeSvgText('next video release in ' + countdownText)}</text>`
     : '';
   const svg = `<svg width="${PANEL_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
-    <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${svgH}" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>
+    <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${svgH}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
     ${FRIENDSZONE_FACE}
     ${titleEl}
     ${subtitleEl}
@@ -1377,7 +1377,7 @@ function buildMemeQueueSvg() {
         '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,1)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600">' + escapeSvgText(winnerVotes) + '</text>';
       const rollingH = Math.min(relDividerY + ITEM_H + PAD_Y, delimiterY);
       const rollingSvg = '<svg width="' + PANEL_W + '" height="' + rollingH + '" xmlns="http://www.w3.org/2000/svg">' +
-        '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + rollingH + '" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>' +
+        '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + rollingH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>' +
         FRIENDSZONE_FACE +
         svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
         '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
@@ -1447,7 +1447,7 @@ function buildMemeQueueSvg() {
 
     const votePanelH = Math.min(relDividerY + perPage * ITEM_H + PAD_Y, delimiterY);
     const voteSvg = '<svg width="' + PANEL_W + '" height="' + votePanelH + '" xmlns="http://www.w3.org/2000/svg">' +
-      '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + votePanelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>' +
+      '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + votePanelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>' +
       FRIENDSZONE_FACE +
       svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
       '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
@@ -1489,7 +1489,7 @@ function buildMemeQueueSvg() {
 
   const svgParts = [
     '<svg width="' + PANEL_W + '" height="' + panelH + '" xmlns="http://www.w3.org/2000/svg">',
-    '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + panelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>',
+    '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + panelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>',
     FRIENDSZONE_FACE,
     svgEmojiTitle({ text: '😆 Queued Memes', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }),
     '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">(/meme your prompt)</text>',
@@ -1560,7 +1560,7 @@ function buildSuggestionQueueSvg() {
   const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 5) * ITEM_H + PAD_Y, delimiterY);
 
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
-    <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${panelH}" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>
+    <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${panelH}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
     ${FRIENDSZONE_FACE}
     ${svgEmojiTitle({ text: '🌍 Suggestions', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) })}
     <text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">(/suggestion your idea)</text>
