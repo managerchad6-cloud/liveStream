@@ -1485,7 +1485,7 @@ function buildMemeQueueSvg() {
     itemRows.push('<text x="' + PAD_X + '" y="' + y + '" fill="' + fill + '" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="' + weight + '" opacity="' + op.toFixed(2) + '">' + escapeSvgText(cleanTitle(items[i].title)) + '</text>');
   }
 
-  const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 0) * ITEM_H + PAD_Y, delimiterY);
+  const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 5) * ITEM_H + PAD_Y, delimiterY);
 
   const svgParts = [
     '<svg width="' + PANEL_W + '" height="' + panelH + '" xmlns="http://www.w3.org/2000/svg">',
@@ -1557,7 +1557,7 @@ function buildSuggestionQueueSvg() {
     itemRows.push(`<text x="${PAD_X}" y="${y}" fill="${fill}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${ITEM_FONT}" font-weight="${weight}" opacity="${op.toFixed(2)}">${escapeSvgText(cleanTitle(items[i].title))}</text>`);
   }
 
-  const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 0) * ITEM_H + PAD_Y, delimiterY);
+  const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 5) * ITEM_H + PAD_Y, delimiterY);
 
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
     <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${panelH}" rx="8" ry="8" fill="rgba(8,8,14,0.78)"/>
