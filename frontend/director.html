@@ -880,6 +880,8 @@
           <input id="tw-poll-interval" class="twitter-field" type="number" min="1" value="5" placeholder="5" style="width:70px;flex-shrink:0;" />
           <span style="font-size:0.8rem;color:var(--muted);white-space:nowrap;">min poll interval</span>
         </div>
+        <button id="tw-set-community-btn" style="margin-top:4px;padding:6px 12px;border:1px solid #1d9bf0;border-radius:8px;background:transparent;color:#1d9bf0;cursor:pointer;font-family:inherit;font-size:0.85rem;width:100%;">Set Community</button>
+        <div id="tw-set-community-status" class="twitter-status"></div>
         <div style="display:flex;gap:8px;margin-top:4px;">
           <button class="btn-primary" id="tw-community-toggle-btn" style="background:#1d9bf0;flex:1;">Start Polling</button>
           <button id="tw-show-historical-btn" style="display:none;padding:6px 10px;border:1px solid #1d9bf0;border-radius:8px;background:transparent;color:#1d9bf0;cursor:pointer;font-family:inherit;font-size:0.85rem;white-space:nowrap;">Show all tweets</button>
@@ -2331,7 +2333,12 @@
     async function loadTwitterConfig() {
       try {
         const cfg = await apiGet('/api/orchestrator/twitter/config');
-        if (cfg.communityUrl) document.getElementById('tw-community-url').value = cfg.communityUrl;
+        if (cfg.communityUrl) {
+          document.getElementById('tw-community-url').value = cfg.communityUrl;
+          const s = document.getElementById('tw-set-community-status');
+          s.innerHTML = '&#10003; Community saved';
+          s.style.color = 'var(--good)';
+        }
         if (cfg.xHandle) document.getElementById('tw-x-handle').value = cfg.xHandle;
         if (cfg.pollIntervalMinutes) document.getElementById('tw-poll-interval').value = cfg.pollIntervalMinutes;
         setAuthStatus(cfg.hasCookies);
@@ -2473,6 +2480,22 @@
         document.getElementById('tw-ct0').value = '';
         document.getElementById('tw-auth-token').value = '';
         setAuthStatus(true);
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.style.color = 'var(--danger)';
+      }
+    });
+
+    // ── Set community URL ─────────────────────────────────────────────────────
+
+    document.getElementById('tw-set-community-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('tw-set-community-status');
+      const communityUrl = document.getElementById('tw-community-url').value.trim();
+      if (!communityUrl) { statusEl.textContent = 'Enter a community URL first'; statusEl.style.color = 'var(--danger)'; return; }
+      try {
+        await apiPost('/api/orchestrator/twitter/config', { communityUrl });
+        statusEl.innerHTML = '&#10003; Community saved';
+        statusEl.style.color = 'var(--good)';
       } catch (err) {
         statusEl.textContent = `Error: ${err.message}`;
         statusEl.style.color = 'var(--danger)';
