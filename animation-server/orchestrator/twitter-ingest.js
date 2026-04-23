@@ -169,26 +169,34 @@ class TwitterIngestService {
       browser = await this._launchBrowser();
       const page = await this._openPage(browser);
       await page.goto(`https://x.com/${handle}`, { waitUntil: 'networkidle2', timeout: 30000 });
-      await new Promise(r => setTimeout(r, 3000)); // extra settle time for React
+      await new Promise(r => setTimeout(r, 3000));
 
-      const debug = await page.evaluate((handle) => {
+      const stats = await page.evaluate((handle) => {
+        const result = { followers: null, tweets: null };
         const hLow = handle.toLowerCase();
-        // Dump all links that contain the handle in their href
-        const handleLinks = Array.from(document.querySelectorAll('a[href]'))
-          .filter(a => (a.getAttribute('href') || '').toLowerCase().includes(hLow))
-          .map(a => ({ href: a.getAttribute('href'), text: (a.innerText || '').trim().slice(0, 60) }));
-        // Dump all text that contains "follower" or "post" (case insensitive)
-        const statTexts = Array.from(document.querySelectorAll('span, div, a'))
-          .map(el => (el.childElementCount === 0 ? el.innerText?.trim() : ''))
-          .filter(t => t && /follower|posts?/i.test(t))
-          .slice(0, 20);
-        return { handleLinks, statTexts };
+
+        // Followers: X shows /verified_followers when viewing own profile, /followers otherwise
+        for (const a of document.querySelectorAll('a[href]')) {
+          const href = (a.getAttribute('href') || '').toLowerCase();
+          if (href === `/${hLow}/followers` || href === `/${hLow}/verified_followers`) {
+            const m = (a.innerText || '').trim().match(/^([\d,\.]+[KMBkmb]?)\s+[Ff]ollowers?$/);
+            if (m) { result.followers = m[1]; break; }
+          }
+        }
+
+        // Posts: leaf text node matching "N posts" — appears in header stat area
+        for (const el of document.querySelectorAll('span, div, a')) {
+          if (el.childElementCount > 0) continue;
+          const t = (el.innerText || '').trim();
+          const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
+          if (m) { result.tweets = m[1]; break; }
+        }
+
+        return result;
       }, handle);
 
-      console.log('[TwitterIngest] DEBUG handle links:', JSON.stringify(debug.handleLinks, null, 2));
-      console.log('[TwitterIngest] DEBUG stat texts:', JSON.stringify(debug.statTexts, null, 2));
-
-      return null; // temporary — remove once we see the debug output
+      console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
+      return stats;
     } catch (err) {
       console.warn('[TwitterIngest] fetchXUserStats failed:', err.message);
       return null;
