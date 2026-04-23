@@ -15,43 +15,13 @@ const MASK_PATH = path.join(LAYERS_DIR, 'mask.png');
 const EXPRESSION_LIMITS_PATH = path.join(ROOT_DIR, 'expression-limits.json');
 const TICKER_SETTINGS_PATH = path.join(__dirname, 'ticker-settings.json');
 
-// Friendszone font — embedded as base64 for SVG @font-face (librsvg picks it up)
-const FRIENDSZONE_B64 = (() => {
-  try {
-    return fs.readFileSync(path.join(__dirname, 'fonts', 'Friendszone.ttf')).toString('base64');
-  } catch (e) {
-    console.warn('[Compositor] Friendszone.ttf not found, falling back to system font');
-    return null;
-  }
-})();
-const FRIENDSZONE_FACE = FRIENDSZONE_B64
-  ? `<defs><style>@font-face{font-family:'Friendszone';src:url('data:font/truetype;base64,${FRIENDSZONE_B64}');}</style></defs>`
-  : '';
-const FRIENDSZONE_FAMILY = FRIENDSZONE_B64 ? "'Friendszone', " : '';
-console.log(`[Compositor] Friendszone font: ${FRIENDSZONE_B64 ? 'loaded' : 'not found'}`);
-
-// BradBunR font — used for panel titles
-const BRADBUN_B64 = (() => {
-  try {
-    return fs.readFileSync(path.join(__dirname, 'fonts', 'BradBunR.ttf')).toString('base64');
-  } catch (e) {
-    console.warn('[Compositor] BradBunR.ttf not found, falling back to system font');
-    return null;
-  }
-})();
-const BRADBUN_FAMILY = BRADBUN_B64 ? "'BradBunR', " : '';
-console.log(`[Compositor] BradBunR font: ${BRADBUN_B64 ? 'loaded' : 'not found'}`);
-
-// Single <defs> block with both @font-face declarations — librsvg only reliably
-// processes one <defs> per SVG, so both fonts must live in the same block.
-const PANEL_FONTS_FACE = (() => {
-  const rules = [];
-  // BradBunR is TrueType (00 01 00 00 magic) — use font/ttf + format('truetype')
-  if (BRADBUN_B64)     rules.push(`@font-face{font-family:'BradBunR';src:url('data:font/ttf;base64,${BRADBUN_B64}') format('truetype');}`);
-  // Friendszone is OpenType/CFF (OTTO magic) — use font/otf + format('opentype')
-  if (FRIENDSZONE_B64) rules.push(`@font-face{font-family:'Friendszone';src:url('data:font/otf;base64,${FRIENDSZONE_B64}') format('opentype');}`);
-  return rules.length ? `<defs><style>${rules.join('')}</style></defs>` : '';
-})();
+// Pango (used by librsvg/Sharp) resolves fonts via fontconfig — @font-face data
+// URIs are ignored. Fonts must be installed system-wide for Pango to find them.
+// Both Friendszone and BradBunR must be in C:\Windows\Fonts (Windows) or
+// /usr/share/fonts (Linux) and indexed by fc-cache.
+const FRIENDSZONE_FAMILY = "'Friendszone', ";
+const BRADBUN_FAMILY     = "'BradBunR', ";
+const PANEL_FONTS_FACE   = '';
 
 // ── Twemoji color emoji loader ────────────────────────────────────────────────
 // librsvg's bundled fontconfig can't find system emoji fonts (e.g. Segoe UI Emoji),
