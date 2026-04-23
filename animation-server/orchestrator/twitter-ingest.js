@@ -170,32 +170,59 @@ class TwitterIngestService {
       const page = await this._openPage(browser);
       await page.goto(`https://x.com/${handle}`, { waitUntil: 'networkidle2', timeout: 30000 });
 
-      // Wait for "N Followers" text to appear — same pattern as the working community scrape
+      // Wait for the /followers link for THIS specific handle to appear
       try {
         await page.waitForFunction(
-          () => Array.from(document.querySelectorAll('a, span')).some(
-            el => /^[\d,\.]+[KMBkmb]?\s+[Ff]ollowers?$/.test(el.innerText?.trim())
-          ),
-          { timeout: 15000 }
+          (h) => {
+            const hLow = h.toLowerCase();
+            return Array.from(document.querySelectorAll('a[href]')).some(
+              a => (a.getAttribute('href') || '').toLowerCase() === `/${hLow}/followers`
+            );
+          },
+          { timeout: 15000 }, handle
         );
-      } catch { console.warn('[TwitterIngest] followers text never appeared'); }
+      } catch { console.warn('[TwitterIngest] followers link never appeared for @' + handle); }
 
-      const stats = await page.evaluate(() => {
+      const stats = await page.evaluate((handle) => {
         const result = { followers: null, tweets: null };
-        for (const el of document.querySelectorAll('a, span, div')) {
-          const t = el.innerText?.trim() || '';
-          if (!result.followers) {
-            const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Ff]ollowers?$/);
-            if (m) result.followers = m[1];
+        const hLow = handle.toLowerCase();
+
+        // Followers: read specifically from a[href="/{handle}/followers"] — avoids sidebar noise
+        for (const a of document.querySelectorAll('a[href]')) {
+          if ((a.getAttribute('href') || '').toLowerCase() !== `/${hLow}/followers`) continue;
+          // Grab the first leaf span whose text is a pure number/abbreviation
+          for (const span of a.querySelectorAll('span')) {
+            if (span.childElementCount > 0) continue; // skip wrappers, only leaf nodes
+            const t = span.innerText.trim();
+            if (/^[\d,\.]+[KMBkmb]?$/.test(t)) { result.followers = t; break; }
           }
-          if (!result.tweets) {
-            const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
-            if (m) result.tweets = m[1];
-          }
-          if (result.followers && result.tweets) break;
+          break;
         }
+
+        // Posts: X renders post count inside [data-testid="primaryColumn"] only —
+        // searching the whole page picks up sidebar account cards with 0 posts.
+        const col = document.querySelector('[data-testid="primaryColumn"]');
+        if (col) {
+          // Method 1: the Posts tab link href="/{handle}" contains post count in its text
+          for (const a of col.querySelectorAll('a[href]')) {
+            const href = (a.getAttribute('href') || '').toLowerCase();
+            if (href !== `/${hLow}`) continue;
+            const m = (a.innerText || '').trim().match(/([\d,\.]+[KMBkmb]?)\s*\n?\s*[Pp]osts?/);
+            if (m) { result.tweets = m[1]; break; }
+          }
+          // Method 2: look for leaf span "N posts" in the primary column header
+          if (!result.tweets) {
+            for (const span of col.querySelectorAll('span')) {
+              if (span.childElementCount > 0) continue;
+              const t = span.innerText.trim();
+              const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
+              if (m) { result.tweets = m[1]; break; }
+            }
+          }
+        }
+
         return result;
-      });
+      }, handle);
 
       console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
       return stats;
