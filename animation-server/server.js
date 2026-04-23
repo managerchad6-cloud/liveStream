@@ -948,7 +948,7 @@ const PUMP_HEADERS = {
 };
 
 async function fetchHolderCount(tokenAddress) {
-  // pump.fun API (works for bonding-curve tokens; migrated tokens return null)
+  // 1. pump.fun API (fast; works for bonding-curve tokens)
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
@@ -961,7 +961,33 @@ async function fetchHolderCount(tokenAddress) {
       if (data?.holder_count) return data.holder_count;
     }
   } catch {}
-  return null; // migrated tokens: show -- rather than a wrong number
+
+  // 2. Helius DAS API (works for migrated tokens; requires HELIUS_API_KEY in env)
+  const heliusKey = process.env.HELIUS_API_KEY;
+  if (heliusKey) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(`https://mainnet.helius-rpc.com/?api-key=${heliusKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 'holders', method: 'getTokenAccounts',
+          params: { mint: tokenAddress, limit: 1, page: 1 },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.result?.total != null) return data.result.total;
+      }
+    } catch (err) {
+      console.warn('[Token] Helius holder count failed:', err.message);
+    }
+  }
+
+  return null;
 }
 
 let _socialStatsFetchPromise = null; // prevent concurrent Puppeteer sessions
@@ -973,7 +999,7 @@ async function fetchSocialStats() {
 }
 
 async function _doFetchSocialStats() {
-  const result = { holders: null, xFollowers: null, xTweets: null, communityMembers: null, lastUpdated: Date.now() };
+  const result = { holders: null, followers: null, postCount: null, communityMembers: null, lastUpdated: Date.now() };
 
   if (activePumpToken) {
     result.holders = await fetchHolderCount(activePumpToken);
@@ -985,8 +1011,8 @@ async function _doFetchSocialStats() {
       twitterIngest.fetchCommunityMemberCount(),
     ]);
     if (xStats.status === 'fulfilled' && xStats.value) {
-      result.xFollowers = xStats.value.followers;
-      result.xTweets    = xStats.value.tweets;
+      result.followers  = xStats.value.followers;
+      result.postCount  = xStats.value.tweets;
     }
     if (communityMembers.status === 'fulfilled') {
       result.communityMembers = communityMembers.value;
@@ -1117,6 +1143,27 @@ app.get('/token/trade-stats', async (req, res) => {
   }
   res.json(tradeStatsCache || { lastUpdated: now });
 });
+
+// Background polling — keeps compositor fed without needing the director console open
+async function _pollTokenStats() {
+  if (!activePumpToken) return;
+  const now = Date.now();
+  try {
+    if (!socialStatsCache || now - socialStatsLastFetch > SOCIAL_STATS_TTL_MS) {
+      socialStatsCache = await fetchSocialStats();
+      socialStatsLastFetch = Date.now();
+    }
+    if (!tradeStatsCache || now - tradeStatsLastFetch > TRADE_STATS_TTL_MS) {
+      tradeStatsCache = await fetchTradeStats();
+      tradeStatsLastFetch = Date.now();
+    }
+    setTokenStats(socialStatsCache, tradeStatsCache);
+  } catch (err) {
+    console.warn('[Token] Background poll error:', err.message);
+  }
+}
+setInterval(_pollTokenStats, 60 * 1000);
+setTimeout(_pollTokenStats, 5000); // initial fetch shortly after startup
 
 // ── End Token Stats Service ───────────────────────────────────────────────────
 
