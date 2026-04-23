@@ -169,63 +169,26 @@ class TwitterIngestService {
       browser = await this._launchBrowser();
       const page = await this._openPage(browser);
       await page.goto(`https://x.com/${handle}`, { waitUntil: 'networkidle2', timeout: 30000 });
+      await new Promise(r => setTimeout(r, 3000)); // extra settle time for React
 
-      // Wait for the /followers link for THIS specific handle to appear
-      try {
-        await page.waitForFunction(
-          (h) => {
-            const hLow = h.toLowerCase();
-            return Array.from(document.querySelectorAll('a[href]')).some(
-              a => (a.getAttribute('href') || '').toLowerCase() === `/${hLow}/followers`
-            );
-          },
-          { timeout: 15000 }, handle
-        );
-      } catch { console.warn('[TwitterIngest] followers link never appeared for @' + handle); }
-
-      const stats = await page.evaluate((handle) => {
-        const result = { followers: null, tweets: null };
+      const debug = await page.evaluate((handle) => {
         const hLow = handle.toLowerCase();
-
-        // Followers: read specifically from a[href="/{handle}/followers"] — avoids sidebar noise
-        for (const a of document.querySelectorAll('a[href]')) {
-          if ((a.getAttribute('href') || '').toLowerCase() !== `/${hLow}/followers`) continue;
-          // Grab the first leaf span whose text is a pure number/abbreviation
-          for (const span of a.querySelectorAll('span')) {
-            if (span.childElementCount > 0) continue; // skip wrappers, only leaf nodes
-            const t = span.innerText.trim();
-            if (/^[\d,\.]+[KMBkmb]?$/.test(t)) { result.followers = t; break; }
-          }
-          break;
-        }
-
-        // Posts: X renders post count inside [data-testid="primaryColumn"] only —
-        // searching the whole page picks up sidebar account cards with 0 posts.
-        const col = document.querySelector('[data-testid="primaryColumn"]');
-        if (col) {
-          // Method 1: the Posts tab link href="/{handle}" contains post count in its text
-          for (const a of col.querySelectorAll('a[href]')) {
-            const href = (a.getAttribute('href') || '').toLowerCase();
-            if (href !== `/${hLow}`) continue;
-            const m = (a.innerText || '').trim().match(/([\d,\.]+[KMBkmb]?)\s*\n?\s*[Pp]osts?/);
-            if (m) { result.tweets = m[1]; break; }
-          }
-          // Method 2: look for leaf span "N posts" in the primary column header
-          if (!result.tweets) {
-            for (const span of col.querySelectorAll('span')) {
-              if (span.childElementCount > 0) continue;
-              const t = span.innerText.trim();
-              const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
-              if (m) { result.tweets = m[1]; break; }
-            }
-          }
-        }
-
-        return result;
+        // Dump all links that contain the handle in their href
+        const handleLinks = Array.from(document.querySelectorAll('a[href]'))
+          .filter(a => (a.getAttribute('href') || '').toLowerCase().includes(hLow))
+          .map(a => ({ href: a.getAttribute('href'), text: (a.innerText || '').trim().slice(0, 60) }));
+        // Dump all text that contains "follower" or "post" (case insensitive)
+        const statTexts = Array.from(document.querySelectorAll('span, div, a'))
+          .map(el => (el.childElementCount === 0 ? el.innerText?.trim() : ''))
+          .filter(t => t && /follower|posts?/i.test(t))
+          .slice(0, 20);
+        return { handleLinks, statTexts };
       }, handle);
 
-      console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
-      return stats;
+      console.log('[TwitterIngest] DEBUG handle links:', JSON.stringify(debug.handleLinks, null, 2));
+      console.log('[TwitterIngest] DEBUG stat texts:', JSON.stringify(debug.statTexts, null, 2));
+
+      return null; // temporary — remove once we see the debug output
     } catch (err) {
       console.warn('[TwitterIngest] fetchXUserStats failed:', err.message);
       return null;
