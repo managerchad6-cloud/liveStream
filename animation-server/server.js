@@ -1190,10 +1190,6 @@ setTimeout(_pollTokenStats, 5000); // initial fetch shortly after startup
 
 // ── End Token Stats Service ───────────────────────────────────────────────────
 
-// Initialize TwitterIngestService at startup so social stats work without orchestrator
-twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
-console.log('[Twitter] Ingest service initialized (stats-only mode until orchestrator starts)');
-
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
 const STREAM_FPS = 30;
@@ -1220,7 +1216,8 @@ let playbackController = null;
 let chatIntake = null;
 let orchestrator = null;
 let orchestratorSocket = null;
-let twitterIngest = null;
+let twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
+console.log('[Twitter] Ingest service initialized');
 let xChatListener = null;
 let lipSyncAccumulatorMs = 0;
 let lastLipSyncTime = Date.now();
