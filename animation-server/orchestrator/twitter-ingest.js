@@ -170,44 +170,32 @@ class TwitterIngestService {
       const page = await this._openPage(browser);
       await page.goto(`https://x.com/${handle}`, { waitUntil: 'networkidle2', timeout: 30000 });
 
-      // Wait explicitly for the followers link — it only appears after React renders
+      // Wait for "N Followers" text to appear — same pattern as the working community scrape
       try {
         await page.waitForFunction(
-          (h) => !!document.querySelector(`a[href="/${h}/followers"]`),
-          { timeout: 15000 }, handle
+          () => Array.from(document.querySelectorAll('a, span')).some(
+            el => /^[\d,\.]+[KMBkmb]?\s+[Ff]ollowers?$/.test(el.innerText?.trim())
+          ),
+          { timeout: 15000 }
         );
-      } catch { console.warn('[TwitterIngest] followers link never appeared'); }
+      } catch { console.warn('[TwitterIngest] followers text never appeared'); }
 
-      const stats = await page.evaluate((h) => {
+      const stats = await page.evaluate(() => {
         const result = { followers: null, tweets: null };
-
-        // Followers count: inside the /followers anchor
-        const fLink = document.querySelector(`a[href="/${h}/followers"]`);
-        if (fLink) {
-          // The count span is the first span whose text is purely numeric/abbreviated
-          for (const span of fLink.querySelectorAll('span')) {
-            const t = span.innerText.trim();
-            if (/^[\d,\.]+[KMBkmb]?$/.test(t)) { result.followers = t; break; }
+        for (const el of document.querySelectorAll('a, span, div')) {
+          const t = el.innerText?.trim() || '';
+          if (!result.followers) {
+            const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Ff]ollowers?$/);
+            if (m) result.followers = m[1];
           }
-        }
-
-        // Post count: X renders "N Posts" in the page header above the tabs.
-        // data-testid="UserProfileHeader_Items" contains the stat links.
-        // The posts count also appears as the text of the "Posts" tab button.
-        const tabLinks = document.querySelectorAll('a[role="tab"]');
-        for (const link of tabLinks) {
-          // Tab text is like "Posts\n1,234" or "1,234\nPosts"
-          const full = link.innerText || '';
-          const m = full.match(/([\d,\.]+[KMBkmb]?)\s*\n?\s*(posts|tweets)/i)
-                 || full.match(/(posts|tweets)\s*\n?\s*([\d,\.]+[KMBkmb]?)/i);
-          if (m) {
-            result.tweets = m[1].match(/\d/) ? m[1] : m[2];
-            break;
+          if (!result.tweets) {
+            const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
+            if (m) result.tweets = m[1];
           }
+          if (result.followers && result.tweets) break;
         }
-
         return result;
-      }, handle);
+      });
 
       console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
       return stats;
