@@ -962,26 +962,49 @@ async function fetchHolderCount(tokenAddress) {
     }
   } catch {}
 
-  // 2. Helius DAS API (works for migrated tokens; requires HELIUS_API_KEY in env)
+  // 2. Helius paginated getTokenAccounts (works for migrated tokens).
+  // `total` in each page response = items on that page, not the global count.
+  // Fetch pages in parallel batches of 5 until we get a short page.
   const heliusKey = process.env.HELIUS_API_KEY;
   if (heliusKey) {
+    const LIMIT = 1000;
+    const BATCH = 5;
+    const MAX_PAGES = 100;
+    let total = 0;
+    let startPage = 1;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(`https://mainnet.helius-rpc.com/?api-key=${heliusKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 'holders', method: 'getTokenAccounts',
-          params: { mint: tokenAddress, limit: 1, page: 1 },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.result?.total != null) return data.result.total;
+      outer: while (startPage <= MAX_PAGES) {
+        const pages = Array.from(
+          { length: Math.min(BATCH, MAX_PAGES - startPage + 1) },
+          (_, i) => startPage + i
+        );
+        const counts = await Promise.all(pages.map(async (page) => {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 15000);
+          try {
+            const r = await fetch(`https://mainnet.helius-rpc.com/?api-key=${heliusKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0', id: page, method: 'getTokenAccounts',
+                params: { mint: tokenAddress, limit: LIMIT, page },
+              }),
+              signal: ctrl.signal,
+            });
+            clearTimeout(t);
+            if (!r.ok) return -1;
+            const d = await r.json();
+            return d?.result?.token_accounts?.length ?? 0;
+          } catch { clearTimeout(t); return -1; }
+        }));
+        for (const count of counts) {
+          if (count < 0) break outer;
+          total += count;
+          if (count < LIMIT) break outer;
+        }
+        startPage += BATCH;
       }
+      if (total > 0) return total;
     } catch (err) {
       console.warn('[Token] Helius holder count failed:', err.message);
     }
