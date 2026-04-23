@@ -46,8 +46,10 @@ console.log(`[Compositor] BradBunR font: ${BRADBUN_B64 ? 'loaded' : 'not found'}
 // processes one <defs> per SVG, so both fonts must live in the same block.
 const PANEL_FONTS_FACE = (() => {
   const rules = [];
-  if (BRADBUN_B64)     rules.push(`@font-face{font-family:'BradBunR';src:url('data:font/truetype;base64,${BRADBUN_B64}');}`);
-  if (FRIENDSZONE_B64) rules.push(`@font-face{font-family:'Friendszone';src:url('data:font/truetype;base64,${FRIENDSZONE_B64}');}`);
+  // BradBunR is TrueType (00 01 00 00 magic) — use font/ttf + format('truetype')
+  if (BRADBUN_B64)     rules.push(`@font-face{font-family:'BradBunR';src:url('data:font/ttf;base64,${BRADBUN_B64}') format('truetype');}`);
+  // Friendszone is OpenType/CFF (OTTO magic) — use font/otf + format('opentype')
+  if (FRIENDSZONE_B64) rules.push(`@font-face{font-family:'Friendszone';src:url('data:font/otf;base64,${FRIENDSZONE_B64}') format('opentype');}`);
   return rules.length ? `<defs><style>${rules.join('')}</style></defs>` : '';
 })();
 
