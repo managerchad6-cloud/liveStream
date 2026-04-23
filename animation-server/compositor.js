@@ -39,11 +39,17 @@ const BRADBUN_B64 = (() => {
     return null;
   }
 })();
-const BRADBUN_FACE = BRADBUN_B64
-  ? `<defs><style>@font-face{font-family:'BradBunR';src:url('data:font/truetype;base64,${BRADBUN_B64}');}</style></defs>`
-  : '';
 const BRADBUN_FAMILY = BRADBUN_B64 ? "'BradBunR', " : '';
 console.log(`[Compositor] BradBunR font: ${BRADBUN_B64 ? 'loaded' : 'not found'}`);
+
+// Single <defs> block with both @font-face declarations — librsvg only reliably
+// processes one <defs> per SVG, so both fonts must live in the same block.
+const PANEL_FONTS_FACE = (() => {
+  const rules = [];
+  if (BRADBUN_B64)     rules.push(`@font-face{font-family:'BradBunR';src:url('data:font/truetype;base64,${BRADBUN_B64}');}`);
+  if (FRIENDSZONE_B64) rules.push(`@font-face{font-family:'Friendszone';src:url('data:font/truetype;base64,${FRIENDSZONE_B64}');}`);
+  return rules.length ? `<defs><style>${rules.join('')}</style></defs>` : '';
+})();
 
 // ── Twemoji color emoji loader ────────────────────────────────────────────────
 // librsvg's bundled fontconfig can't find system emoji fonts (e.g. Segoe UI Emoji),
@@ -1274,7 +1280,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
     : '';
   const svg = `<svg width="${PANEL_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
     <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${svgH}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
-    ${BRADBUN_FACE}${FRIENDSZONE_FACE}
+    ${PANEL_FONTS_FACE}
     ${titleEl}
     ${subtitleEl}
     <line x1="${lineX1}" y1="${relDividerY}" x2="${lineX2}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
@@ -1393,7 +1399,7 @@ function buildMemeQueueSvg() {
       const rollingH = Math.min(relDividerY + ITEM_H + PAD_Y, delimiterY);
       const rollingSvg = '<svg width="' + PANEL_W + '" height="' + rollingH + '" xmlns="http://www.w3.org/2000/svg">' +
         '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + rollingH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>' +
-        BRADBUN_FACE + FRIENDSZONE_FACE +
+        PANEL_FONTS_FACE +
         svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: BRADBUN_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
         '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="' + FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
         '<line x1="' + PAD_X + '" y1="' + relDividerY + '" x2="' + (PANEL_W - PAD_X) + '" y2="' + relDividerY + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>' +
@@ -1463,7 +1469,7 @@ function buildMemeQueueSvg() {
     const votePanelH = Math.min(relDividerY + perPage * ITEM_H + PAD_Y, delimiterY);
     const voteSvg = '<svg width="' + PANEL_W + '" height="' + votePanelH + '" xmlns="http://www.w3.org/2000/svg">' +
       '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + votePanelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>' +
-      BRADBUN_FACE + FRIENDSZONE_FACE +
+      PANEL_FONTS_FACE +
       svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: BRADBUN_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
       '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="' + FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
       '<line x1="' + PAD_X + '" y1="' + relDividerY + '" x2="' + (PANEL_W - PAD_X) + '" y2="' + relDividerY + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>' +
@@ -1505,7 +1511,7 @@ function buildMemeQueueSvg() {
   const svgParts = [
     '<svg width="' + PANEL_W + '" height="' + panelH + '" xmlns="http://www.w3.org/2000/svg">',
     '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + panelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>',
-    BRADBUN_FACE + FRIENDSZONE_FACE,
+    PANEL_FONTS_FACE,
     svgEmojiTitle({ text: '😆 Queued Memes', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: BRADBUN_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }),
     '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="' + FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">(/meme your prompt)</text>',
     '<line x1="' + PAD_X + '" y1="' + relDividerY + '" x2="' + (PANEL_W - PAD_X) + '" y2="' + relDividerY + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>',
@@ -1576,7 +1582,7 @@ function buildSuggestionQueueSvg() {
 
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
     <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${panelH}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
-    ${BRADBUN_FACE}${FRIENDSZONE_FACE}
+    ${PANEL_FONTS_FACE}
     ${svgEmojiTitle({ text: '🌍 Suggestions', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${BRADBUN_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) })}
     <text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">(/suggestion your idea)</text>
     <line x1="${PAD_X}" y1="${relDividerY}" x2="${PANEL_W - PAD_X}" y2="${relDividerY}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
