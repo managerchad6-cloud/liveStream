@@ -1190,6 +1190,10 @@ setTimeout(_pollTokenStats, 5000); // initial fetch shortly after startup
 
 // ── End Token Stats Service ───────────────────────────────────────────────────
 
+// Initialize TwitterIngestService at startup so social stats work without orchestrator
+twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
+console.log('[Twitter] Ingest service initialized (stats-only mode until orchestrator starts)');
+
 // Global state
 const animationState = new AnimationState();  // Legacy: used in rhubarb mode
 const STREAM_FPS = 30;
@@ -4175,9 +4179,7 @@ async function start() {
   // sfxBefore (manual + auto pre) is handled in processQueue() before startPlayback,
   // so the SFX plays over silence rather than overlapping with segment audio.
 
-  // Initialize Twitter ingest service
-  twitterIngest = new TwitterIngestService({ tempDir: TEMP_DIR });
-  console.log('[Twitter] Ingest service initialized');
+  // twitterIngest already initialized at server startup — nothing to do here
 
   // Initialize X live chat listener
   xChatListener = new XChatListener({

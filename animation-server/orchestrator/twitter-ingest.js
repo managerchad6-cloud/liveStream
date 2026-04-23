@@ -159,100 +159,79 @@ class TwitterIngestService {
 
   // ── Stats fetching ────────────────────────────────────────────────────────
 
-  // Puppeteer browser scrape of the X profile page — same session as tweet fetching
+  // Shared headers for X internal API calls using cookie auth
+  _xApiHeaders() {
+    const { ct0, authToken } = this._config;
+    return {
+      'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I7wlcjwHAAAAAHBNt3Q=',
+      'x-csrf-token': ct0,
+      'Cookie': `auth_token=${authToken}; ct0=${ct0}`,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Referer': 'https://x.com/',
+      'X-Twitter-Active-User': 'yes',
+      'X-Twitter-Auth-Type': 'OAuth2Session',
+      'X-Twitter-Client-Language': 'en',
+      'Accept': 'application/json',
+    };
+  }
+
+  // Direct X API call — no browser needed, uses saved cookies
   async fetchXUserStats() {
     const { ct0, authToken, xHandle } = this._config;
     if (!xHandle || !ct0 || !authToken) return null;
     const handle = xHandle.replace(/^@/, '').trim();
-    let browser;
     try {
-      browser = await this._launchBrowser();
-      const page = await this._openPage(browser);
-      await page.goto(`https://x.com/${handle}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      try { await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 12000 }); } catch {}
-      await new Promise(r => setTimeout(r, 2500));
-
-      const stats = await page.evaluate((h) => {
-        const result = { followers: null, tweets: null };
-
-        // Followers link: href="/{handle}/followers"
-        const fLink = document.querySelector(`a[href="/${h}/followers"]`);
-        if (fLink) {
-          for (const span of fLink.querySelectorAll('span')) {
-            const t = span.innerText.trim();
-            if (/^[\d,\.]+[KMBkmb]?$/.test(t)) { result.followers = t; break; }
-          }
-        }
-
-        // Tweet/post count: shown in profile header stats area
-        // Walk all spans looking for "Posts" label then grab the sibling number
-        const allSpans = Array.from(document.querySelectorAll('span'));
-        for (let i = 0; i < allSpans.length; i++) {
-          const t = allSpans[i].innerText.trim();
-          if (/^(posts|tweets)$/i.test(t)) {
-            // Number is in a sibling/cousin span before this one in the same parent
-            const parent = allSpans[i].parentElement;
-            const grandparent = parent?.parentElement;
-            for (const el of [parent?.previousElementSibling, grandparent?.previousElementSibling]) {
-              if (!el) continue;
-              const numSpan = el.querySelector('span') || el;
-              const num = numSpan.innerText.trim();
-              if (/^[\d,\.]+[KMBkmb]?$/.test(num)) { result.tweets = num; break; }
-            }
-            if (result.tweets) break;
-          }
-        }
-
-        return result;
-      }, handle);
-
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(
+        `https://api.twitter.com/1.1/users/show.json?screen_name=${encodeURIComponent(handle)}`,
+        { headers: this._xApiHeaders(), signal: controller.signal }
+      );
+      clearTimeout(timer);
+      if (!res.ok) {
+        console.warn(`[TwitterIngest] fetchXUserStats HTTP ${res.status}`);
+        return null;
+      }
+      const data = await res.json();
+      const stats = {
+        followers: data.followers_count ?? null,
+        tweets:    data.statuses_count  ?? null,
+      };
       console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
       return stats;
     } catch (err) {
       console.warn('[TwitterIngest] fetchXUserStats failed:', err.message);
       return null;
-    } finally {
-      if (browser) await browser.close().catch(() => {});
     }
   }
 
-  // Puppeteer-based scrape of community member count from the community page
+  // Direct X communities API call — no browser needed
   async fetchCommunityMemberCount() {
     const { communityUrl, ct0, authToken } = this._config;
     if (!communityUrl || !ct0 || !authToken) return null;
-    let browser;
+    // Extract community ID from URL: /i/communities/20260137917757
+    const idMatch = communityUrl.match(/communities\/(\d+)/);
+    if (!idMatch) return null;
+    const communityId = idMatch[1];
     try {
-      browser = await this._launchBrowser();
-      const page = await this._openPage(browser);
-      await page.goto(communityUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      try { await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 10000 }); } catch {}
-      await new Promise(r => setTimeout(r, 2000));
-
-      const count = await page.evaluate(() => {
-        // Walk all text nodes looking for "N members" or "N,NNN Members"
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        let node;
-        while ((node = walker.nextNode())) {
-          const t = node.textContent.trim();
-          if (/member/i.test(t)) {
-            const m = t.match(/([\d,\.]+\s*[KMBkmb]?)\s+[Mm]ember/);
-            if (m) return m[1].replace(/\s/g, '');
-          }
-        }
-        // Fallback: any link/span that ends in Members
-        for (const el of document.querySelectorAll('a, span')) {
-          const t = el.innerText?.trim() || '';
-          const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Mm]embers?$/);
-          if (m) return m[1];
-        }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(
+        `https://x.com/i/api/1.1/communities/show.json?community_id=${communityId}`,
+        { headers: this._xApiHeaders(), signal: controller.signal }
+      );
+      clearTimeout(timer);
+      if (!res.ok) {
+        console.warn(`[TwitterIngest] fetchCommunityMemberCount HTTP ${res.status}`);
         return null;
-      });
+      }
+      const data = await res.json();
+      const count = data?.members_count ?? data?.member_count ?? data?.community?.members_count ?? null;
+      console.log(`[TwitterIngest] Community ${communityId} members:`, count);
       return count;
     } catch (err) {
       console.warn('[TwitterIngest] fetchCommunityMemberCount failed:', err.message);
       return null;
-    } finally {
-      if (browser) await browser.close().catch(() => {});
     }
   }
 
