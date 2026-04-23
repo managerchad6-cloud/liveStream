@@ -159,79 +159,112 @@ class TwitterIngestService {
 
   // ── Stats fetching ────────────────────────────────────────────────────────
 
-  // Shared headers for X internal API calls using cookie auth
-  _xApiHeaders() {
-    const { ct0, authToken } = this._config;
-    return {
-      'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I7wlcjwHAAAAAHBNt3Q=',
-      'x-csrf-token': ct0,
-      'Cookie': `auth_token=${authToken}; ct0=${ct0}`,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Referer': 'https://x.com/',
-      'X-Twitter-Active-User': 'yes',
-      'X-Twitter-Auth-Type': 'OAuth2Session',
-      'X-Twitter-Client-Language': 'en',
-      'Accept': 'application/json',
-    };
-  }
-
-  // Direct X API call — no browser needed, uses saved cookies
+  // Browser-based scrape of X profile — followers + post count
   async fetchXUserStats() {
     const { ct0, authToken, xHandle } = this._config;
     if (!xHandle || !ct0 || !authToken) return null;
     const handle = xHandle.replace(/^@/, '').trim();
+    let browser;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(
-        `https://api.twitter.com/1.1/users/show.json?screen_name=${encodeURIComponent(handle)}`,
-        { headers: this._xApiHeaders(), signal: controller.signal }
-      );
-      clearTimeout(timer);
-      if (!res.ok) {
-        console.warn(`[TwitterIngest] fetchXUserStats HTTP ${res.status}`);
-        return null;
-      }
-      const data = await res.json();
-      const stats = {
-        followers: data.followers_count ?? null,
-        tweets:    data.statuses_count  ?? null,
-      };
+      browser = await this._launchBrowser();
+      const page = await this._openPage(browser);
+      await page.goto(`https://x.com/${handle}`, { waitUntil: 'networkidle2', timeout: 30000 });
+
+      // Wait explicitly for the followers link — it only appears after React renders
+      try {
+        await page.waitForFunction(
+          (h) => !!document.querySelector(`a[href="/${h}/followers"]`),
+          { timeout: 15000 }, handle
+        );
+      } catch { console.warn('[TwitterIngest] followers link never appeared'); }
+
+      const stats = await page.evaluate((h) => {
+        const result = { followers: null, tweets: null };
+
+        // Followers count: inside the /followers anchor
+        const fLink = document.querySelector(`a[href="/${h}/followers"]`);
+        if (fLink) {
+          // The count span is the first span whose text is purely numeric/abbreviated
+          for (const span of fLink.querySelectorAll('span')) {
+            const t = span.innerText.trim();
+            if (/^[\d,\.]+[KMBkmb]?$/.test(t)) { result.followers = t; break; }
+          }
+        }
+
+        // Post count: X renders "N Posts" in the page header above the tabs.
+        // data-testid="UserProfileHeader_Items" contains the stat links.
+        // The posts count also appears as the text of the "Posts" tab button.
+        const tabLinks = document.querySelectorAll('a[role="tab"]');
+        for (const link of tabLinks) {
+          // Tab text is like "Posts\n1,234" or "1,234\nPosts"
+          const full = link.innerText || '';
+          const m = full.match(/([\d,\.]+[KMBkmb]?)\s*\n?\s*(posts|tweets)/i)
+                 || full.match(/(posts|tweets)\s*\n?\s*([\d,\.]+[KMBkmb]?)/i);
+          if (m) {
+            result.tweets = m[1].match(/\d/) ? m[1] : m[2];
+            break;
+          }
+        }
+
+        return result;
+      }, handle);
+
       console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
       return stats;
     } catch (err) {
       console.warn('[TwitterIngest] fetchXUserStats failed:', err.message);
       return null;
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
   }
 
-  // Direct X communities API call — no browser needed
+  // Browser-based scrape of X community page — member count
   async fetchCommunityMemberCount() {
     const { communityUrl, ct0, authToken } = this._config;
     if (!communityUrl || !ct0 || !authToken) return null;
-    // Extract community ID from URL: /i/communities/20260137917757
-    const idMatch = communityUrl.match(/communities\/(\d+)/);
-    if (!idMatch) return null;
-    const communityId = idMatch[1];
+    let browser;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(
-        `https://x.com/i/api/1.1/communities/show.json?community_id=${communityId}`,
-        { headers: this._xApiHeaders(), signal: controller.signal }
-      );
-      clearTimeout(timer);
-      if (!res.ok) {
-        console.warn(`[TwitterIngest] fetchCommunityMemberCount HTTP ${res.status}`);
+      browser = await this._launchBrowser();
+      const page = await this._openPage(browser);
+      await page.goto(communityUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+      // Wait for community sidebar/header — member count lives there
+      try {
+        await page.waitForFunction(
+          () => {
+            const texts = Array.from(document.querySelectorAll('span, div, a'))
+              .map(el => el.innerText?.trim() || '');
+            return texts.some(t => /\d[\d,\.]*[KMBkmb]?\s+[Mm]ember/.test(t));
+          },
+          { timeout: 15000 }
+        );
+      } catch { console.warn('[TwitterIngest] member count text never appeared'); }
+
+      const count = await page.evaluate(() => {
+        // Walk all visible text looking for "N members" / "N,NNN Members"
+        const all = Array.from(document.querySelectorAll('span, div, a'));
+        for (const el of all) {
+          const t = el.innerText?.trim() || '';
+          const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Mm]embers?$/);
+          if (m) return m[1];
+          // Sometimes it's split: number in one el, " Members" in next sibling
+          const next = el.nextElementSibling;
+          if (next && /^[Mm]embers?$/.test(next.innerText?.trim())) {
+            const num = t.replace(/,/g, '');
+            if (/^[\d\.]+[KMBkmb]?$/.test(num)) return t;
+          }
+        }
         return null;
-      }
-      const data = await res.json();
-      const count = data?.members_count ?? data?.member_count ?? data?.community?.members_count ?? null;
-      console.log(`[TwitterIngest] Community ${communityId} members:`, count);
+      });
+
+      console.log(`[TwitterIngest] Community members:`, count);
       return count;
     } catch (err) {
       console.warn('[TwitterIngest] fetchCommunityMemberCount failed:', err.message);
       return null;
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
   }
 
