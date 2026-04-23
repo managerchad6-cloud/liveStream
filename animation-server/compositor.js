@@ -17,10 +17,11 @@ const TICKER_SETTINGS_PATH = path.join(__dirname, 'ticker-settings.json');
 
 // Pango (used by librsvg/Sharp) resolves fonts via fontconfig — @font-face data
 // URIs are ignored. Fonts must be installed system-wide for Pango to find them.
-// Both Friendszone and BradBunR must be in C:\Windows\Fonts (Windows) or
+// Both Friendszone and Brady Bunch Remastered must be in C:\Windows\Fonts (Windows) or
 // /usr/share/fonts (Linux) and indexed by fc-cache.
+// BradBunR.ttf internal family name is "Brady Bunch Remastered" (nameID=1).
 const FRIENDSZONE_FAMILY = "'Friendszone', ";
-const BRADBUN_FAMILY     = "'BradBunR', ";
+const BRADBUN_FAMILY     = "'Brady Bunch Remastered', ";
 const PANEL_FONTS_FACE   = '';
 
 // ── Twemoji color emoji loader ────────────────────────────────────────────────
