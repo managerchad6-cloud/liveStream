@@ -1152,7 +1152,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
   const PAD_Y         = 8;
   const MARGIN        = 4;
   const GUTTER        = 4;
-  const TITLE_FONT    = 21;
+  const TITLE_FONT    = 26;
   const SUBTITLE_FONT = 15;
   const TITLE_H       = subText ? 54 : 32;
   const ITEM_FONT     = 11;
@@ -1325,7 +1325,7 @@ function buildMemeQueueSvg() {
   const PAD_Y         = 8;
   const MARGIN        = 4;
   const GUTTER        = 4;
-  const TITLE_FONT    = 21;
+  const TITLE_FONT    = 26;
   const SUBTITLE_FONT = 15;
   const TITLE_H       = 54;
   const ITEM_FONT     = 11;
@@ -1509,7 +1509,7 @@ function buildSuggestionQueueSvg() {
   const PAD_Y         = 8;
   const MARGIN        = 4;
   const GUTTER        = 4;
-  const TITLE_FONT    = 21;
+  const TITLE_FONT    = 26;
   const SUBTITLE_FONT = 15;
   const TITLE_H       = 54;
   const ITEM_FONT     = 11;
