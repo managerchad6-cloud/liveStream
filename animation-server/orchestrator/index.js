@@ -306,21 +306,27 @@ class Orchestrator {
     entry.state = 'active';
     this.activeVideoSession = session;
 
-    // On-air hook: activate session when the intro segment starts playing
+    // On-air hook: activate session when the intro starts playing.
+    // Hold chat immediately so messages queue up, but do NOT pause the playback
+    // controller yet — the intro's remaining lines are already in the animation
+    // server's renderQueue and must be allowed to dequeue and play.
     const hookFn = (segId) => {
       if (segId === introSegment.id) {
         session.activate();
-        this._onSessionActive();
+        if (this.chatIntake) this.chatIntake.setHoldMode(true);
+        console.log('[Orchestrator] Video intro on-air — chat held, queue still running for intro lines');
       }
     };
     this.playbackController.registerOnAirHook(hookFn);
 
-    // Done hook: start TV as soon as the intro audio finishes (no word-count guessing).
-    // HLS latency is the same for both audio and video frames, so they stay in sync.
+    // Done hook: AFTER all intro lines finish, pause the queue so normal pipeline
+    // segments don't compete with the video session, then start the TV.
     let introDone = false;
     const introDoneHook = (segId) => {
       if (!introDone && segId === introSegment.id) {
         introDone = true;
+        this.playbackController.pause();
+        console.log('[Orchestrator] Video intro done — queue paused, TV starting');
         session.startTV();
       }
     };
@@ -363,14 +369,6 @@ class Orchestrator {
         entry.state = 'cancelled';
       }
     }
-  }
-
-  _onSessionActive() {
-    // Suppress expand generation during the session
-    this.playbackController.pause();
-    // Hold chat auto-queue
-    if (this.chatIntake) this.chatIntake.setHoldMode(true);
-    console.log('[Orchestrator] Video session active — pipeline suppressed');
   }
 
   _onSessionDone(sessionId) {
