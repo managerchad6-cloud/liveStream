@@ -2228,9 +2228,9 @@
         const t = trade.status === 'fulfilled' ? trade.value : {};
 
         setVal('xs-holders',    s.holders     != null ? fmtNum(s.holders)    : null);
-        setVal('xs-xfollowers', s.xFollowers  != null ? fmtNum(s.xFollowers) : null);
+        setVal('xs-xfollowers', s.followers   != null ? fmtNum(s.followers)  : null);
         setVal('xs-community',  s.communityMembers != null ? String(s.communityMembers) : null);
-        setVal('xs-xtweets',    s.xTweets     != null ? fmtNum(s.xTweets)    : null);
+        setVal('xs-xtweets',    s.postCount   != null ? fmtNum(s.postCount)  : null);
         setVal('xs-buy24', buyStr(t.buy24h));
         setVal('xs-buy8',  buyStr(t.buy8h));
         setVal('xs-buy1',  buyStr(t.buy1h));

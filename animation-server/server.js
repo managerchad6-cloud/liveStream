@@ -1022,10 +1022,19 @@ async function fetchSocialStats() {
 }
 
 async function _doFetchSocialStats() {
-  const result = { holders: null, followers: null, postCount: null, communityMembers: null, lastUpdated: Date.now() };
+  // Start from last known-good values so a failed fetch never evicts good data
+  const prev = socialStatsCache || {};
+  const result = {
+    holders: prev.holders ?? null,
+    followers: prev.followers ?? null,
+    postCount: prev.postCount ?? null,
+    communityMembers: prev.communityMembers ?? null,
+    lastUpdated: Date.now(),
+  };
 
   if (activePumpToken) {
-    result.holders = await fetchHolderCount(activePumpToken);
+    const holders = await fetchHolderCount(activePumpToken);
+    if (holders != null) result.holders = holders;
   }
 
   if (twitterIngest) {
@@ -1034,10 +1043,10 @@ async function _doFetchSocialStats() {
       twitterIngest.fetchCommunityMemberCount(),
     ]);
     if (xStats.status === 'fulfilled' && xStats.value) {
-      result.followers  = xStats.value.followers;
-      result.postCount  = xStats.value.tweets;
+      if (xStats.value.followers != null) result.followers = xStats.value.followers;
+      if (xStats.value.tweets    != null) result.postCount = xStats.value.tweets;
     }
-    if (communityMembers.status === 'fulfilled') {
+    if (communityMembers.status === 'fulfilled' && communityMembers.value != null) {
       result.communityMembers = communityMembers.value;
     }
   }
@@ -1145,13 +1154,18 @@ async function fetchTradeStatsPump(tokenAddress) {
   }
 }
 
+function _enrichedTrade() {
+  if (!tradeStatsCache) return null;
+  return { ...tradeStatsCache, priceChange5m: tokenStatsCache?.priceChange?.m5 ?? null };
+}
+
 app.get('/token/social-stats', async (req, res) => {
   const now = Date.now();
   const force = req.query.force === '1';
   if (force || !socialStatsCache || now - socialStatsLastFetch > SOCIAL_STATS_TTL_MS) {
     socialStatsCache = await fetchSocialStats();
     socialStatsLastFetch = now;
-    setTokenStats(socialStatsCache, tradeStatsCache);
+    setTokenStats(socialStatsCache, _enrichedTrade());
   }
   res.json(socialStatsCache);
 });
@@ -1162,7 +1176,7 @@ app.get('/token/trade-stats', async (req, res) => {
   if (force || !tradeStatsCache || now - tradeStatsLastFetch > TRADE_STATS_TTL_MS) {
     tradeStatsCache = await fetchTradeStats();
     tradeStatsLastFetch = now;
-    setTokenStats(socialStatsCache, tradeStatsCache);
+    setTokenStats(socialStatsCache, _enrichedTrade());
   }
   res.json(tradeStatsCache || { lastUpdated: now });
 });
@@ -1180,7 +1194,7 @@ async function _pollTokenStats() {
       tradeStatsCache = await fetchTradeStats();
       tradeStatsLastFetch = Date.now();
     }
-    setTokenStats(socialStatsCache, tradeStatsCache);
+    setTokenStats(socialStatsCache, _enrichedTrade());
   } catch (err) {
     console.warn('[Token] Background poll error:', err.message);
   }

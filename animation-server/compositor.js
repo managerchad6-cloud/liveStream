@@ -246,8 +246,8 @@ let tickerMessages = [];       // array of strings, plays in order
 let tickerCurrentIndex = 0;    // index into tickerMessages of currently playing slot
 let tickerSlotStartMs = 0;     // when the current slot started scrolling
 const TICKER_SPEED = 28;      // px/sec, right to left
-const TICKER_FONT_SIZE = 20;  // px
-const TICKER_HEIGHT = 36;     // px (≈5% of 720p)
+const TICKER_FONT_SIZE = 22;  // px
+const TICKER_HEIGHT = 42;     // px (≈6% of 720p)
 
 // Meme queue overlay (top-right corner)
 let memeQueueItems = [];  // Array of { segmentId, title }
@@ -876,6 +876,18 @@ function buildCaptionSvg(text) {
   return { input: Buffer.from(svg), left: bannerX, top: bannerY };
 }
 
+// Shared panel background: vertical gradient (opaque at top → transparent at bottom) + gold top border.
+function panelBgSvg(x, w, h, rx = 8) {
+  return `<defs>
+    <linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#08080e" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#08080e" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="${x}" y="0" width="${w}" height="${h}" rx="${rx}" ry="${rx}" fill="url(#pbg)"/>
+  <line x1="${x}" y1="1.5" x2="${x + w}" y2="1.5" stroke="#c8a84b" stroke-width="3"/>`;
+}
+
 /**
  * Build a compact key-value stats panel SVG.
  * rows = [{ label, value }]
@@ -900,9 +912,10 @@ function buildStatsPanelSvg({ rows, left, top, title }) {
   const rowEls = rows.map((r, i) => {
     const y = PAD_Y + TITLE_H + i * ROW_H + FONT_SZ + 2;
     const val = (r.value == null || r.value === '' || r.value === null) ? '\u2014' : String(r.value);
+    const valColor = r.color || '#e8e8e8';
     return [
-      `<text x="${PAD_X}" y="${y}" font-size="${FONT_SZ}" fill="#888" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(r.label)}</text>`,
-      `<text x="${PANEL_W - PAD_X}" y="${y}" text-anchor="end" font-size="${FONT_SZ}" font-weight="600" fill="#e8e8e8" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(val)}</text>`
+      `<text x="${PAD_X}" y="${y}" font-size="${FONT_SZ}" fill="#ffffff" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(r.label)}</text>`,
+      `<text x="${PANEL_W - PAD_X}" y="${y}" text-anchor="end" font-size="${FONT_SZ}" font-weight="600" fill="${valColor}" font-family="DejaVu Sans,Arial,sans-serif">${escapeSvgText(val)}</text>`
     ].join('');
   }).join('');
 
@@ -910,7 +923,7 @@ function buildStatsPanelSvg({ rows, left, top, title }) {
   const divider  = title ? `<line x1="${PAD_X}" y1="${dividerY}" x2="${PANEL_W - PAD_X}" y2="${dividerY}" stroke="#333" stroke-width="1"/>` : '';
 
   const svg = `<svg width="${PANEL_W}" height="${PANEL_H}" xmlns="http://www.w3.org/2000/svg">
-  <rect x="0" y="0" width="${PANEL_W}" height="${PANEL_H}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
+  ${panelBgSvg(0, PANEL_W, PANEL_H)}
   ${titleEl}${divider}${rowEls}
 </svg>`;
 
@@ -922,7 +935,7 @@ function buildSocialStatsSvg() {
   const rows = [
     { label: 'HOLDERS',   value: d?.holders     != null ? Number(d.holders).toLocaleString()   : null },
     { label: 'FOLLOWERS', value: d?.followers    != null ? Number(d.followers).toLocaleString() : null },
-    { label: 'COMMUNITY', value: d?.communityMembers != null ? Number(d.communityMembers).toLocaleString() : null },
+    { label: 'COMMUNITY', value: d?.communityMembers != null ? String(d.communityMembers) : null },
     { label: 'X POSTS',   value: d?.postCount    != null ? Number(d.postCount).toLocaleString()  : null },
   ];
   return buildStatsPanelSvg({ rows, left: 455, top: 528, title: 'SOCIAL' });
@@ -930,13 +943,18 @@ function buildSocialStatsSvg() {
 
 function buildTradeStatsSvg() {
   const d = _tokenStatsPanelData.trade;
-  const fmt = (v) => v != null ? `$${Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : null;
-  const fmtPct = (v) => v != null ? `${Number(v).toFixed(2)}%` : null;
+  const fmtUsd = (obj) => {
+    const usd = obj?.usd;
+    if (usd == null) return null;
+    return `$${Number(usd).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  };
+  const ch5m = d?.priceChange5m;
+  const ch5mStr = ch5m != null ? `${Number(ch5m) >= 0 ? '+' : ''}${Number(ch5m).toFixed(2)}%` : null;
   const rows = [
-    { label: 'BIG BUY 24H', value: fmt(d?.biggestBuy24h) },
-    { label: 'BIG BUY 8H',  value: fmt(d?.biggestBuy8h)  },
-    { label: 'BIG BUY 1H',  value: fmt(d?.biggestBuy1h)  },
-    { label: 'CHG 5M',      value: fmtPct(d?.priceChange5m) },
+    { label: 'BIGGEST BUY 24H', value: fmtUsd(d?.buy24h) },
+    { label: 'BIGGEST BUY 8H',  value: fmtUsd(d?.buy8h)  },
+    { label: 'BIGGEST BUY 1H',  value: fmtUsd(d?.buy1h)  },
+    { label: 'CHG 5M', value: ch5mStr, color: ch5m != null ? (Number(ch5m) >= 0 ? '#26a69a' : '#ef5350') : null },
   ];
   return buildStatsPanelSvg({ rows, left: 665, top: 528, title: 'TRADING' });
 }
@@ -1043,7 +1061,8 @@ function buildTickerSvg() {
   // Positioned at stripY in the output via the composite op's `top` field.
   const svg = `<svg width="${outputWidth}" height="${TICKER_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
   <rect x="0" y="0" width="${outputWidth}" height="${TICKER_HEIGHT}" fill="black"/>
-  <text x="${scrollX}" y="${textY}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="400" xml:space="preserve">${tspans}</text>
+  <line x1="0" y1="1.5" x2="${outputWidth}" y2="1.5" stroke="#c8a84b" stroke-width="3"/>
+  <text x="${scrollX}" y="${textY}" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="400" xml:space="preserve">${tspans}</text>
 </svg>`;
 
   // Return composite op: input SVG + output position
@@ -1252,7 +1271,7 @@ function buildListSvg({ currentItems, nextItems, fadeT, currentOffset = 0, nextO
     ? `<text x="${PANEL_W / 2}" y="${svgH - 4}" text-anchor="middle" fill="rgba(255,255,255,0.75)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400" letter-spacing="0.5">${escapeSvgText('next video release in ' + countdownText)}</text>`
     : '';
   const svg = `<svg width="${PANEL_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
-    <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${svgH}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
+    ${panelBgSvg(GUTTER, PANEL_W - GUTTER * 2, svgH)}
     ${PANEL_FONTS_FACE}
     ${titleEl}
     ${subtitleEl}
@@ -1371,7 +1390,7 @@ function buildMemeQueueSvg() {
         '<text x="' + (PANEL_W - PAD_X) + '" y="' + y + '" text-anchor="end" fill="rgba(255,165,55,1)" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="600">' + escapeSvgText(winnerVotes) + '</text>';
       const rollingH = Math.min(relDividerY + ITEM_H + PAD_Y, delimiterY);
       const rollingSvg = '<svg width="' + PANEL_W + '" height="' + rollingH + '" xmlns="http://www.w3.org/2000/svg">' +
-        '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + rollingH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>' +
+        panelBgSvg(GUTTER, PANEL_W - GUTTER * 2, rollingH) +
         PANEL_FONTS_FACE +
         svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: BRADBUN_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
         '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="' + FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
@@ -1441,7 +1460,7 @@ function buildMemeQueueSvg() {
 
     const votePanelH = Math.min(relDividerY + perPage * ITEM_H + PAD_Y, delimiterY);
     const voteSvg = '<svg width="' + PANEL_W + '" height="' + votePanelH + '" xmlns="http://www.w3.org/2000/svg">' +
-      '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + votePanelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>' +
+      panelBgSvg(GUTTER, PANEL_W - GUTTER * 2, votePanelH) +
       PANEL_FONTS_FACE +
       svgEmojiTitle({ text: titleText, y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: BRADBUN_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }) +
       '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="' + FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">' + escapeSvgText(subtitleText) + '</text>' +
@@ -1483,7 +1502,7 @@ function buildMemeQueueSvg() {
 
   const svgParts = [
     '<svg width="' + PANEL_W + '" height="' + panelH + '" xmlns="http://www.w3.org/2000/svg">',
-    '<rect x="' + GUTTER + '" y="0" width="' + (PANEL_W - GUTTER * 2) + '" height="' + panelH + '" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>',
+    panelBgSvg(GUTTER, PANEL_W - GUTTER * 2, panelH),
     PANEL_FONTS_FACE,
     svgEmojiTitle({ text: '😆 Queued Memes', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: BRADBUN_FAMILY + 'DejaVu Sans, Arial, sans-serif', centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) }),
     '<text x="' + (PANEL_W / 2) + '" y="' + relSubtitleY + '" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="' + FRIENDSZONE_FAMILY + 'DejaVu Sans, Arial, sans-serif" font-size="' + SUBTITLE_FONT + '" font-weight="400">(/meme your prompt)</text>',
@@ -1554,7 +1573,7 @@ function buildSuggestionQueueSvg() {
   const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 5) * ITEM_H + PAD_Y, delimiterY);
 
   const svg = `<svg width="${PANEL_W}" height="${panelH}" xmlns="http://www.w3.org/2000/svg">
-    <rect x="${GUTTER}" y="0" width="${PANEL_W - GUTTER * 2}" height="${panelH}" rx="8" ry="8" fill="rgba(8,8,14,0.60)"/>
+    ${panelBgSvg(GUTTER, PANEL_W - GUTTER * 2, panelH)}
     ${PANEL_FONTS_FACE}
     ${svgEmojiTitle({ text: '🌍 Suggestions', y: relTitleY, fontSize: TITLE_FONT, fill: 'rgba(255,255,255,0.45)', fontFamily: `${BRADBUN_FAMILY}DejaVu Sans, Arial, sans-serif`, centerInWidth: PANEL_W, groupShift: Math.round(TITLE_FONT * 0.33) })}
     <text x="${PANEL_W / 2}" y="${relSubtitleY}" text-anchor="middle" fill="rgba(255,165,55,0.75)" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="${SUBTITLE_FONT}" font-weight="400">(/suggestion your idea)</text>
