@@ -315,6 +315,18 @@ class Orchestrator {
     };
     this.playbackController.registerOnAirHook(hookFn);
 
+    // Done hook: start TV as soon as the intro audio finishes (no word-count guessing).
+    // HLS latency is the same for both audio and video frames, so they stay in sync.
+    let introDone = false;
+    const introDoneHook = (segId) => {
+      if (!introDone && segId === introSegment.id) {
+        introDone = true;
+        session.startTV();
+      }
+    };
+    this.playbackController.registerSegmentDoneHook(introDoneHook);
+    entry.introDoneHook = introDoneHook;
+
     session.on('done', () => this._onSessionDone(sessionId));
 
     // Prioritize intro to front of queue (after any currently on-air segment)
@@ -364,7 +376,13 @@ class Orchestrator {
   _onSessionDone(sessionId) {
     this.activeVideoSession = null;
     const entry = this._videoSessions.get(sessionId);
-    if (entry) entry.state = 'done';
+    if (entry) {
+      entry.state = 'done';
+      if (entry.introDoneHook) {
+        this.playbackController.removeSegmentDoneHook(entry.introDoneHook);
+        entry.introDoneHook = null;
+      }
+    }
 
     // Resume normal pipeline
     this.playbackController.start();

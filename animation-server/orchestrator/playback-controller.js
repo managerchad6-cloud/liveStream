@@ -23,6 +23,8 @@ class PlaybackController {
     this.expandChain = null;
     // Registered on-air hooks: Array<(segmentId, segment) => void>
     this._onAirHooks = [];
+    // Registered segment-done hooks: Array<(segmentId) => void>
+    this._segmentDoneHooks = [];
   }
 
   /**
@@ -31,6 +33,18 @@ class PlaybackController {
    */
   registerOnAirHook(fn) {
     this._onAirHooks.push(fn);
+  }
+
+  /**
+   * Register a callback fired when a segment's audio finishes.
+   * @param {Function} fn - (segmentId: string) => void
+   */
+  registerSegmentDoneHook(fn) {
+    this._segmentDoneHooks.push(fn);
+  }
+
+  removeSegmentDoneHook(fn) {
+    this._segmentDoneHooks = this._segmentDoneHooks.filter(h => h !== fn);
   }
 
   start() {
@@ -127,6 +141,13 @@ class PlaybackController {
     // Clear on-air if this was the current segment
     if (this.currentSegmentId === segmentId) {
       this.currentSegmentId = null;
+    }
+
+    // Fire segment-done hooks (e.g. video reaction intro completion)
+    for (const hook of this._segmentDoneHooks) {
+      try { hook(segmentId); } catch (err) {
+        console.warn(`[PlaybackController] Segment-done hook error: ${err.message}`);
+      }
     }
 
     this._broadcastUpdate();
