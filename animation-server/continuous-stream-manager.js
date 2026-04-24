@@ -392,9 +392,12 @@ class ContinuousStreamManager {
                 this._duckFactor = Math.min(1.0, this._duckFactor + this._duckReleasePerFrame);
               }
               // Mix in TV audio when a video is playing (TV pauses during character speech,
-              // so character audio and TV audio never overlap)
+              // so character audio and TV audio never overlap).
+              // tick() is called here — in sync with audio — so video frame and audio
+              // always advance together, even when the compositor reuses a cached frame.
               const tvs = this.tvContentService;
               if (tvs) {
+                tvs.tick();
                 const tvChunk = tvs.getAudioChunk(audioData.length);
                 if (tvChunk) {
                   audioData = this._mixAudio(audioData, tvChunk, 1.0);

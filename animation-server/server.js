@@ -1777,9 +1777,9 @@ async function renderFrame(frame, audioProgress = null) {
   const virginBlinking = blinkControllers.virgin.update(frame, speakingCharacter === 'virgin');
   const caption = currentCaption && Date.now() < captionUntil ? currentCaption : null;
 
-  // Update TV content - tick advances frame, get current frame for compositing
+  // Get current TV frame for compositing.
+  // tick() is called by ContinuousStreamManager in sync with audio to prevent drift.
   if (tvService) {
-    tvService.tick();
     const tvFrame = await tvService.getCurrentFrame();
     setTVFrame(tvFrame);
   }
