@@ -166,9 +166,9 @@ class PipelineStore {
     segment.status = newStatus;
     segment.updatedAt = new Date().toISOString();
 
-    if (newStatus === 'aired' && this.onSegmentActivity) {
+    if ((newStatus === 'aired' || newStatus === 'ready') && this.onSegmentActivity) {
       try {
-        this.onSegmentActivity(segment, 'aired');
+        this.onSegmentActivity(segment, newStatus);
       } catch (err) {
         console.warn('[PipelineStore] onSegmentActivity error:', err.message);
       }

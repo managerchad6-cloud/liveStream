@@ -215,6 +215,8 @@ class SegmentRenderer {
         try {
           const ttsText = prepareForTTS(line.text);
 
+          const _key = process.env.ELEVENLABS_API_KEY || '';
+          console.log(`[ElevenLabs] using key: ${_key.slice(0, 8)}...${_key.slice(-4)} (len=${_key.length})`);
           const ttsResponse = await axios.post(
             `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
             {

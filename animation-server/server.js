@@ -6,7 +6,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
 
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '.env'), override: true });
+const _k = process.env.ELEVENLABS_API_KEY || '';
+console.log(`[startup] cwd=${process.cwd()} | dotenv path=${path.join(__dirname,'..', '.env')} | ELEVENLABS key: ${_k.slice(0,8)}...${_k.slice(-4)} (len=${_k.length})`);
 
 const { FFMPEG_PATH } = require('./platform');
 const { getChartScreenshot } = require('./chart-renderer');
@@ -29,6 +31,13 @@ const {
   setEyebrowAsymmetry,
   setSpeakingCharacter,
   addChatMessage,
+  setChatMessageForming,
+  setChatMessageReady,
+  setChatMessageOnAir,
+  setMemeGenerating,
+  setMemeForming,
+  setMemeReady,
+  setMemeOnAir,
   setTickerMessages,
   getTickerMessages,
   getTickerCurrentIndex,
@@ -307,7 +316,7 @@ async function finalizeVoting() {
   }
   try {
     const memeJob = trackMemeJob(winner.description, winner.userId);
-    const result = await runMemeFromText(winner.text, winner.userId);
+    const result = await runMemeFromText(winner.text, winner.userId, memeJob.id);
     memeVotingWinnerSegId = result?.segmentId || null;
     memeJob.done();
     broadcastPipelineUpdate();
@@ -353,7 +362,7 @@ function addToMemeIntake(userId, text) {
 function processMemeIntakeItem(item) {
   console.log(`[MemeIntake] Generating: "${item.description}"`);
   const memeJob = trackMemeJob(item.text.slice(0, 60), item.userId);
-  runMemeFromText(item.text, item.userId).then(() => {
+  runMemeFromText(item.text, item.userId, memeJob.id).then(() => {
     memeJob.done();
     broadcastPipelineUpdate();
   }).catch(err => {
@@ -387,11 +396,11 @@ function syncMemeQueueToCompositor() {
       && s.status !== 'aired'
       && s.status !== 'deleted'
       && memeSegmentTitles.has(s.id))
-    .map(s => ({ segmentId: s.id, title: memeSegmentTitles.get(s.id) }))
+    .map(s => ({ segmentId: s.id, title: memeSegmentTitles.get(s.id), jobId: s.metadata?.memeJobId || null }))
     .reverse();
   const generatingItems = Array.from(memeGenerationQueue.values())
     .filter(job => job.status !== 'failed')
-    .map(job => ({ segmentId: null, title: job.description }))
+    .map(job => ({ segmentId: null, title: job.description, jobId: job.id }))
     .reverse();
   setMemeQueue([...generatingItems, ...pipelineItems]);
 }
@@ -422,7 +431,9 @@ function trackMemeJob(description, userId = null) {
   const job = { id, description, userId, status: 'generating', startedAt: Date.now() };
   memeGenerationQueue.set(id, job);
   broadcastMemeQueueUpdate();
+  setMemeGenerating(id);
   return {
+    id,
     done() {
       memeGenerationQueue.delete(id);
       broadcastMemeQueueUpdate();
@@ -3461,7 +3472,7 @@ app.post('/api/orchestrator/meme/freestyle', async (req, res) => {
   // Auto mode: generate immediately
   res.json({ ok: true, queued: true });
   const memeJob = trackMemeJob(text.trim().slice(0, 60), userId || null);
-  runMemeFromText(text.trim(), userId || null).then(() => {
+  runMemeFromText(text.trim(), userId || null, memeJob.id).then(() => {
     memeJob.done();
     broadcastPipelineUpdate();
   }).catch(err => {
@@ -3538,7 +3549,7 @@ app.post('/api/orchestrator/meme/create', async (req, res) => {
 
   const memeJob = trackMemeJob(`${virgin} vs ${chad}`.slice(0, 60));
   try {
-    const result = await runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels });
+    const result = await runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, memeJobId: memeJob.id });
     memeJob.done();
     broadcastPipelineUpdate();
     res.json({ segmentId: result.segmentId, virginLabels: result.virginLabels, chadLabels: result.chadLabels });
@@ -3856,7 +3867,7 @@ function parseMemeText(text) {
 // Tries /generate/freestyle first (handles any input format) to extract virgin/chad.
 // Falls back to local regex parsing of the standard "virgin X vs chad Y" format.
 // Either way, delegates to runMemeAndCreateSegment (the proven /generate/raw path).
-async function runMemeFromText(text, userId = null) {
+async function runMemeFromText(text, userId = null, memeJobId = null) {
   const MEME_API = 'http://93.127.214.75:8000';
   const axios = require('axios');
 
@@ -3899,12 +3910,12 @@ async function runMemeFromText(text, userId = null) {
   }
 
   // Delegate to proven /generate/raw pipeline
-  return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, userId });
+  return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, userId, memeJobId });
 }
 
 // Submit a job to the MemeFactory API, poll until done, fetch labels + image,
 // generate a character reaction script, create a pipeline segment, and queue it.
-async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [], userId = null, _attempt = 1 }) {
+async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], chadSeedLabels = [], userId = null, memeJobId = null, _attempt = 1 }) {
   if (!mediaLibrary) throw new Error('Media library not available');
   if (!scriptGenerator) throw new Error('Script generator not available');
   if (!pipelineStore) throw new Error('Pipeline store not available');
@@ -3939,7 +3950,7 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
       if (_attempt < MAX_ATTEMPTS) {
         console.warn(`[Meme] Job failed (${apiErr}), retrying in 3s... (attempt ${_attempt + 1}/${MAX_ATTEMPTS})`);
         await new Promise(r => setTimeout(r, 3000));
-        return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, userId, _attempt: _attempt + 1 });
+        return runMemeAndCreateSegment({ virgin, chad, virginSeedLabels, chadSeedLabels, userId, memeJobId, _attempt: _attempt + 1 });
       }
       throw new Error(`Meme job failed: ${apiErr}`);
     }
@@ -3995,9 +4006,13 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
       chadSubject: chad,
       virginLabels,
       chadLabels,
-      attachedMediaId: item.id
+      attachedMediaId: item.id,
+      memeJobId: memeJobId || null
     }
   });
+
+  // Transition bar to rendering phase (50→75%)
+  if (memeJobId) setMemeForming(memeJobId);
 
   // Register title for stream overlay (removed when segment becomes 'aired')
   memeSegmentTitles.set(segment.id, `virgin ${virgin} vs chad ${chad}`);
@@ -4011,6 +4026,164 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
   console.log(`[Meme] Segment ${segment.id} queued`);
   return { segmentId: segment.id, mediaId: item.id, virginLabels, chadLabels };
 }
+
+// ── YouTube Reaction Queue ────────────────────────────────────────────────────
+
+const { ethers: _ethers } = require('ethers');
+const _nacl = require('tweetnacl');
+const _bs58 = require('bs58');
+
+const YT_QUEUE_FILE = path.join(ROOT_DIR, 'data', 'yt-queue.json');
+
+function loadYtQueue() {
+  try {
+    return JSON.parse(fs.readFileSync(YT_QUEUE_FILE, 'utf8'));
+  } catch {
+    return { items: [] };
+  }
+}
+
+function saveYtQueue(data) {
+  const tmp = YT_QUEUE_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, YT_QUEUE_FILE);
+}
+
+function ytVerifySig(walletType, challenge, signature, wallet) {
+  if (walletType === 'eth') {
+    const recovered = _ethers.verifyMessage(challenge, signature);
+    return recovered.toLowerCase() === wallet.toLowerCase();
+  } else if (walletType === 'sol') {
+    const msgBytes = Buffer.from(challenge, 'utf8');
+    const sigBytes = Buffer.from(signature, 'base64');
+    const pubKeyBytes = _bs58.decode(wallet);
+    return _nacl.sign.detached.verify(msgBytes, sigBytes, pubKeyBytes);
+  }
+  return false;
+}
+
+function ytVoteChallenge(action, id, wallet, nonce) {
+  return `VVC Live: ${action} yt-queue ${id} as ${wallet} ts ${nonce}`;
+}
+
+function ytPublicItem(item) {
+  return {
+    id: item.id,
+    url: item.url,
+    title: item.title,
+    addedAt: item.addedAt,
+    voteCount: Object.keys(item.votes).length,
+    voters: Object.keys(item.votes)
+  };
+}
+
+app.get('/api/yt-queue', (req, res) => {
+  const data = loadYtQueue();
+  const items = data.items
+    .map(ytPublicItem)
+    .sort((a, b) => b.voteCount - a.voteCount || new Date(b.addedAt) - new Date(a.addedAt));
+  res.json({ items });
+});
+
+app.post('/api/yt-queue', (req, res) => {
+  const { url, title } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'url is required' });
+  }
+  const data = loadYtQueue();
+  if (data.items.some(i => i.url.toLowerCase() === url.toLowerCase())) {
+    return res.status(409).json({ error: 'URL already in queue' });
+  }
+  let resolvedTitle = (title && typeof title === 'string' && title.trim())
+    ? title.trim()
+    : (() => {
+        try {
+          const u = new URL(url);
+          const v = u.searchParams.get('v');
+          return v ? `${u.hostname} — ${v}` : u.hostname;
+        } catch {
+          return url.slice(0, 80);
+        }
+      })();
+  const item = {
+    id: crypto.randomBytes(6).toString('hex'),
+    url,
+    title: resolvedTitle,
+    addedAt: new Date().toISOString(),
+    votes: {}
+  };
+  data.items.push(item);
+  saveYtQueue(data);
+  console.log(`[YTQueue] Added id=${item.id} url=${url.slice(0, 60)}`);
+  res.json({ ok: true, item: ytPublicItem(item) });
+});
+
+app.post('/api/yt-queue/:id/vote', (req, res) => {
+  const { wallet, walletType, signature, challenge, nonce } = req.body || {};
+  if (!wallet || !walletType || !signature || !challenge || !nonce) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  if (!['eth', 'sol'].includes(walletType)) {
+    return res.status(400).json({ error: 'Unknown wallet type' });
+  }
+  const nonceTs = parseInt(nonce, 10);
+  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
+    return res.status(400).json({ error: 'Challenge expired' });
+  }
+  const expected = ytVoteChallenge('upvote', req.params.id, wallet, nonce);
+  if (challenge !== expected) {
+    return res.status(400).json({ error: 'Invalid challenge' });
+  }
+  try {
+    if (!ytVerifySig(walletType, challenge, signature, wallet)) {
+      return res.status(401).json({ error: 'Signature verification failed' });
+    }
+  } catch (err) {
+    return res.status(400).json({ error: 'Signature error: ' + err.message });
+  }
+  const data = loadYtQueue();
+  const item = data.items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const key = wallet.toLowerCase();
+  if (item.votes[key]) return res.status(409).json({ error: 'Already voted' });
+  item.votes[key] = { at: new Date().toISOString(), walletType };
+  saveYtQueue(data);
+  console.log(`[YTQueue] Vote id=${req.params.id} wallet=${wallet.slice(0, 12)}... type=${walletType}`);
+  res.json({ ok: true, voteCount: Object.keys(item.votes).length });
+});
+
+app.delete('/api/yt-queue/:id/vote', (req, res) => {
+  const { wallet, walletType, signature, challenge, nonce } = req.body || {};
+  if (!wallet || !walletType || !signature || !challenge || !nonce) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  if (!['eth', 'sol'].includes(walletType)) {
+    return res.status(400).json({ error: 'Unknown wallet type' });
+  }
+  const nonceTs = parseInt(nonce, 10);
+  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
+    return res.status(400).json({ error: 'Challenge expired' });
+  }
+  const expected = ytVoteChallenge('unvote', req.params.id, wallet, nonce);
+  if (challenge !== expected) {
+    return res.status(400).json({ error: 'Invalid challenge' });
+  }
+  try {
+    if (!ytVerifySig(walletType, challenge, signature, wallet)) {
+      return res.status(401).json({ error: 'Signature verification failed' });
+    }
+  } catch (err) {
+    return res.status(400).json({ error: 'Signature error: ' + err.message });
+  }
+  const data = loadYtQueue();
+  const item = data.items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const key = wallet.toLowerCase();
+  if (!item.votes[key]) return res.status(404).json({ error: 'No vote to remove' });
+  delete item.votes[key];
+  saveYtQueue(data);
+  res.json({ ok: true, voteCount: Object.keys(item.votes).length });
+});
 
 // Start server
 async function start() {
@@ -4056,6 +4229,42 @@ async function start() {
     fs.promises.appendFile(dialogueLogPath, line, 'utf8').catch(err => {
       console.warn('[Log] dialogue write failed:', err.message);
     });
+
+    // Meme progress bar: start queue countdown phase when segment enters the ready queue
+    const memeJobId = segment.metadata?.memeJobId;
+    if (memeJobId && event === 'ready') {
+      const allSegs = pipelineStore.getAllSegments();
+      const thisIdx = allSegs.findIndex(s => s.id === segment.id);
+      const queueMs = allSegs
+        .slice(0, thisIdx)
+        .filter(s => s.status === 'forming' || s.status === 'ready')
+        .reduce((sum, s) => sum + (s.estimatedDuration || 0) * 1000, 0);
+      setMemeReady(memeJobId, queueMs);
+    }
+
+    // Chat progress bar: start 2nd-half countdown when segment enters the ready queue
+    const chatCardId = segment.metadata?.chatCardId;
+    if (chatCardId && event === 'ready' && !segment.metadata?.isNarratorCue) {
+      const allSegs = pipelineStore.getAllSegments();
+      const thisIdx = allSegs.findIndex(s => s.id === segment.id);
+
+      // Find the narrator-cue paired with this chat card — it sits just before chat-response.
+      // We count segments before the narrator-cue (not before chat-response), so the
+      // 50→100% ramp spans only the wait until the narrator starts, not its playback.
+      let countUntil = thisIdx;
+      for (let i = 0; i < thisIdx; i++) {
+        if (allSegs[i].metadata?.chatCardId === chatCardId && allSegs[i].metadata?.isNarratorCue) {
+          countUntil = i;
+          break;
+        }
+      }
+
+      const queueMs = allSegs
+        .slice(0, countUntil)
+        .filter(s => s.status === 'forming' || s.status === 'ready')
+        .reduce((sum, s) => sum + (s.estimatedDuration || 0) * 1000, 0);
+      setChatMessageReady(chatCardId, queueMs);
+    }
   };
   pipelineStore = new PipelineStore(path.join(ROOT_DIR, 'data'), { onSegmentActivity });
   await pipelineStore.init();
@@ -4147,7 +4356,8 @@ async function start() {
     animationServerUrl,
     eventEmitter: orchestratorSocket,
     config: orchestratorConfig,
-    onChatMessage: addChatMessage,
+    onChatMessage: (username, text, cardId) => addChatMessage(username, text, cardId),
+    onChatProgress: (cardId) => setChatMessageForming(cardId),
     onMemeCommand: (userId, text) => {
       if (!mimoEnabled) {
         // Voting mode: add to pool
@@ -4157,7 +4367,7 @@ async function start() {
       if (memeIntakeAutoMode) {
         console.log(`[MemeIntake] Auto — generating: "${text.slice(0, 60)}"`);
         const memeJob = trackMemeJob(text.slice(0, 60), userId);
-        runMemeFromText(text, userId).then(() => {
+        runMemeFromText(text, userId, memeJob.id).then(() => {
           memeJob.done();
           broadcastPipelineUpdate();
         }).catch(err => {
@@ -4181,6 +4391,16 @@ async function start() {
   playbackController = orchestrator.playbackController;
   chatIntake = orchestrator.chatIntake;
   console.log('[Orchestrator] Initialized');
+
+  // Push progress bars to 100% at the right moments
+  playbackController.registerOnAirHook((segmentId, segment) => {
+    // Chat bar: hits 100% when narrator-cue starts (right before the answer)
+    const chatCardId = segment?.metadata?.chatCardId;
+    if (chatCardId && segment?.metadata?.isNarratorCue) setChatMessageOnAir(chatCardId);
+    // Meme bar: hits 100% when the meme-reaction segment starts
+    const memeJobId = segment?.metadata?.memeJobId;
+    if (memeJobId) setMemeOnAir(memeJobId);
+  });
 
   // SFX auto-matcher — must be wired AFTER orchestrator.init() so segmentRenderer/playbackController exist
   sfxMatcher = new SfxMatcher({ sfxService, openai, pipelineStore });

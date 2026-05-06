@@ -12,7 +12,7 @@ const VideoReactionPlanner = require('./video-reaction-planner');
 const VideoReactionSession = require('./video-reaction-session');
 
 class Orchestrator {
-  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onMemeCommand, onVoteMemeCommand, tvService }) {
+  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onChatProgress, onMemeCommand, onVoteMemeCommand, tvService }) {
     this.pipelineStore = pipelineStore;
     this.openai = openai || null;
     this.animationServerUrl = animationServerUrl;
@@ -51,7 +51,8 @@ class Orchestrator {
       pipelineStore,
       segmentRenderer: this.segmentRenderer,
       eventEmitter,
-      onChatMessage
+      onChatMessage,
+      onChatProgress
     });
     this.chatIntake.queueSegmentWithBridge = (segmentId) => this.queueSegmentWithBridge(segmentId);
     this.chatIntakeEnabled = config?.chatIntake?.enabled !== false;

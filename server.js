@@ -1,4 +1,6 @@
-require('dotenv').config();
+require('dotenv').config({ override: true });
+const _k = process.env.ELEVENLABS_API_KEY || '';
+console.log(`[startup] cwd=${process.cwd()} | ELEVENLABS key: ${_k.slice(0,8)}...${_k.slice(-4)} (len=${_k.length})`);
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -958,6 +960,8 @@ async function playAutoScript(script, autoId) {
 
     index += 1;
     try {
+      const _key = process.env.ELEVENLABS_API_KEY || '';
+      console.log(`[ElevenLabs] using key: ${_key.slice(0, 8)}...${_key.slice(-4)} (len=${_key.length})`);
       const elevenLabsResponse = await axios.post(
         `https://api.elevenlabs.io/v1/text-to-speech/${voiceConfig.elevenLabsVoiceId}`,
         {

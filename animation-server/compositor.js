@@ -250,8 +250,9 @@ const TICKER_FONT_SIZE = 22;  // px
 const TICKER_HEIGHT = 42;     // px (≈6% of 720p)
 
 // Meme queue overlay (top-right corner)
-let memeQueueItems = [];  // Array of { segmentId, title }
+let memeQueueItems = [];  // Array of { segmentId, title, jobId }
 let memeQueueVersion = 0; // Bumped on change (cache invalidation)
+const memeStages = new Map(); // jobId → { stage, startedAt, formingAt, renderEstimateMs, readyAt, queueRemainingMs }
 // Voting mode data (replaces queue display when MIMO is OFF)
 let memeVotingData = null; // null | { state, pool: [{number,description,votes}], countdownSecs }
 
@@ -1110,18 +1111,132 @@ function getTVViewport() {
  * Add a viewer chat message to the overlay log.
  * Trims to CHAT_MAX_MESSAGES and bumps version for cache invalidation.
  */
-function addChatMessage(username, text) {
+function addChatMessage(username, text, cardId = null) {
   if (!username || !text) return;
   chatMessages.push({
     username: String(username).slice(0, 20),
     text: String(text).slice(0, 120),
-    addedAt: Date.now()
+    addedAt: Date.now(),
+    cardId: cardId || null,
+    chatStage: null,      // null | 'forming' | 'ready' | 'on-air'
+    formingAt: null,
+    renderEstimateMs: 15000,
+    readyAt: null,
+    queueRemainingMs: 0
   });
   if (chatMessages.length > CHAT_MAX_MESSAGES) {
     chatMessages = chatMessages.slice(-CHAT_MAX_MESSAGES);
   }
   chatVersion++;
-  lastOutputKey = null; // Invalidate output fast path
+  lastOutputKey = null;
+}
+
+// Segment entered the render queue — start smooth 0→50% ramp over estimated render time
+function setChatMessageForming(cardId, renderEstimateMs = 15000) {
+  const msg = chatMessages.find(m => m.cardId === cardId);
+  if (!msg) return;
+  msg.chatStage = 'forming';
+  msg.formingAt = Date.now();
+  msg.renderEstimateMs = renderEstimateMs;
+  chatVersion++;
+  lastOutputKey = null;
+}
+
+// Segment fully rendered, sitting in queue — smooth 50→100% ramp over queue depth
+function setChatMessageReady(cardId, queueRemainingMs) {
+  const msg = chatMessages.find(m => m.cardId === cardId);
+  if (!msg) return;
+  msg.chatStage = 'ready';
+  msg.readyAt = Date.now();
+  msg.queueRemainingMs = Math.max(0, queueRemainingMs || 0);
+  chatVersion++;
+  lastOutputKey = null;
+}
+
+// Segment starts playing — bar hits 100%, fades out after 1.5s
+function setChatMessageOnAir(cardId) {
+  const msg = chatMessages.find(m => m.cardId === cardId);
+  if (!msg) return;
+  msg.chatStage = 'on-air';
+  chatVersion++;
+  lastOutputKey = null;
+  setTimeout(() => {
+    const m = chatMessages.find(c => c.cardId === cardId);
+    if (m) { m.chatStage = null; m.cardId = null; }
+    chatVersion++;
+    lastOutputKey = null;
+  }, 1500);
+}
+
+function _computeMemeBarProgress(jobId, now) {
+  const s = memeStages.get(jobId);
+  if (!s || !s.stage) return null;
+  if (s.stage === 'on-air') return 1.0;
+  if (s.stage === 'generating') {
+    const elapsed = now - s.startedAt;
+    // Ramp 0→64%; transitions to 66% at forming start
+    return Math.min(0.64, (elapsed / 95000) * 0.66);
+  }
+  if (s.stage === 'forming') {
+    const elapsed = now - s.formingAt;
+    // Ramp 66→78%
+    return 0.66 + Math.min(0.12, (elapsed / (s.renderEstimateMs || 15000)) * 0.13);
+  }
+  if (s.stage === 'ready') {
+    const q = s.queueRemainingMs || 0;
+    if (q <= 0) return 0.98;
+    const elapsed = now - s.readyAt;
+    // Ramp 79→100%
+    return 0.79 + Math.min(0.21, (elapsed / q) * 0.21);
+  }
+  return null;
+}
+
+function setMemeGenerating(jobId) {
+  memeStages.set(jobId, { stage: 'generating', startedAt: Date.now(), formingAt: null, renderEstimateMs: 15000, readyAt: null, queueRemainingMs: 0 });
+  memeQueueVersion++;
+  lastOutputKey = null;
+}
+function setMemeForming(jobId, renderEstimateMs = 15000) {
+  const s = memeStages.get(jobId) || {};
+  memeStages.set(jobId, { ...s, stage: 'forming', formingAt: Date.now(), renderEstimateMs });
+  memeQueueVersion++;
+  lastOutputKey = null;
+}
+function setMemeReady(jobId, queueRemainingMs) {
+  const s = memeStages.get(jobId) || {};
+  memeStages.set(jobId, { ...s, stage: 'ready', readyAt: Date.now(), queueRemainingMs: Math.max(0, queueRemainingMs || 0) });
+  memeQueueVersion++;
+  lastOutputKey = null;
+}
+function setMemeOnAir(jobId) {
+  const s = memeStages.get(jobId) || {};
+  memeStages.set(jobId, { ...s, stage: 'on-air' });
+  memeQueueVersion++;
+  lastOutputKey = null;
+  setTimeout(() => {
+    memeStages.delete(jobId);
+    memeQueueVersion++;
+    lastOutputKey = null;
+  }, 1500);
+}
+
+function _computeChatBarProgress(msg, now) {
+  const { chatStage, formingAt, renderEstimateMs, readyAt, queueRemainingMs } = msg;
+  if (!chatStage) return null;
+  if (chatStage === 'on-air') return 1.0;
+  if (chatStage === 'forming') {
+    const elapsed = now - formingAt;
+    // Ramp 0→48%, never touch 50% so the jump to ready-phase is imperceptible
+    return Math.min(0.48, (elapsed / (renderEstimateMs || 15000)) * 0.5);
+  }
+  if (chatStage === 'ready') {
+    const q = queueRemainingMs || 0;
+    if (q <= 0) return 0.98; // nothing ahead, practically on-air
+    const elapsed = now - readyAt;
+    return 0.5 + Math.min(1, elapsed / q) * 0.5;
+  }
+  return null;
 }
 
 /**
@@ -1484,6 +1599,9 @@ function buildMemeQueueSvg() {
     lastIdx = i;
   }
 
+  const now = Date.now();
+  const memeBarW = Math.floor((PANEL_W - PAD_X * 2) / 2);
+
   const itemRows = [];
   for (let i = 0; i <= lastIdx; i++) {
     const itemBottomRel = relDividerY + (i + 1) * ITEM_H;
@@ -1495,7 +1613,17 @@ function buildMemeQueueSvg() {
     const y      = relDividerY + (i + 1) * ITEM_H - 4;
     const weight = i === 0 ? '600' : '400';
     const fill   = i === 0 ? '#ffffff' : 'rgba(255,255,255,0.85)';
-    itemRows.push('<text x="' + PAD_X + '" y="' + y + '" fill="' + fill + '" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="' + weight + '" opacity="' + op.toFixed(2) + '">' + escapeSvgText(cleanTitle(items[i].title)) + '</text>');
+
+    const barProgress = items[i].jobId ? _computeMemeBarProgress(items[i].jobId, now) : null;
+    let barSvg = '';
+    if (barProgress != null) {
+      const fillW = Math.round(Math.max(0, Math.min(1, barProgress)) * memeBarW);
+      const barY = y + 1;
+      barSvg = '<rect x="' + PAD_X + '" y="' + barY + '" width="' + memeBarW + '" height="3" fill="rgba(255,255,255,0.12)" rx="1.5"/>' +
+               '<rect x="' + PAD_X + '" y="' + barY + '" width="' + fillW + '" height="3" fill="#c8a84b" rx="1.5"/>';
+    }
+
+    itemRows.push('<text x="' + PAD_X + '" y="' + y + '" fill="' + fill + '" font-family="DejaVu Sans, Arial, sans-serif" font-size="' + ITEM_FONT + '" font-weight="' + weight + '" opacity="' + op.toFixed(2) + '">' + escapeSvgText(cleanTitle(items[i].title)) + '</text>' + barSvg);
   }
 
   const panelH = Math.min(PAD_Y + TITLE_H + Math.max(items.length, 5) * ITEM_H + PAD_Y, delimiterY);
@@ -1596,32 +1724,52 @@ function buildChatOverlaySvg() {
   const now = Date.now();
   const fontSize = 18;
   const lineHeight = 27;
+  const barHeight = 3;
+  const barGap = 4;   // px below text baseline before bar starts
+  const rowHeight = lineHeight + barHeight + barGap; // total height for rows that have a bar
   const paddingX = 12;
   const paddingY = 10;
   const maxWidth = 420;
-  const bottomReserve = 140; // Space for caption
+  const bottomReserve = 140;
   const margin = 16;
 
   const bannerWidth = maxWidth + paddingX * 2;
-  const bannerHeight = chatMessages.length * lineHeight + paddingY * 2;
+
+  // Compute cumulative Y so rows with an active bar are taller
+  let cumY = 0;
+  const rowOffsets = chatMessages.map(msg => {
+    const offset = cumY;
+    cumY += msg.chatStage != null ? rowHeight : lineHeight;
+    return offset;
+  });
+  const bannerHeight = cumY + paddingY * 2;
   const bannerX = margin;
   const bannerY = outputHeight - bottomReserve - bannerHeight;
 
-  // Coordinates relative to SVG origin (bannerX, bannerY in output)
   const lines = chatMessages.map((msg, i) => {
     const age = now - msg.addedAt;
     const lifeRatio = age / CHAT_EXPIRE_MS;
-    // Full opacity for first 65% of lifetime, fade to 0.2 over remaining 35%
     const opacity = lifeRatio < 0.65 ? 1.0 : Math.max(0.2, 1.0 - ((lifeRatio - 0.65) / 0.35) * 0.8);
-    const y = paddingY + fontSize + i * lineHeight; // relative to SVG top
+    const y = paddingY + fontSize + rowOffsets[i];
     const name = msg.username;
+
+    let bar = '';
+    const barProgress = _computeChatBarProgress(msg, now);
+    if (barProgress != null) {
+      const barW = Math.round(maxWidth / 2);
+      const fillW = Math.round(Math.max(0, Math.min(1, barProgress)) * barW);
+      const barY = y + barGap;
+      bar = `<rect x="${paddingX}" y="${barY}" width="${barW}" height="${barHeight}" fill="rgba(255,255,255,0.12)" rx="1.5"/>` +
+            `<rect x="${paddingX}" y="${barY}" width="${fillW}" height="${barHeight}" fill="#c8a84b" rx="1.5"/>`;
+    }
+
     return `<g opacity="${opacity.toFixed(2)}">` +
       `<text x="${paddingX}" y="${y}" font-size="${fontSize}" font-weight="700" fill="#a78bfa" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(name)}:</text>` +
       `<text x="${paddingX + name.length * fontSize * 0.65 + fontSize * 0.4}" y="${y}" font-size="${fontSize}" font-weight="400" fill="#ffffff" font-family="DejaVu Sans, Arial, sans-serif">${escapeSvgText(msg.text)}</text>` +
+      bar +
       `</g>`;
   }).join('');
 
-  // SVG is only the chat banner area — much smaller than full 1280×720 output
   const svg = `
     <svg width="${bannerWidth}" height="${bannerHeight}" xmlns="http://www.w3.org/2000/svg">
       ${lines}
@@ -2370,6 +2518,8 @@ async function compositeFrame(state) {
   // so the fast path correctly reflects what was actually rendered
   const currentChatVersion = getChatVersion();
   const hasActiveTicker = tickerMessages.some(m => m);
+  const hasActivePendingChat = chatMessages.some(m => m.chatStage === 'forming' || m.chatStage === 'ready');
+  const hasActiveMemeBar = memeStages.size > 0 && Array.from(memeStages.values()).some(s => s.stage === 'generating' || s.stage === 'forming' || s.stage === 'ready');
   const now = Date.now();
 
   // Clean up after the longest of glow or +1 duration
@@ -2545,9 +2695,9 @@ async function compositeFrame(state) {
     if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
   }
 
-  // Check output cache — skip during ticker/glow/fade
+  // Check output cache — skip during ticker/glow/fade/pending-chat-bars (smooth animation)
   let result;
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide) {
+  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide && !hasActivePendingChat && !hasActiveMemeBar) {
     result = outputCache[outputKey];
   }
 
@@ -2561,7 +2711,7 @@ async function compositeFrame(state) {
       result = charBuffer;
     }
 
-    if (!hasActiveTicker) {
+    if (!hasActiveTicker && !hasActivePendingChat && !hasActiveMemeBar) {
       const outKeys = Object.keys(outputCache);
       if (outKeys.length >= OUTPUT_CACHE_MAX) {
         for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
@@ -2841,6 +2991,13 @@ module.exports = {
   setEyebrowAsymmetry,
   setSpeakingCharacter,
   addChatMessage,
+  setChatMessageForming,
+  setChatMessageReady,
+  setChatMessageOnAir,
+  setMemeGenerating,
+  setMemeForming,
+  setMemeReady,
+  setMemeOnAir,
   setFireState,
   setLightingState,
   advanceFireFrame,

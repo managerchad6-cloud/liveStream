@@ -22,12 +22,13 @@ const INJECTION_PATTERNS = [
 ];
 
 class ChatIntakeAgent {
-  constructor({ scriptGenerator, pipelineStore, segmentRenderer, eventEmitter, onChatMessage }) {
+  constructor({ scriptGenerator, pipelineStore, segmentRenderer, eventEmitter, onChatMessage, onChatProgress }) {
     this.scriptGenerator = scriptGenerator;
     this.pipelineStore = pipelineStore;
     this.segmentRenderer = segmentRenderer;
     this.eventEmitter = eventEmitter;
-    this.onChatMessage = onChatMessage || null; // Callback for chat overlay: (username, text) => void
+    this.onChatMessage = onChatMessage || null; // Callback: (username, text, cardId) => void
+    this.onChatProgress = onChatProgress || null; // Callback: (cardId, progress 0-1) => void
 
     this.inbox = [];
     this.autoApprove = false;
@@ -119,7 +120,7 @@ class ChatIntakeAgent {
 
     // Push to stream chat overlay first — viewers always see their own message
     if (this.onChatMessage) {
-      this.onChatMessage(card.username, card.text);
+      this.onChatMessage(card.username, card.text, card.id);
     }
 
     // Filter gate — only applies during auto-approve
@@ -172,6 +173,9 @@ class ChatIntakeAgent {
         script: [{ speaker: 'narrator', text: narratorText }],
         estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
       });
+      await this.pipelineStore.updateSegment(narratorSeg.id, {
+        metadata: { ...(narratorSeg.metadata || {}), chatCardId: card.id, isNarratorCue: true }
+      });
 
       segment = await this.pipelineStore.createSegment({
         type: 'chat-response',
@@ -192,6 +196,9 @@ class ChatIntakeAgent {
         script: [{ speaker: 'narrator', text: narratorText }],
         estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
       });
+      await this.pipelineStore.updateSegment(narratorSeg.id, {
+        metadata: { ...(narratorSeg.metadata || {}), chatCardId: card.id, isNarratorCue: true }
+      });
 
       segment = await this.scriptGenerator.expandChatMessage(card.text);
       // Tag as having a narrator pair so expand chain skips it
@@ -204,9 +211,14 @@ class ChatIntakeAgent {
 
     try {
       await this.pipelineStore.updateSegment(segment.id, {
-        metadata: { ...(segment.metadata || {}), source: 'chat' }
+        metadata: { ...(segment.metadata || {}), source: 'chat', chatCardId: card.id }
       });
     } catch (_) {}
+
+    // Progress bar: segment entered the rendering pipeline
+    if (this.onChatProgress) {
+      try { this.onChatProgress(card.id); } catch (_) {}
+    }
 
     if (this.segmentRenderer?.cancelQueuedSegmentsByType) {
       const cancelled = this.segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });
