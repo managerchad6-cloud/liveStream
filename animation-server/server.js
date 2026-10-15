@@ -120,6 +120,30 @@ fs.mkdirSync(TV_CONTENT_DIR, { recursive: true });
 app.use(cors());
 app.use(express.json());
 
+// Identity: requests through Apache are the public (allowlisted routes; participation needs a VVC
+// member); requests on loopback are the operator (director page, chat server). See ../lib/identity-gate.js.
+const { createGate } = require('../lib/identity-gate');
+const gate = createGate({
+  publicRoutes: [
+    { method: 'GET',    path: /^\/streams\// },
+    { method: 'GET',    path: /^\/api\/meme-intake$/ },
+    { method: 'POST',   path: /^\/api\/meme-intake\/vote$/ },
+    { method: 'GET',    path: /^\/api\/lists$/ },
+    { method: 'POST',   path: /^\/api\/lists\/vote$/ },
+    { method: 'GET',    path: /^\/api\/yt-queue$/ },
+    { method: 'POST',   path: /^\/api\/yt-queue$/ },
+    { method: 'POST',   path: /^\/api\/yt-queue\/[^/]+\/vote$/ },
+    { method: 'DELETE', path: /^\/api\/yt-queue\/[^/]+\/vote$/ },
+    { method: 'POST',   path: /^\/api\/orchestrator\/meme\/freestyle$/ },
+  ],
+});
+app.use(gate.middleware());
+// Meme submissions start a generation pipeline: a member gets a few per 10 minutes
+const allowMemeSubmit = gate.rateLimiter(3, 10 * 60_000);
+const allowYtSubmit = gate.rateLimiter(5, 10 * 60_000);
+// One list vote per member per item (the external vote API has its own rules; this stops spam here)
+const listVotes = new Set();
+
 const DEFAULT_ORCHESTRATOR_CONFIG = {
   buffer: { warningThresholdSeconds: 15, criticalThresholdSeconds: 5 },
   filler: { enabled: false, maxConsecutive: 3, style: 'callback' },
@@ -273,6 +297,11 @@ function handleVoteMeme(userId, numStr) {
   if (isNaN(num) || num < 1) return false;
   for (const item of memeVotingPool.values()) {
     if (item.number === num) {
+      if (userId !== 'director') {
+        item.voters ??= new Set();
+        if (item.voters.has(userId)) return false;
+        item.voters.add(userId);
+      }
       item.votes++;
       console.log(`[MimoVote] ${userId.slice(0, 12)} → #${num} (${item.votes} votes)`);
       triggerMemeVoteGlow(num);
@@ -3452,9 +3481,17 @@ app.post('/api/orchestrator/meme/freestyle', async (req, res) => {
     console.error('[Meme] /freestyle: pipeline not initialized — scriptGenerator:', !!scriptGenerator, 'pipelineStore:', !!pipelineStore, 'mediaLibrary:', !!mediaLibrary);
     return res.status(503).json({ error: 'Pipeline not initialized' });
   }
-  const { text, userId } = req.body || {};
+  const who = gate.participant(req, res);
+  if (!who) return;
+  // Members act as their wallet; the operator may still pass a userId (e.g. a chat handle)
+  const userId = who.operator ? (req.body || {}).userId : who.wallet;
+  const { text } = req.body || {};
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required' });
+  }
+  if (!who.operator) {
+    if (text.length > 400) return res.status(400).json({ error: 'text too long' });
+    if (!allowMemeSubmit(who.wallet)) return res.status(429).json({ code: 'rate_limited', error: 'A few meme ideas per 10 minutes' });
   }
 
   // Voting mode: add to voting pool
@@ -3684,8 +3721,10 @@ app.post('/api/meme-intake/mimo', (req, res) => {
 });
 
 app.post('/api/meme-intake/vote', (req, res) => {
-  const { userId, number } = req.body || {};
-  const ok = handleVoteMeme(userId || 'director', String(number));
+  const who = gate.participant(req, res);
+  if (!who) return;
+  const { number } = req.body || {};
+  const ok = handleVoteMeme(who.operator ? 'director' : who.wallet, String(number));
   res.json({ ok });
 });
 
@@ -3807,8 +3846,15 @@ app.post('/api/lists/refresh', async (req, res) => {
 
 // Vote by 1-based index shown on stream — triggers glow, persists to :3007 best-effort
 app.post('/api/lists/vote', async (req, res) => {
+  const who = gate.participant(req, res);
+  if (!who) return;
   const { list, index } = req.body; // list: 'video'|'roadmap', index: 1-based
   const idx = parseInt(index, 10) - 1;
+  if (!who.operator) {
+    const key = `${list}:${idx}:${who.wallet}`;
+    if (listVotes.has(key)) return res.status(409).json({ error: 'Already voted' });
+    listVotes.add(key);
+  }
   if (list === 'video') {
     if (idx < 0 || idx >= _cachedVideosList.length) return res.status(404).json({ error: 'Index out of range' });
     const item = _cachedVideosList[idx];
@@ -4029,10 +4075,6 @@ async function runMemeAndCreateSegment({ virgin, chad, virginSeedLabels = [], ch
 
 // ── YouTube Reaction Queue ────────────────────────────────────────────────────
 
-const { ethers: _ethers } = require('ethers');
-const _nacl = require('tweetnacl');
-const _bs58 = require('bs58');
-
 const YT_QUEUE_FILE = path.join(ROOT_DIR, 'data', 'yt-queue.json');
 
 function loadYtQueue() {
@@ -4047,23 +4089,6 @@ function saveYtQueue(data) {
   const tmp = YT_QUEUE_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmp, YT_QUEUE_FILE);
-}
-
-function ytVerifySig(walletType, challenge, signature, wallet) {
-  if (walletType === 'eth') {
-    const recovered = _ethers.verifyMessage(challenge, signature);
-    return recovered.toLowerCase() === wallet.toLowerCase();
-  } else if (walletType === 'sol') {
-    const msgBytes = Buffer.from(challenge, 'utf8');
-    const sigBytes = Buffer.from(signature, 'base64');
-    const pubKeyBytes = _bs58.decode(wallet);
-    return _nacl.sign.detached.verify(msgBytes, sigBytes, pubKeyBytes);
-  }
-  return false;
-}
-
-function ytVoteChallenge(action, id, wallet, nonce) {
-  return `VVC Live: ${action} yt-queue ${id} as ${wallet} ts ${nonce}`;
 }
 
 function ytPublicItem(item) {
@@ -4086,8 +4111,13 @@ app.get('/api/yt-queue', (req, res) => {
 });
 
 app.post('/api/yt-queue', (req, res) => {
+  const who = gate.participant(req, res);
+  if (!who) return;
+  if (!who.operator && !allowYtSubmit(who.wallet)) {
+    return res.status(429).json({ code: 'rate_limited', error: 'A few videos per 10 minutes' });
+  }
   const { url, title } = req.body || {};
-  if (!url || typeof url !== 'string') {
+  if (!url || typeof url !== 'string' || url.length > 500) {
     return res.status(400).json({ error: 'url is required' });
   }
   const data = loadYtQueue();
@@ -4110,6 +4140,7 @@ app.post('/api/yt-queue', (req, res) => {
     url,
     title: resolvedTitle,
     addedAt: new Date().toISOString(),
+    addedBy: who.wallet,
     votes: {}
   };
   data.items.push(item);
@@ -4118,63 +4149,24 @@ app.post('/api/yt-queue', (req, res) => {
   res.json({ ok: true, item: ytPublicItem(item) });
 });
 
+// Votes are cast as the signed-in member (session), one per wallet per video
 app.post('/api/yt-queue/:id/vote', (req, res) => {
-  const { wallet, walletType, signature, challenge, nonce } = req.body || {};
-  if (!wallet || !walletType || !signature || !challenge || !nonce) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-  if (!['eth', 'sol'].includes(walletType)) {
-    return res.status(400).json({ error: 'Unknown wallet type' });
-  }
-  const nonceTs = parseInt(nonce, 10);
-  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
-    return res.status(400).json({ error: 'Challenge expired' });
-  }
-  const expected = ytVoteChallenge('upvote', req.params.id, wallet, nonce);
-  if (challenge !== expected) {
-    return res.status(400).json({ error: 'Invalid challenge' });
-  }
-  try {
-    if (!ytVerifySig(walletType, challenge, signature, wallet)) {
-      return res.status(401).json({ error: 'Signature verification failed' });
-    }
-  } catch (err) {
-    return res.status(400).json({ error: 'Signature error: ' + err.message });
-  }
+  const wallet = gate.member(req, res);
+  if (!wallet) return;
   const data = loadYtQueue();
   const item = data.items.find(i => i.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   const key = wallet.toLowerCase();
   if (item.votes[key]) return res.status(409).json({ error: 'Already voted' });
-  item.votes[key] = { at: new Date().toISOString(), walletType };
+  item.votes[key] = { at: new Date().toISOString(), walletType: 'sol' };
   saveYtQueue(data);
-  console.log(`[YTQueue] Vote id=${req.params.id} wallet=${wallet.slice(0, 12)}... type=${walletType}`);
+  console.log(`[YTQueue] Vote id=${req.params.id} wallet=${wallet.slice(0, 12)}...`);
   res.json({ ok: true, voteCount: Object.keys(item.votes).length });
 });
 
 app.delete('/api/yt-queue/:id/vote', (req, res) => {
-  const { wallet, walletType, signature, challenge, nonce } = req.body || {};
-  if (!wallet || !walletType || !signature || !challenge || !nonce) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-  if (!['eth', 'sol'].includes(walletType)) {
-    return res.status(400).json({ error: 'Unknown wallet type' });
-  }
-  const nonceTs = parseInt(nonce, 10);
-  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
-    return res.status(400).json({ error: 'Challenge expired' });
-  }
-  const expected = ytVoteChallenge('unvote', req.params.id, wallet, nonce);
-  if (challenge !== expected) {
-    return res.status(400).json({ error: 'Invalid challenge' });
-  }
-  try {
-    if (!ytVerifySig(walletType, challenge, signature, wallet)) {
-      return res.status(401).json({ error: 'Signature verification failed' });
-    }
-  } catch (err) {
-    return res.status(400).json({ error: 'Signature error: ' + err.message });
-  }
+  const wallet = gate.member(req, res);
+  if (!wallet) return;
   const data = loadYtQueue();
   const item = data.items.find(i => i.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });

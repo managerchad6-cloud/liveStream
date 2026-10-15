@@ -18,7 +18,8 @@
     "audience": "node tools/audience-simulator.js",
     "director:play": "powershell -ExecutionPolicy Bypass -File ./director-play.ps1",
     "director:pause": "powershell -ExecutionPolicy Bypass -File ./director-pause.ps1",
-    "devlog": "node tools/devlog/report.js now"
+    "devlog": "node tools/devlog/report.js now",
+    "test": "node --test --test-timeout=20000 --test-reporter=spec \"lib/**/*.test.js\""
   },
   "keywords": [
     "chatbot",
@@ -40,6 +41,10 @@
     "express": "^4.18.2",
     "pump-chat-client": "^1.0.1",
     "sharp": "^0.33.5",
-    "tweetnacl": "^1.0.3"
+    "tweetnacl": "^1.0.3",
+    "vvc-identity-client": "file:../identity/client/node"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.0"
   }
 }

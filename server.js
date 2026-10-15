@@ -9,9 +9,6 @@ const crypto = require('crypto');
 const GeminiClient = require('./gemini-client');
 const axios = require('axios');
 const FormData = require('form-data');
-const { ethers } = require('ethers');
-const nacl = require('tweetnacl');
-const bs58 = require('bs58');
 const voices = require('./voices');
 
 const app = express();
@@ -75,22 +72,6 @@ function saveSuggestions(data) {
   fs.renameSync(tmp, SUGGESTIONS_FILE);
 }
 
-function buildVoteChallenge(action, suggestionId, wallet, nonce) {
-  return `VVC Live: ${action} suggestion ${suggestionId} as ${wallet} ts ${nonce}`;
-}
-
-function verifySig(walletType, challenge, signature, wallet) {
-  if (walletType === 'eth') {
-    const recovered = ethers.verifyMessage(challenge, signature);
-    return recovered.toLowerCase() === wallet.toLowerCase();
-  } else if (walletType === 'sol') {
-    const msgBytes = Buffer.from(challenge, 'utf8');
-    const sigBytes = Buffer.from(signature, 'base64');
-    const pubKeyBytes = bs58.decode(wallet);
-    return nacl.sign.detached.verify(msgBytes, sigBytes, pubKeyBytes);
-  }
-  return false;
-}
 
 function appendLogFile(filename, payload) {
   const filePath = path.join(logsDir, filename);
@@ -107,6 +88,21 @@ const gemini = new GeminiClient({
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Identity: requests through Apache are the public (allowlisted routes; participation needs a VVC
+// member); requests on loopback are the operator. See lib/identity-gate.js.
+const { createGate } = require('./lib/identity-gate');
+const gate = createGate({
+  publicRoutes: [
+    { method: 'POST',   path: /^\/api\/chat$/ },
+    { method: 'GET',    path: /^\/api\/suggestions$/ },
+    { method: 'POST',   path: /^\/api\/suggestions\/[^/]+\/vote$/ },
+    { method: 'DELETE', path: /^\/api\/suggestions\/[^/]+\/vote$/ },
+  ],
+});
+app.use(gate.middleware());
+// Chat costs an LLM call and TTS: a member gets a few per minute
+const allowChat = gate.rateLimiter(6, 60_000);
 
 // Also serve frontend for backward compatibility (can be disabled on VPS with nginx)
 app.use(express.static(path.join(__dirname, 'frontend')));
@@ -289,8 +285,17 @@ app.post('/api/chat', async (req, res) => {
       mode = 'direct'
     } = req.body;
 
+    const who = gate.participant(req, res);
+    if (!who) return;
+    if (!who.operator && !allowChat(who.wallet)) {
+      return res.status(429).json({ code: 'rate_limited', error: 'Slow down — a few messages a minute' });
+    }
+
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required and must be a string' });
+    }
+    if (!who.operator && message.length > 300) {
+      return res.status(400).json({ error: 'Message too long' });
     }
 
     // /meme command: forward to animation server, skip LLM entirely
@@ -478,63 +483,24 @@ app.get('/api/suggestions', (req, res) => {
   res.json({ suggestions: list });
 });
 
+// Votes are cast as the signed-in member (session), one per wallet per suggestion
 app.post('/api/suggestions/:id/vote', (req, res) => {
-  const { wallet, walletType, signature, challenge, nonce } = req.body;
-  if (!wallet || !walletType || !signature || !challenge || !nonce) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-  if (!['eth', 'sol'].includes(walletType)) {
-    return res.status(400).json({ error: 'Unknown wallet type' });
-  }
-  const nonceTs = parseInt(nonce, 10);
-  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
-    return res.status(400).json({ error: 'Challenge expired' });
-  }
-  const expected = buildVoteChallenge('upvote', req.params.id, wallet, nonce);
-  if (challenge !== expected) {
-    return res.status(400).json({ error: 'Invalid challenge' });
-  }
-  try {
-    if (!verifySig(walletType, challenge, signature, wallet)) {
-      return res.status(401).json({ error: 'Signature verification failed' });
-    }
-  } catch (err) {
-    return res.status(400).json({ error: 'Signature error: ' + err.message });
-  }
+  const wallet = gate.member(req, res);
+  if (!wallet) return;
   const data = loadSuggestions();
   const suggestion = data.suggestions.find(s => s.id === req.params.id);
   if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
   const key = wallet.toLowerCase();
   if (suggestion.votes[key]) return res.status(409).json({ error: 'Already voted' });
-  suggestion.votes[key] = { at: new Date().toISOString(), walletType };
+  suggestion.votes[key] = { at: new Date().toISOString(), walletType: 'sol' };
   saveSuggestions(data);
-  console.log(`[Suggestions] Vote recorded id=${req.params.id} wallet=${wallet.slice(0, 12)}... type=${walletType}`);
+  console.log(`[Suggestions] Vote recorded id=${req.params.id} wallet=${wallet.slice(0, 12)}...`);
   res.json({ ok: true, voteCount: Object.keys(suggestion.votes).length });
 });
 
 app.delete('/api/suggestions/:id/vote', (req, res) => {
-  const { wallet, walletType, signature, challenge, nonce } = req.body;
-  if (!wallet || !walletType || !signature || !challenge || !nonce) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-  if (!['eth', 'sol'].includes(walletType)) {
-    return res.status(400).json({ error: 'Unknown wallet type' });
-  }
-  const nonceTs = parseInt(nonce, 10);
-  if (isNaN(nonceTs) || Math.abs(Date.now() - nonceTs) > 5 * 60 * 1000) {
-    return res.status(400).json({ error: 'Challenge expired' });
-  }
-  const expected = buildVoteChallenge('unvote', req.params.id, wallet, nonce);
-  if (challenge !== expected) {
-    return res.status(400).json({ error: 'Invalid challenge' });
-  }
-  try {
-    if (!verifySig(walletType, challenge, signature, wallet)) {
-      return res.status(401).json({ error: 'Signature verification failed' });
-    }
-  } catch (err) {
-    return res.status(400).json({ error: 'Signature error: ' + err.message });
-  }
+  const wallet = gate.member(req, res);
+  if (!wallet) return;
   const data = loadSuggestions();
   const suggestion = data.suggestions.find(s => s.id === req.params.id);
   if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
