@@ -317,13 +317,23 @@ class ContinuousStreamManager {
   startFrameLoop() {
     const RENDER_DEADLINE_MS = 30; // Hard deadline: drop to last frame if render exceeds this
     this._renderInFlight = false;  // Guard: only one compositor call at a time
+    // Frame health counters, logged every 30s: fresh renders vs reused frames vs skipped intervals
+    const stats = { fresh: 0, inFlight: 0, deadline: 0, skipped: 0, since: Date.now() };
 
     const tick = async () => {
       if (!this.isRunning) return;
 
       const now = Date.now();
 
+      if (now - stats.since >= 30000) {
+        const total = stats.fresh + stats.inFlight + stats.deadline;
+        const secs = (now - stats.since) / 1000;
+        console.log(`[FrameStats] ${(total / secs).toFixed(1)} fps written | fresh ${stats.fresh} | reused: in-flight ${stats.inFlight}, deadline ${stats.deadline} | skipped intervals ${stats.skipped}`);
+        Object.assign(stats, { fresh: 0, inFlight: 0, deadline: 0, skipped: 0, since: now });
+      }
+
       if (now - this.lastFrameTime >= this.frameInterval && this.ffmpegProcess) {
+        stats.skipped += Math.max(0, Math.floor((now - this.lastFrameTime) / this.frameInterval) - 1);
         let videoData = null;
         // Capture audio progress BEFORE advancing, so lip sync phoneme matches this frame's audio
         const audioProgress = this.getAudioProgress();
@@ -338,7 +348,7 @@ class ContinuousStreamManager {
               // another Sharp operation on top. The in-flight render will update lastVideoFrame
               // once it completes, so the next tick that clears the guard will get fresh output.
               videoData = this.lastVideoFrame;
-              if (videoData) this.frameCount++;
+              if (videoData) { this.frameCount++; stats.inFlight++; }
             } else {
               this._renderInFlight = true;
               const renderPromise = this.onFrameRequest(this.frameCount, audioProgress)
@@ -354,10 +364,12 @@ class ContinuousStreamManager {
                 videoData = frameBuffer;
                 this.lastVideoFrame = frameBuffer;
                 this.frameCount++;
+                stats.fresh++;
               } else if (this.lastVideoFrame) {
                 // Deadline exceeded — reuse last frame, in-flight render still populates cache
                 videoData = this.lastVideoFrame;
                 this.frameCount++;
+                stats.deadline++;
               }
             }
           } catch (err) {

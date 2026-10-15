@@ -4,13 +4,13 @@ const { parseJson } = require('./utils');
 const DEFAULT_MODEL = process.env.SCRIPT_MODEL || 'gpt-4o';
 
 class FillerGenerator {
-  constructor({ openai, pipelineStore }) {
-    this.openai = openai;
+  constructor({ gemini, pipelineStore }) {
+    this.gemini = gemini;
     this.pipelineStore = pipelineStore;
   }
 
   async generateFiller(recentExitContexts = []) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     const hasContext = recentExitContexts.length > 0;
     const contextBlock = hasContext
@@ -35,7 +35,7 @@ CRITICAL RULES:
 - Do NOT repeat the dynamic of Chad giving advice and Virgin accepting it. Instead: argue, roast, one-up, tangent, or disagree.
 - Each line must introduce a NEW detail, opinion, or mini-topic — never just rephrase what was already said.`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: 'You generate natural continuation dialogue and return only JSON.' },

@@ -4,8 +4,8 @@ const { parseJson, estimateDurationSeconds } = require('./utils');
 const DEFAULT_MODEL = process.env.SCRIPT_MODEL || 'gpt-4o';
 
 class ScriptGenerator {
-  constructor({ openai, pipelineStore }) {
-    this.openai = openai;
+  constructor({ gemini, pipelineStore }) {
+    this.gemini = gemini;
     this.pipelineStore = pipelineStore;
   }
 
@@ -88,14 +88,14 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
   }
 
   async _generateScript(seed, imageDescription = null) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
     if (!seed && !imageDescription) throw new Error('Missing seed');
 
     const recentExitContexts = this._recentExitContexts(5);
     const systemPrompt = this._buildSystemPrompt({ recentExitContexts, seed });
     const userContent = this._buildUserContent(seed, imageDescription);
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -209,7 +209,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
     const subset = segment.script.slice(start, end + 1);
     const prompt = `Rewrite lines ${start}-${end} of this script. Feedback: ${feedback || 'none'}\n\nScript lines JSON:\n${JSON.stringify(subset, null, 2)}\n\nReturn ONLY valid JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ] }`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: 'You rewrite dialogue lines and return only JSON.' },
@@ -245,7 +245,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
    * arriving during generation end up earlier in the queue.
    */
   async expandConversation({ isFirstExpand = false, wrapUp = false, sourceType = null, sourceWordCount = 0 } = {}) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     // Collect conversation history from recent segments
     const segments = this.pipelineStore ? this.pipelineStore.getAllSegments() : [];
@@ -299,7 +299,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
 
       messages.push({ role: 'user', content: wrapUp ? 'Wrap it up.' : 'Continue.' });
 
-      let completion = await this.openai.chat.completions.create({
+      let completion = await this.gemini.chat.completions.create({
         model: DEFAULT_MODEL,
         messages,
         temperature: 0.8,
@@ -320,7 +320,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
           { role: 'user', content: `Recent conversation:\n${historyText.slice(-500)}\n\nContinue naturally:` }
         ];
 
-        completion = await this.openai.chat.completions.create({
+        completion = await this.gemini.chat.completions.create({
           model: DEFAULT_MODEL,
           messages: retryMessages,
           temperature: 0.7,
@@ -363,7 +363,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
   }
 
   async expandChatMessage(chatMessage, showContext = {}) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
     if (!chatMessage) throw new Error('Missing chat message');
 
     // Create segment first to reserve position in pipeline
@@ -393,7 +393,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
         `Return ONLY valid JSON: { "script": [ { "speaker": "chad|virgin", "text": "..." } ], "exitContext": "..." }`;
       const userPrompt = `Chat message: "${chatMessage}"`;
 
-      const completion = await this.openai.chat.completions.create({
+      const completion = await this.gemini.chat.completions.create({
         model: DEFAULT_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -432,7 +432,7 @@ The characters are reacting to this image. They are self-aware — if Chad or Vi
    * Goes hard with ElevenLabs v3 audio expression tags.
    */
   async generateHypeScript({ mcap, volume, holders, allTimeHigh = false } = {}) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     const hasStats = mcap || volume || holders;
     const statsBlock = hasStats
@@ -508,7 +508,7 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
       : ['Generate a hype segment now.'];
     if (statsBlock && !allTimeHigh) userLines.push(`\nLive stats:\n${statsBlock}`);
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -536,7 +536,7 @@ Generate exactly 3-5 dialogue lines total. Return ONLY valid JSON:
    */
   async _describeImage(imageBase64, imageMimeType = 'image/jpeg') {
     try {
-      const response = await this.openai.chat.completions.create({
+      const response = await this.gemini.chat.completions.create({
         model: 'gpt-4o',
         messages: [{
           role: 'user',
@@ -575,7 +575,7 @@ Be thorough. 3–5 sentences.`
   }
 
   async generateTweetResponseScript({ tweetText, tweetAuthor, source = 'single', instruction = null, imageBase64 = null, imageMimeType = 'image/jpeg' }) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
     if (!tweetText) throw new Error('Missing tweetText');
 
     // Vision pass — describe attached image if present
@@ -641,7 +641,7 @@ Return ONLY valid JSON:
 
     const userPrompt = `Tweet by @${tweetAuthor}:\n"${tweetText}"${imageContext}`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -664,7 +664,7 @@ Return ONLY valid JSON:
   }
 
   async generateMemeReactionScript({ virginSubject, chadSubject, virginLabels, chadLabels }) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     const virginLabelLines = virginLabels.map((l, i) => `${i + 1}. "${l}"`).join('\n');
     const chadLabelLines = chadLabels.map((l, i) => `${i + 1}. "${l}"`).join('\n');
@@ -711,7 +711,7 @@ Return ONLY valid JSON:
 
     const userPrompt = `React to the meme now. Name the specific labels.`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -739,7 +739,7 @@ Return ONLY valid JSON:
    * always spins bullish regardless of price direction.
    */
   async generateChartAnalysisScript({ tokenData, imageBase64, imageMimeType = 'image/png' } = {}) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     const td = tokenData || {};
 
@@ -809,7 +809,7 @@ Return ONLY valid JSON:
       });
     }
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: 'gpt-4o',
       messages: [
         { role: 'system', content: systemPrompt },
@@ -826,7 +826,7 @@ Return ONLY valid JSON:
     // If vision pass confuses the model (e.g. Cloudflare page screenshot), retry text-only
     if ((!parsed || !Array.isArray(parsed.script)) && imageBase64) {
       console.warn('[ScriptGenerator] Chart parse failed with image — retrying text-only');
-      const retryCompletion = await this.openai.chat.completions.create({
+      const retryCompletion = await this.gemini.chat.completions.create({
         model: DEFAULT_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -853,7 +853,7 @@ Return ONLY valid JSON:
    * Characters are live hosts of the VVC project and react to a community suggestion.
    */
   async generateSuggestionReactionScript({ text }) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     const systemPrompt = `You are writing dialogue for Chad and Virgin, the live hosts of VVC — a crypto/meme project.
 A community member has just submitted a suggestion for the VVC project. The narrator just read it aloud on stream.
@@ -892,7 +892,7 @@ Return ONLY valid JSON:
   "exitContext": "brief summary of what was said about the suggestion"
 }`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },

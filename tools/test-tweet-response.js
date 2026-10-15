@@ -1,7 +1,7 @@
-const OpenAI = require('openai');
+const GeminiClient = require('../gemini-client');
 const voices = require('../voices');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const gemini = new GeminiClient({ apiKey: process.env.GEMINI_API_KEY });
 
 const tweetText = 'This looks like a Richard Stallman vs Terry Davis meme.\n\nNot 100% sure but that "CIA" & schizophrenia gives it away.';
 const tweetAuthor = 'RNR_0';
@@ -50,7 +50,7 @@ Return ONLY valid JSON:
 const userPrompt = `Tweet by @${tweetAuthor}:\n"${tweetText}"`;
 
 async function run() {
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model: 'gpt-4o',
     messages: [
       { role: 'system', content: systemPrompt },

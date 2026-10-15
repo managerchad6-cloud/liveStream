@@ -20,9 +20,9 @@ const SCORE_THRESHOLD = 0.70;  // minimum score to attach an SFX
 const COOLDOWN_SIZE   = 8;     // how many recent plays to suppress from candidate list
 
 class SfxMatcher {
-  constructor({ sfxService, openai, pipelineStore }) {
+  constructor({ sfxService, gemini, pipelineStore }) {
     this.sfxService      = sfxService;
-    this.openai          = openai;
+    this.gemini          = gemini;
     this.pipelineStore   = pipelineStore;
     this._stats          = this._loadStats();
     this._recentlyPlayed = []; // cooldown ring — last COOLDOWN_SIZE played sfxIds
@@ -35,7 +35,7 @@ class SfxMatcher {
    * Never throws — a failed match is silently ignored.
    */
   async match(segment) {
-    if (!this.openai || !this.sfxService) return null;
+    if (!this.gemini || !this.sfxService) return null;
 
     const sounds = this.sfxService.list();
     if (!sounds.length) return null;
@@ -158,7 +158,7 @@ Respond with ONLY valid JSON matching this schema exactly (no markdown, no extra
 OR if no good match:
 { "match": false }`;
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.gemini.chat.completions.create({
       model:    process.env.EXPRESSION_MODEL || 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       temperature:  0.6,

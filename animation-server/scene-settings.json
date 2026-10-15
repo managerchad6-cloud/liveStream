@@ -1,6 +1,6 @@
 {
   "fire": {
-    "frame": 4,
+    "frame": 2,
     "mode": "random",
     "fps": 5,
     "playing": true,
@@ -8,7 +8,7 @@
   },
   "lighting": {
     "nightOpacity": 1,
-    "dayOpacity": 0
+    "dayOpacity": 0.26
   },
   "cycle": {
     "enabled": false,

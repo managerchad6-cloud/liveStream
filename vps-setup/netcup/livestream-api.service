@@ -1,0 +1,17 @@
+[Unit]
+Description=LiveStream Chat API (port 3002)
+After=network-online.target livestream-animation.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=livestream
+Group=livestream
+WorkingDirectory=/opt/livestream
+ExecStart=/usr/bin/node /opt/livestream/server.js
+Environment=NODE_ENV=production
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

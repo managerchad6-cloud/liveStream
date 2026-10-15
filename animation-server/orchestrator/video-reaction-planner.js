@@ -42,9 +42,9 @@ function prepareForTTS(text) {
 }
 
 class VideoReactionPlanner extends EventEmitter {
-  constructor({ openai, elevenLabsApiKey, ttsModel = 'eleven_v3' }) {
+  constructor({ gemini, elevenLabsApiKey, ttsModel = 'eleven_v3' }) {
     super();
-    this.openai = openai;
+    this.gemini = gemini;
     this.elevenLabsApiKey = elevenLabsApiKey;
     this.ttsModel = ttsModel;
   }
@@ -165,7 +165,7 @@ Select ${MAX_BEATS} or fewer moments that are most worth pausing to react to. Ch
 
 Respond with a JSON object: {"beats": [{"chunkIndex": 0, "reactabilityScore": 8, "reason": "..."}, ...]}`;
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.gemini.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
@@ -214,7 +214,7 @@ Write 2-3 lines where they notice the video and react to the title/topic. Chad i
 
 Respond with a JSON object: {"lines": [{"speaker": "chad", "text": "..."}, {"speaker": "virgin", "text": "..."}]}`;
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.gemini.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
@@ -276,7 +276,7 @@ Write a natural 2-4 line reaction dialogue. Chad is confident, unimpressed by th
 
 Respond with a JSON object: {"lines": [{"speaker": "chad", "text": "..."}, {"speaker": "virgin", "text": "..."}]}`;
 
-      const response = await this.openai.chat.completions.create({
+      const response = await this.gemini.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' },
@@ -316,7 +316,7 @@ Write a 2-4 line wrap-up where they give their overall take on the video. Chad h
 
 Respond with a JSON object: {"lines": [{"speaker": "chad", "text": "..."}, {"speaker": "virgin", "text": "..."}]}`;
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.gemini.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },

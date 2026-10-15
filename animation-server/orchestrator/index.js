@@ -12,9 +12,9 @@ const VideoReactionPlanner = require('./video-reaction-planner');
 const VideoReactionSession = require('./video-reaction-session');
 
 class Orchestrator {
-  constructor({ openai, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onChatProgress, onMemeCommand, onVoteMemeCommand, tvService }) {
+  constructor({ gemini, pipelineStore, mediaLibrary, tvLayerManager, animationServerUrl, eventEmitter, config, onChatMessage, onChatProgress, onMemeCommand, onVoteMemeCommand, tvService }) {
     this.pipelineStore = pipelineStore;
-    this.openai = openai || null;
+    this.gemini = gemini || null;
     this.animationServerUrl = animationServerUrl;
     this.tvService = tvService || null;
 
@@ -22,9 +22,9 @@ class Orchestrator {
     this._videoSessions = new Map(); // sessionId → { state, progress, plan, session }
     this.activeVideoSession = null;
 
-    this.scriptGenerator = openai ? new ScriptGenerator({ openai, pipelineStore }) : null;
-    this.bridgeGenerator = openai ? new BridgeGenerator({ openai, pipelineStore }) : null;
-    this.fillerGenerator = openai ? new FillerGenerator({ openai, pipelineStore }) : null;
+    this.scriptGenerator = gemini ? new ScriptGenerator({ gemini, pipelineStore }) : null;
+    this.bridgeGenerator = gemini ? new BridgeGenerator({ gemini, pipelineStore }) : null;
+    this.fillerGenerator = gemini ? new FillerGenerator({ gemini, pipelineStore }) : null;
     this.segmentRenderer = new SegmentRenderer({
       pipelineStore,
       animationServerUrl,
@@ -191,7 +191,7 @@ class Orchestrator {
    * poll getVideoSessionStatus(sessionId) for progress.
    */
   prepareVideoReaction(url) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
     if (!process.env.ELEVENLABS_API_KEY) throw new Error('ElevenLabs API key not configured');
 
     const sessionId = crypto.randomUUID();
@@ -205,7 +205,7 @@ class Orchestrator {
     this._videoSessions.set(sessionId, entry);
 
     const planner = new VideoReactionPlanner({
-      openai: this.openai,
+      gemini: this.gemini,
       elevenLabsApiKey: process.env.ELEVENLABS_API_KEY,
       ttsModel: process.env.AUTO_TTS_MODEL || 'eleven_v3'
     });

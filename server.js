@@ -6,7 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const OpenAI = require('openai');
+const GeminiClient = require('./gemini-client');
 const axios = require('axios');
 const FormData = require('form-data');
 const { ethers } = require('ethers');
@@ -100,8 +100,8 @@ function appendLogFile(filename, payload) {
   });
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+const gemini = new GeminiClient({
+  apiKey: process.env.GEMINI_API_KEY,
 });
 
 // Middleware
@@ -254,7 +254,7 @@ app.post('/api/auto', async (req, res) => {
 app.get('/api/auto/diagnostic', async (req, res) => {
   const env = {
     ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
-    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
     ANIMATION_SERVER_URL: !!process.env.ANIMATION_SERVER_URL,
     AUTO_MODEL: !!process.env.AUTO_MODEL,
     AUTO_TTS_MODEL: !!process.env.AUTO_TTS_MODEL
@@ -391,13 +391,13 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
 
-    // Generate character response via OpenAI (best-effort)
+    // Generate character response via Gemini (best-effort)
     let replyText = null;
     try {
       const memory = memoryStore[selectedVoice] || '';
       const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
 
-      const completion = await openai.chat.completions.create({
+      const completion = await gemini.chat.completions.create({
         model: process.env.MODEL || 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
@@ -411,7 +411,7 @@ app.post('/api/chat', async (req, res) => {
       console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
       console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
     } catch (llmErr) {
-      console.warn('[Chat] OpenAI generation failed, forwarding raw message:', llmErr.message);
+      console.warn('[Chat] Gemini generation failed, forwarding raw message:', llmErr.message);
     }
 
     // Send to director inbox (fire-and-forget)
@@ -551,7 +551,7 @@ app.listen(port, () => {
   console.log(`Platform: ${process.platform}`);
   // Auto-conversation env (presence only, for diagnostics)
   console.log('[Auto] Env: ELEVENLABS_API_KEY=' + (process.env.ELEVENLABS_API_KEY ? 'set' : 'MISSING') +
-    ', OPENAI_API_KEY=' + (process.env.OPENAI_API_KEY ? 'set' : 'MISSING') +
+    ', GEMINI_API_KEY=' + (process.env.GEMINI_API_KEY ? 'set' : 'MISSING') +
     ', ANIMATION_SERVER_URL=' + (process.env.ANIMATION_SERVER_URL ? 'set' : 'default') +
     ', AUTO_MODEL=' + (process.env.AUTO_MODEL ? 'set' : 'default') +
     ', AUTO_TTS_MODEL=' + (process.env.AUTO_TTS_MODEL ? 'set' : 'default'));
@@ -601,7 +601,7 @@ async function routeMessageToVoice(message) {
 
   const systemPrompt = buildRouterSystemPrompt(conversationHistory);
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model: routerModel,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -738,7 +738,7 @@ Topics to continue: <comma-separated short phrases, optional>`;
   });
 
   const completion = await Promise.race([
-    openai.chat.completions.create({
+    gemini.chat.completions.create({
       model: memoryModel,
       messages: [{ role: 'system', content: prompt }],
       max_tokens: 200,
@@ -803,7 +803,7 @@ ${chadProfile}
 VIRGIN:
 ${virginProfile}`;
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -833,7 +833,7 @@ Return JSON only with:
 }
 Make constraints strong enough to prevent drift. Do not mention "Chad" or "Virgin" in constraints unless the seed requires it.`;
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: prompt },
@@ -880,7 +880,7 @@ If it fully complies, reply with: {"ok":true}
 If not, reply with: {"ok":false,"issues":["..."],"fix":"<short instruction to rewrite>"}
 Be concise and strict.`;
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: prompt },
@@ -904,7 +904,7 @@ async function rewriteAutoScript(script, intent, model, fix) {
 Keep the number of turns and speakers, but fix any drift.
 Output JSON only as an array of objects with speaker/text.`;
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: systemPrompt },

@@ -578,7 +578,9 @@ class TVContentService {
       volume: this.volume,
       state: this.state
     };
-    const tmpPath = `${PERSIST_PATH}.tmp`;
+    // Unique tmp per call: concurrent persists sharing one tmp file race on rename (ENOENT)
+    this._persistSeq = (this._persistSeq || 0) + 1;
+    const tmpPath = `${PERSIST_PATH}.${process.pid}.${this._persistSeq}.tmp`;
     try {
       await fs.promises.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf8');
       await fs.promises.rename(tmpPath, PERSIST_PATH);

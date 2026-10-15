@@ -151,8 +151,8 @@ function parseJson3(data) {
 // ── Whisper fallback ─────────────────────────────────────────────────────────
 
 async function fetchViaWhisper(url) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not set — cannot use Whisper fallback');
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set — cannot use audio transcription fallback');
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-audio-'));
   const audioPath = path.join(tmpDir, 'audio.mp3');
@@ -181,19 +181,16 @@ async function fetchViaWhisper(url) {
 
     if (!fs.existsSync(audioPath)) throw new Error('Audio file not created by yt-dlp');
 
-    // Transcribe via OpenAI Whisper
-    const OpenAI = require('openai');
-    const openai = new OpenAI({ apiKey });
-    console.log('[Transcript] Sending audio to Whisper...');
-    const resp = await openai.audio.transcriptions.create({
-      model: 'whisper-1',
-      file: fs.createReadStream(audioPath),
-      response_format: 'verbose_json',
-      timestamp_granularities: ['segment'],
+    // Transcribe via Gemini audio understanding
+    const GeminiClient = require('../../gemini-client');
+    const gemini = new GeminiClient({ apiKey });
+    console.log('[Transcript] Sending audio to Gemini for transcription...');
+    const resp = await gemini.audio.transcriptions.create({
+      file: audioPath,
     });
 
     const segments = resp.segments || [];
-    if (segments.length === 0) throw new Error('Whisper returned no segments');
+    if (segments.length === 0) throw new Error('Gemini transcription returned no segments');
 
     return segments.map(s => ({
       text: (s.text || '').trim(),

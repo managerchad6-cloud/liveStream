@@ -1,0 +1,20 @@
+[Unit]
+Description=LiveStream Animation Server (port 3003)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=livestream
+Group=livestream
+WorkingDirectory=/opt/livestream/animation-server
+# server.js loads ../.env itself
+ExecStart=/usr/bin/node /opt/livestream/animation-server/server.js
+Environment=NODE_ENV=production
+Environment=ANIMATION_PORT=3003
+Environment=UV_THREADPOOL_SIZE=4
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

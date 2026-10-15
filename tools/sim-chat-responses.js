@@ -1,10 +1,10 @@
 // Simulate chat response LLM calls with the current prompt
 // Uses the real OpenAI key and exact prompt from script-generator.js
 
-const OpenAI = require('openai');
+const GeminiClient = require('../gemini-client');
 const voices = require('../voices');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const gemini = new GeminiClient({ apiKey: process.env.GEMINI_API_KEY });
 const MODEL = 'gpt-4o';
 const WPM = 150;
 
@@ -54,7 +54,7 @@ async function simulate(label, msg) {
   const systemPrompt = buildPrompt(msg, voiceKey);
   const userPrompt = msg; // server.js sends message directly as user content
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model: MODEL,
     messages: [
       { role: 'system', content: systemPrompt },

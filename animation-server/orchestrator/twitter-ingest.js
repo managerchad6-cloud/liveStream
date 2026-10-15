@@ -169,31 +169,33 @@ class TwitterIngestService {
       browser = await this._launchBrowser();
       const page = await this._openPage(browser);
       await page.goto(`https://x.com/${handle}`, { waitUntil: 'networkidle2', timeout: 30000 });
-      await new Promise(r => setTimeout(r, 3000));
 
-      const stats = await page.evaluate((handle) => {
+      // Wait for "N Followers" text to appear — same pattern as the working community scrape
+      try {
+        await page.waitForFunction(
+          () => Array.from(document.querySelectorAll('a, span')).some(
+            el => /^[\d,\.]+[KMBkmb]?\s+[Ff]ollowers?$/.test(el.innerText?.trim())
+          ),
+          { timeout: 15000 }
+        );
+      } catch { console.warn('[TwitterIngest] followers text never appeared'); }
+
+      const stats = await page.evaluate(() => {
         const result = { followers: null, tweets: null };
-        const hLow = handle.toLowerCase();
-
-        // Followers: X shows /verified_followers when viewing own profile, /followers otherwise
-        for (const a of document.querySelectorAll('a[href]')) {
-          const href = (a.getAttribute('href') || '').toLowerCase();
-          if (href === `/${hLow}/followers` || href === `/${hLow}/verified_followers`) {
-            const m = (a.innerText || '').trim().match(/^([\d,\.]+[KMBkmb]?)\s+[Ff]ollowers?$/);
-            if (m) { result.followers = m[1]; break; }
+        for (const el of document.querySelectorAll('a, span, div')) {
+          const t = el.innerText?.trim() || '';
+          if (!result.followers) {
+            const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Ff]ollowers?$/);
+            if (m) result.followers = m[1];
           }
+          if (!result.tweets) {
+            const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
+            if (m) result.tweets = m[1];
+          }
+          if (result.followers && result.tweets) break;
         }
-
-        // Posts: leaf text node matching "N posts" — appears in header stat area
-        for (const el of document.querySelectorAll('span, div, a')) {
-          if (el.childElementCount > 0) continue;
-          const t = (el.innerText || '').trim();
-          const m = t.match(/^([\d,\.]+[KMBkmb]?)\s+[Pp]osts?$/);
-          if (m) { result.tweets = m[1]; break; }
-        }
-
         return result;
-      }, handle);
+      });
 
       console.log(`[TwitterIngest] X profile stats for @${handle}:`, stats);
       return stats;
@@ -310,7 +312,45 @@ class TwitterIngestService {
     });
   }
 
+  // X renders a tweet's <article> before its media (photos, video posters, and
+  // link-preview cards) finish loading, so an immediate screenshot catches a
+  // spinner/placeholder. Media isn't always an <img> (videos and cards use
+  // <video>/background-image), so element-type polling is unreliable — instead
+  // wait for the network to settle, which covers every media type. Gated on the
+  // presence of a media container so text-only tweets aren't delayed.
+  async _waitForTweetMedia(page, tweetId = null) {
+    let hasMedia = false;
+    try {
+      hasMedia = await page.evaluate((id) => {
+        const findArticle = () => {
+          if (id) {
+            const byLink = document.querySelector(`a[href*="/status/${id}"] time`)?.closest('article[data-testid="tweet"]');
+            if (byLink) return byLink;
+          }
+          return document.querySelector('article[data-testid="tweet"]');
+        };
+        const article = findArticle();
+        if (!article) return false;
+        return !!article.querySelector(
+          '[data-testid="tweetPhoto"], [data-testid="card.layoutLarge.media"], [data-testid="card.layoutSmall.media"], [data-testid="videoComponent"], [data-testid="videoPlayer"]'
+        );
+      }, tweetId);
+    } catch {}
+
+    if (!hasMedia) return;
+
+    // Wait for media requests (pbs.twimg.com images, video posters, card art) to
+    // finish. X keeps background connections open, so this usually hits the cap —
+    // that's fine, it bounds the wait while giving media time to load.
+    try {
+      await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 });
+    } catch {}
+    // Brief settle for decode/paint.
+    await new Promise(r => setTimeout(r, 250));
+  }
+
   async _screenshotPage(page, outputPath, tweetId = null) {
+    await this._waitForTweetMedia(page, tweetId);
     await this._removeBanners(page);
     const box = await page.evaluate((id) => {
       const findArticle = () => {

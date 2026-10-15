@@ -201,15 +201,15 @@ describe('PipelineStore', () => {
 describe('ScriptGenerator', () => {
   let store;
   let tmpDir;
-  let openai;
+  let gemini;
   let generator;
 
   beforeEach(async () => {
     tmpDir = makeTempDir();
     store = new PipelineStore(tmpDir);
     await store.init();
-    openai = fakeOpenAI();
-    generator = new ScriptGenerator({ openai, pipelineStore: store });
+    gemini = fakeOpenAI();
+    generator = new ScriptGenerator({ gemini, pipelineStore: store });
   });
 
   afterEach(() => {
@@ -236,7 +236,7 @@ describe('ScriptGenerator', () => {
 
   test('B.3: regenerateScript updates existing segment', async () => {
     const seg = await generator.expandDirectorNote('Original topic');
-    openai.chat.completions.create.mockResolvedValueOnce({
+    gemini.chat.completions.create.mockResolvedValueOnce({
       choices: [{
         message: {
           content: JSON.stringify({
@@ -254,7 +254,7 @@ describe('ScriptGenerator', () => {
   });
 
   test('B.4: regeneratePartial replaces only specified line range', async () => {
-    openai.chat.completions.create.mockResolvedValueOnce({
+    gemini.chat.completions.create.mockResolvedValueOnce({
       choices: [{
         message: {
           content: JSON.stringify({
@@ -271,7 +271,7 @@ describe('ScriptGenerator', () => {
 
     const seg = await generator.expandDirectorNote('Test');
 
-    openai.chat.completions.create.mockResolvedValueOnce({
+    gemini.chat.completions.create.mockResolvedValueOnce({
       choices: [{
         message: {
           content: JSON.stringify({
@@ -476,17 +476,17 @@ describe('SegmentRenderer', () => {
 describe('Bridge Flow', () => {
   let store;
   let tmpDir;
-  let openai;
+  let gemini;
   let bridgeGen;
 
   beforeEach(async () => {
     tmpDir = makeTempDir();
     store = new PipelineStore(tmpDir);
     await store.init();
-    openai = fakeOpenAI([
+    gemini = fakeOpenAI([
       { speaker: 'chad', text: 'Speaking of which...' }
     ], 'Bridge context');
-    bridgeGen = new BridgeGenerator({ openai, pipelineStore: store });
+    bridgeGen = new BridgeGenerator({ gemini, pipelineStore: store });
   });
 
   afterEach(() => {
@@ -544,7 +544,7 @@ describe('Bridge Flow', () => {
 describe('Filler Flow', () => {
   let store;
   let tmpDir;
-  let openai;
+  let gemini;
   let fillerGen;
   let emitter;
 
@@ -552,11 +552,11 @@ describe('Filler Flow', () => {
     tmpDir = makeTempDir();
     store = new PipelineStore(tmpDir);
     await store.init();
-    openai = fakeOpenAI([
+    gemini = fakeOpenAI([
       { speaker: 'chad', text: 'So anyway...' },
       { speaker: 'virgin', text: 'Yeah, totally...' }
     ], 'Filler context');
-    fillerGen = new FillerGenerator({ openai, pipelineStore: store });
+    fillerGen = new FillerGenerator({ gemini, pipelineStore: store });
     emitter = fakeEventEmitter();
   });
 

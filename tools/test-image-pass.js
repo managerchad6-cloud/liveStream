@@ -7,15 +7,15 @@
 
 const path = require('path');
 const axios = require('axios');
-const OpenAI = require('openai');
+const GeminiClient = require('../gemini-client');
 const voices = require('../voices');
 
 const TWEET_URL = process.argv[2] || 'https://x.com/RNR_0/status/966473390528843776';
 const CT0 = '25c737acee4a04e7c581d153cae5e842987c6dbf0703b24b42995e582278292412eba6cd911dc2a062fdb6c2f0eb38e65b345a4f732b651f1216db8f5ae44c091439d09d470500ddb31d308d1af6aa62';
 const AUTH_TOKEN = '28c97aa6c5b0f4a00d200074270a0d87e29cf337';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const gemini = new GeminiClient({ apiKey: GEMINI_API_KEY });
 
 async function scrapeTweet(url) {
   const puppeteer = require('../animation-server/node_modules/puppeteer');
@@ -81,7 +81,7 @@ async function scrapeTweet(url) {
 
 async function describeImage(imageBase64, imageMimeType) {
   console.log('\nRunning vision pass...');
-  const response = await openai.chat.completions.create({
+  const response = await gemini.chat.completions.create({
     model: 'gpt-4o',
     messages: [{
       role: 'user',
@@ -143,7 +143,7 @@ Return ONLY valid JSON:
   const imageContext = imageDescription ? `\nATTACHED IMAGE: ${imageDescription}` : '';
   const userPrompt = `Tweet by @${tweetAuthor}:\n"${tweetText}"${imageContext}`;
 
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model: 'gpt-4o',
     messages: [
       { role: 'system', content: systemPrompt },

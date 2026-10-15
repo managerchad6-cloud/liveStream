@@ -25,13 +25,13 @@ function cleanPivotPhrase(text) {
 }
 
 class BridgeGenerator {
-  constructor({ openai, pipelineStore }) {
-    this.openai = openai;
+  constructor({ gemini, pipelineStore }) {
+    this.gemini = gemini;
     this.pipelineStore = pipelineStore;
   }
 
   async generateBridge(exitContext, nextSeed, lastSpeaker, { bridgeFor, bridgeAfter, targetScript, conversationHistory, targetFirstSpeaker } = {}) {
-    if (!this.openai) throw new Error('OpenAI not configured');
+    if (!this.gemini) throw new Error('Gemini not configured');
 
     // Build conversation context from recent history
     let precedingLines = '';
@@ -65,7 +65,7 @@ ${precedingLines || `[Topic: ${exitContext}]`}
 
 Continue with exactly 1 line. The conversation naturally shifts toward ${nextSeed}.`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await this.gemini.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },

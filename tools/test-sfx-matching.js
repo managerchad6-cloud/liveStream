@@ -6,12 +6,12 @@
  * Usage:
  *   node tools/test-sfx-matching.js
  *
- * Requires OPENAI_API_KEY in the environment (or .env at project root).
+ * Requires GEMINI_API_KEY in the environment (or .env at project root).
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const OpenAI   = require('openai');
+const GeminiClient = require('../gemini-client');
 const SfxMatcher = require('../animation-server/orchestrator/sfx-matcher');
 const SfxService = require('../animation-server/sfx-service');
 
@@ -216,9 +216,9 @@ const SEGMENTS = [
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
-const openai     = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const gemini     = new GeminiClient({ apiKey: process.env.GEMINI_API_KEY });
 const sfxService = new SfxService();
-const matcher    = new SfxMatcher({ sfxService, openai, pipelineStore: null });
+const matcher    = new SfxMatcher({ sfxService, gemini, pipelineStore: null });
 
 // ── Run ───────────────────────────────────────────────────────────────────────
 

@@ -185,19 +185,19 @@ function request(server, method, path, body) {
 describe('Integration Smoke Tests', () => {
   let tmpDir, pipelineStore, scriptGenerator, segmentRenderer;
   let playbackController, chatIntake, bridgeGenerator, fillerGenerator;
-  let openai, emitter, app, server;
+  let gemini, emitter, app, server;
 
   beforeAll(async () => {
     tmpDir = makeTempDir();
     pipelineStore = new PipelineStore(tmpDir);
     await pipelineStore.init();
 
-    openai = fakeOpenAI();
+    gemini = fakeOpenAI();
     emitter = { broadcast: jest.fn() };
 
-    scriptGenerator = new ScriptGenerator({ openai, pipelineStore });
-    bridgeGenerator = new BridgeGenerator({ openai, pipelineStore });
-    fillerGenerator = new FillerGenerator({ openai, pipelineStore });
+    scriptGenerator = new ScriptGenerator({ gemini, pipelineStore });
+    bridgeGenerator = new BridgeGenerator({ gemini, pipelineStore });
+    fillerGenerator = new FillerGenerator({ gemini, pipelineStore });
 
     process.env.ELEVENLABS_API_KEY = 'test-key';
     segmentRenderer = new SegmentRenderer({

@@ -139,11 +139,12 @@ async function setup() {
   } else {
     console.log('  Creating .env template...');
     const envTemplate = `# API Keys
-OPENAI_API_KEY=your_openai_key_here
+GEMINI_API_KEY=your_gemini_key_here
 ELEVENLABS_API_KEY=your_elevenlabs_key_here
 
 # Optional
-MODEL=gpt-4o-mini
+GEMINI_MODEL=gemini-2.5-flash
+MODEL=gemini-2.5-flash
 PORT=3002
 ANIMATION_PORT=3003
 `;

@@ -14,7 +14,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const fs     = require('fs');
 const path   = require('path');
-const OpenAI = require('openai');
+const GeminiClient = require('../gemini-client');
 
 const ANIM         = 'http://127.0.0.1:3003';
 const WS_URL       = 'ws://127.0.0.1:3003/ws/orchestrator';
@@ -23,7 +23,7 @@ const STATE_PATH   = path.join(__dirname, '..', 'data', 'director-state.json');
 const DIALOGUE_LOG = path.join(__dirname, '..', 'logs', 'dialogue.jsonl');
 const RECONNECT_MS = 3000;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const gemini = new GeminiClient({ apiKey: process.env.GEMINI_API_KEY });
 
 // ─── Script parser ──────────────────────────────────────────────────────────
 
@@ -184,7 +184,7 @@ Next block: "${nextSeed}"
 Recent dialogue:
 ${recentLines}`;
 
-  const res = await openai.chat.completions.create({
+  const res = await gemini.chat.completions.create({
     model:           process.env.MODEL || 'gpt-4o-mini',
     messages:        [{ role: 'system', content: system }, { role: 'user', content: user }],
     response_format: { type: 'json_object' },

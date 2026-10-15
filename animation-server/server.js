@@ -64,7 +64,7 @@ const SyncedPlayback = require('./synced-playback');
 const TVContentService = require('./tv-content');
 const { buildExpressionPlan, buildIdlePlan, augmentExpressionPlan, normalizePlanTiming } = require('./expression-timeline');
 const ExpressionEvaluator = require('./expression-evaluator');
-const OpenAI = require('openai');
+const GeminiClient = require('../gemini-client');
 const MediaLibrary = require('./media-library');
 const PipelineStore = require('./orchestrator/pipeline-store');
 const TVLayerManager = require('./orchestrator/tv-layer-manager');
@@ -83,8 +83,8 @@ const LIPSYNC_MODE = process.env.LIPSYNC_MODE || 'realtime';
 const STREAM_MODE = process.env.STREAM_MODE || 'synced';
 const EXPRESSION_MODEL = process.env.EXPRESSION_MODEL || process.env.MODEL || 'gpt-4o-mini';
 const USE_LLM_EXPRESSIONS = process.env.EXPRESSION_LLM === '1';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const gemini = GEMINI_API_KEY ? new GeminiClient({ apiKey: GEMINI_API_KEY }) : null;
 let activePumpToken  = process.env.PUMP_FUN_TOKEN || '';
 const PUMP_FUN_PAIR  = process.env.PUMP_FUN_PAIR  || '';
 
@@ -1377,8 +1377,8 @@ function handleAudioComplete() {
 
 
 async function buildExpressionPlanLLM({ message, character, listener, durationSec, limits }) {
-  if (!openai) {
-    console.warn('[Expr] OPENAI_API_KEY not set, using heuristic expression plan');
+  if (!gemini) {
+    console.warn('[Expr] GEMINI_API_KEY not set, using heuristic expression plan');
     return null;
   }
 
@@ -1419,7 +1419,7 @@ Rules:
     `Notes: Virgin is on right, Chad on left. When speaking to the other, look toward them.`;
 
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await gemini.chat.completions.create({
       model: EXPRESSION_MODEL,
       messages: [
         { role: 'system', content: prompt },
@@ -2955,7 +2955,7 @@ app.patch('/api/orchestrator/segments/:id/sfx', async (req, res) => {
 });
 
 // Queue a pre-written single-line response directly to the pipeline
-// Used by /api/chat after router + OpenAI generate the response text
+// Used by /api/chat after router + Gemini generate the response text
 app.post('/api/orchestrator/queue-response', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
   if (!segmentRenderer) return res.status(503).json({ error: 'Segment renderer not initialized' });
@@ -4348,7 +4348,7 @@ async function start() {
   orchestratorSocket = new OrchestratorSocket(server);
 
   orchestrator = new Orchestrator({
-    openai,
+    gemini,
     pipelineStore,
     mediaLibrary,
     tvLayerManager,
@@ -4403,7 +4403,7 @@ async function start() {
   });
 
   // SFX auto-matcher — must be wired AFTER orchestrator.init() so segmentRenderer/playbackController exist
-  sfxMatcher = new SfxMatcher({ sfxService, openai, pipelineStore });
+  sfxMatcher = new SfxMatcher({ sfxService, gemini, pipelineStore });
   segmentRenderer.setSfxMatcher(sfxMatcher);
   console.log('[SFX] Auto-matcher enabled');
 

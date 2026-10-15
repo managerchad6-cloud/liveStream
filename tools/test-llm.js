@@ -21,13 +21,13 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const OpenAI = require('openai');
+const GeminiClient = require('../gemini-client');
 const voices = require('../voices');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const gemini = new GeminiClient({ apiKey: process.env.GEMINI_API_KEY });
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error('ERROR: OPENAI_API_KEY not set in .env');
+if (!process.env.GEMINI_API_KEY) {
+  console.error('ERROR: GEMINI_API_KEY not set in .env');
   process.exit(1);
 }
 
@@ -116,7 +116,7 @@ Rules:
 - The exitContext must be a brief TOPIC SUMMARY, NOT a transcript`;
 
   const t0 = Date.now();
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -162,7 +162,7 @@ Return JSON only with:
 Make constraints strong enough to prevent drift. Do not mention "Chad" or "Virgin" in constraints unless the seed requires it.`;
 
   const t0 = Date.now();
-  const intentCompletion = await openai.chat.completions.create({
+  const intentCompletion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: intentPrompt },
@@ -202,7 +202,7 @@ ${voices.chad.basePrompt.trim()}
 VIRGIN:
 ${voices.virgin.basePrompt.trim()}`;
 
-  const scriptCompletion = await openai.chat.completions.create({
+  const scriptCompletion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: scriptSystemPrompt },
@@ -225,7 +225,7 @@ If it fully complies, reply with: {"ok":true}
 If not, reply with: {"ok":false,"issues":["..."],"fix":"<short instruction to rewrite>"}
 Be concise and strict.`;
 
-  const validateCompletion = await openai.chat.completions.create({
+  const validateCompletion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: validatePrompt },
@@ -242,7 +242,7 @@ Be concise and strict.`;
     console.log(`  Fix instruction: ${verdict.fix}`);
     console.log('  Rewriting...\n');
 
-    const rewriteCompletion = await openai.chat.completions.create({
+    const rewriteCompletion = await gemini.chat.completions.create({
       model,
       messages: [
         { role: 'system', content: 'Rewrite this dialogue to strictly follow the intent blueprint.\nKeep the number of turns and speakers, but fix any drift.\nOutput JSON only as an array of objects with speaker/text.' },
@@ -283,7 +283,7 @@ async function modeChat(message, voiceId, model) {
   const systemPrompt = voiceConfig.basePrompt + voiceConfig.audioTags + freshnessGuard;
 
   const t0 = Date.now();
-  const completion = await openai.chat.completions.create({
+  const completion = await gemini.chat.completions.create({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -339,7 +339,7 @@ async function modeExpand(isFirstExpand, wrapUp, model) {
   messages.push({ role: 'user', content: wrapUp ? 'Wrap it up.' : 'Continue.' });
 
   const t0 = Date.now();
-  let completion = await openai.chat.completions.create({
+  let completion = await gemini.chat.completions.create({
     model,
     messages,
     temperature: 0.8,
@@ -355,7 +355,7 @@ async function modeExpand(isFirstExpand, wrapUp, model) {
       { role: 'system', content: `Continue this conversation with exactly 1 line. Return ONLY valid JSON:\n{\n  "script": [\n    { "speaker": "chad|virgin", "text": "..." }\n  ]\n}\nNo markdown, no code blocks — ONLY the JSON object.${wrapUp ? ' This is the FINAL line — wrap up the topic naturally.' : ''}` },
       { role: 'user', content: `Recent conversation:\n${historyText}\n\nContinue naturally:` }
     ];
-    completion = await openai.chat.completions.create({
+    completion = await gemini.chat.completions.create({
       model,
       messages: retry,
       temperature: 0.7,
