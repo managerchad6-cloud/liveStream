@@ -17,7 +17,8 @@
     "push": "git push origin master",
     "audience": "node tools/audience-simulator.js",
     "director:play": "powershell -ExecutionPolicy Bypass -File ./director-play.ps1",
-    "director:pause": "powershell -ExecutionPolicy Bypass -File ./director-pause.ps1"
+    "director:pause": "powershell -ExecutionPolicy Bypass -File ./director-pause.ps1",
+    "devlog": "node tools/devlog/report.js now"
   },
   "keywords": [
     "chatbot",

@@ -12,7 +12,9 @@ WorkingDirectory=/opt/livestream/animation-server
 ExecStart=/usr/bin/node /opt/livestream/animation-server/server.js
 Environment=NODE_ENV=production
 Environment=ANIMATION_PORT=3003
-Environment=UV_THREADPOOL_SIZE=4
+# 4 dedicated cores: let libvips use all of them (compositor defaults to 2 on Linux)
+Environment=UV_THREADPOOL_SIZE=8
+Environment=SHARP_CONCURRENCY=4
 Restart=always
 RestartSec=5
 

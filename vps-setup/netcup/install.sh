@@ -26,6 +26,11 @@ chmod a+rx /usr/local/bin/yt-dlp
 # Recent yt-dlp needs a JS runtime for YouTube; node is installed, deno is not
 echo "--js-runtimes node" > /etc/yt-dlp.conf
 
+echo "==> Panel fonts (Pango/librsvg only sees system-installed fonts)"
+install -d /usr/share/fonts/truetype/livestream
+install -m 644 "$APP_DIR"/animation-server/fonts/*.ttf /usr/share/fonts/truetype/livestream/
+fc-cache -f
+
 echo "==> 4G swapfile"
 if ! swapon --show | grep -q /swapfile; then
   fallocate -l 4G /swapfile
