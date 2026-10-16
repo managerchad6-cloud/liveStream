@@ -100,9 +100,19 @@ class ChatIntakeAgent {
     if (this._recentApproved.length > 10) this._recentApproved.pop();
   }
 
-  addMessage(username, text, response = null) {
+  /** Where a viewer's message is, for the suite's Live tab ('chat:status' keyed by card id). */
+  _status(id, stage, extra = {}) {
+    if (this.eventEmitter) this.eventEmitter.broadcast('chat:status', { id, stage, at: Date.now(), ...extra });
+  }
+
+  /**
+   * @param {object} [opts]
+   * @param {string} [opts.id] Card id chosen by the caller (the suite tracks its message by it)
+   * @param {boolean} [opts.echoed] The overlay already shows this message (POST /chat/echo)
+   */
+  addMessage(username, text, response = null, { id, echoed = false } = {}) {
     const card = {
-      id: crypto.randomUUID(),
+      id: id || crypto.randomUUID(),
       username: username || 'anonymous',
       text: String(text || '').trim(),
       createdAt: new Date().toISOString()
@@ -119,7 +129,7 @@ class ChatIntakeAgent {
     if (!card.text) return null;
 
     // Push to stream chat overlay first — viewers always see their own message
-    if (this.onChatMessage) {
+    if (this.onChatMessage && !echoed) {
       this.onChatMessage(card.username, card.text, card.id);
     }
 
@@ -128,9 +138,12 @@ class ChatIntakeAgent {
       const reason = this._filter(card.text);
       if (reason) {
         console.log(`[ChatIntake] Filtered (${reason}): "${card.text.substring(0, 60)}"`);
+        this._status(card.id, 'dropped', { reason });
         return null; // vanishes — overlay already fired, nothing else happens
       }
       this._recordApproved(card.text);
+    } else {
+      this._status(card.id, 'review'); // waits in the director's inbox
     }
 
     this.inbox.unshift(card);
@@ -149,6 +162,7 @@ class ChatIntakeAgent {
       if (this._holdMode) {
         // Buffer during video reaction session — will be flushed after session ends
         this._heldMessages.push(card);
+        this._status(card.id, 'held');
         console.log(`[ChatIntake] Hold mode — buffered: "${card.text.slice(0, 60)}"`);
       } else {
         this._autoQueue(card).catch(err => {
@@ -219,6 +233,7 @@ class ChatIntakeAgent {
     if (this.onChatProgress) {
       try { this.onChatProgress(card.id); } catch (_) {}
     }
+    this._status(card.id, 'forming');
 
     if (this.segmentRenderer?.cancelQueuedSegmentsByType) {
       const cancelled = this.segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });

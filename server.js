@@ -378,68 +378,83 @@ app.post('/api/chat', async (req, res) => {
 
     // Router mode: LLM picks which character responds
     const normalizedMode = mode === 'router' ? 'router' : 'direct';
-    const routingDecision = normalizedMode === 'router'
-      ? await routeMessageToVoice(message)
-      : { voice };
-
-    if (normalizedMode === 'router' && routingDecision.filtered) {
-      return res.json({
-        filtered: true,
-        reason: routingDecision.reason,
-        counts: routingDecision.counts
-      });
-    }
-
-    const selectedVoice = routingDecision.voice;
-    const voiceConfig = voices[selectedVoice];
-    if (!voiceConfig) {
+    if (normalizedMode === 'direct' && !voices[voice]) {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
-
-    // Generate character response via Gemini (best-effort)
-    let replyText = null;
-    try {
-      const memory = memoryStore[selectedVoice] || '';
-      const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
-
-      const completion = await gemini.chat.completions.create({
-        model: process.env.MODEL || 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
-        ],
-        max_tokens: 150,
-        temperature: temperature,
-      });
-
-      replyText = completion.choices[0].message.content;
-      console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
-      console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
-    } catch (llmErr) {
-      console.warn('[Chat] Gemini generation failed, forwarding raw message:', llmErr.message);
+    if (normalizedMode === 'router') {
+      const filterDecision = shouldFilterRouterMessage();
+      if (filterDecision.filtered) {
+        return res.json({ filtered: true, reason: filterDecision.reason, counts: filterDecision.counts });
+      }
     }
 
-    // Send to director inbox (fire-and-forget)
-    const inboxPayload = { username: 'chat', text: message };
-    if (replyText) {
-      inboxPayload.response = { speaker: selectedVoice, text: replyText };
-    }
-    axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, inboxPayload).catch(err => {
-      console.warn('[Chat] Failed to send to director inbox:', err.message);
-    });
+    // Answer now: the viewer's message goes on the stream overlay right away, and the two LLM
+    // calls (routing + reply) run after the response. Progress arrives as 'chat:status' on the
+    // orchestrator WebSocket, keyed by this id.
+    const id = crypto.randomUUID();
+    axios.post(`${animationServerUrl}/api/orchestrator/chat/echo`, { id, username: 'chat', text: message }, { timeout: 4000 })
+      .catch(err => console.warn('[Chat] Overlay echo failed:', err.message));
+    res.status(202).json({ queued: true, id });
 
-    // Update conversation history and memory if we got a response
-    if (replyText) {
-      appendConversationTurn(message, replyText, selectedVoice);
-      enqueueMemoryUpdate(selectedVoice, message, replyText);
-    }
-
-    res.json({ queued: true, message: 'Sent to director inbox', voice: selectedVoice });
+    respondToChat({ id, message, mode: normalizedMode, voice, model, temperature })
+      .catch(err => console.error('[Chat] Background reply failed:', err.message));
   } catch (error) {
     console.error('Error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
     res.status(500).json({ error: 'Failed to generate response' });
   }
 });
+
+// Pick the voice, write the reply and hand both to the director inbox (after /api/chat answered)
+async function respondToChat({ id, message, mode, voice, model, temperature }) {
+  let selectedVoice = voice;
+  if (mode === 'router') {
+    try {
+      selectedVoice = (await routeMessageToVoice(message)).voice;
+    } catch (err) {
+      selectedVoice = guessVoiceFromHeuristics(message);
+      console.warn('[Chat] Router failed, using heuristics:', err.message);
+    }
+  }
+  const voiceConfig = voices[selectedVoice] || voices.chad;
+
+  // Generate character response via Gemini (best-effort)
+  let replyText = null;
+  try {
+    const memory = memoryStore[selectedVoice] || '';
+    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
+
+    const completion = await gemini.chat.completions.create({
+      model: process.env.MODEL || 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message }
+      ],
+      max_tokens: 150,
+      temperature: temperature,
+    });
+
+    replyText = completion.choices[0].message.content;
+    console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
+    console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
+  } catch (llmErr) {
+    console.warn('[Chat] Gemini generation failed, forwarding raw message:', llmErr.message);
+  }
+
+  // Send to director inbox; the overlay already shows the message (echoed)
+  const inboxPayload = { id, echoed: true, username: 'chat', text: message };
+  if (replyText) {
+    inboxPayload.response = { speaker: selectedVoice, text: replyText };
+  }
+  axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, inboxPayload).catch(err => {
+    console.warn('[Chat] Failed to send to director inbox:', err.message);
+  });
+
+  // Update conversation history and memory if we got a response
+  if (replyText) {
+    appendConversationTurn(message, replyText, selectedVoice);
+    enqueueMemoryUpdate(selectedVoice, message, replyText);
+  }
+}
 
 // Legacy endpoint for backward compatibility
 app.post('/chat', async (req, res) => {
@@ -554,12 +569,8 @@ function shouldFilterRouterMessage() {
   };
 }
 
+// The volume filter (shouldFilterRouterMessage) runs before this, in /api/chat
 async function routeMessageToVoice(message) {
-  const filterDecision = shouldFilterRouterMessage();
-  if (filterDecision.filtered) {
-    return filterDecision;
-  }
-
   const explicit = detectExplicitAddress(message);
   if (explicit) {
     return { voice: explicit };
