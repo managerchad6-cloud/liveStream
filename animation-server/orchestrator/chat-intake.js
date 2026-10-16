@@ -229,6 +229,15 @@ class ChatIntakeAgent {
       });
     } catch (_) {}
 
+    // Air next instead of waiting behind the whole buffer (auto-convos, expands, fillers)
+    if (this.pipelineStore.prioritizeChat) {
+      try {
+        await this.pipelineStore.prioritizeChat(narratorSeg ? [narratorSeg.id, segment.id] : [segment.id]);
+      } catch (err) {
+        console.warn(`[ChatIntake] Prioritize failed, airing in arrival order: ${err.message}`);
+      }
+    }
+
     // Progress bar: segment entered the rendering pipeline
     if (this.onChatProgress) {
       try { this.onChatProgress(card.id); } catch (_) {}
