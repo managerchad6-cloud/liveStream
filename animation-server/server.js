@@ -448,6 +448,13 @@ function broadcastPipelineUpdate() {
 const memeGenerationQueue = new Map(); // id -> { id, description, status, startedAt, error? }
 let memeJobCounter = 0;
 
+// Where a viewer's chat message is, for the suite's Live tab (keyed by card id; no identity in it).
+// Stages: shown → review | held | dropped → forming → ready → on-air (ChatIntakeAgent sends some)
+function broadcastChatStatus(id, stage, extra = {}) {
+  if (!id || !orchestratorSocket) return;
+  orchestratorSocket.broadcast('chat:status', { id, stage, at: Date.now(), ...extra });
+}
+
 function broadcastMemeQueueUpdate() {
   syncMemeQueueToCompositor();
   if (!orchestratorSocket) return;
@@ -1298,6 +1305,7 @@ let isAudioActive = false;
 let currentPlayingSegmentId = null;  // Track which pipeline segment is currently playing
 let currentLineIndex = 0;            // Which script line is currently playing (0-based)
 let currentTotalLines = 1;           // Total lines in the current segment's script
+let currentSegmentStartedAt = 0;     // When line 0 of the current segment started (ms)
 const renderQueue = [];
 let lastFrameBuffer = null;
 let skipCompositingFrames = 0;
@@ -1559,6 +1567,7 @@ async function startPlayback(item) {
 
   // Notify playback controller when a new segment starts playing.
   // Only fire setOnAir on the FIRST line so expand generation isn't triggered for every line.
+  if (currentPlayingSegmentId && currentLineIndex === 0) currentSegmentStartedAt = Date.now();
   if (currentPlayingSegmentId && playbackController && currentLineIndex === 0) {
     playbackController.setOnAir(currentPlayingSegmentId);
   }
@@ -3020,19 +3029,10 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
       });
     } catch (_) {}
 
-    // Jump the pair to the front: narrator right after on-air, response right after narrator.
-    if (pipelineStore.prioritizeSegment) {
-      try {
-        await pipelineStore.prioritizeSegment(narratorSeg.id, {
-          afterOnAir: true,
-          avoidTransitionSplit: true
-        });
-        const narratorIdx = pipelineStore.getSegmentIndex(narratorSeg.id);
-        if (narratorIdx !== -1) {
-          await pipelineStore.insertAt(responseSeg.id, narratorIdx + 1);
-        }
-      } catch (_) {}
-    }
+    // Jump the pair to the front: right after on-air, behind chat that's already waiting.
+    try {
+      await pipelineStore.prioritizeChat([narratorSeg.id, responseSeg.id]);
+    } catch (_) {}
 
     if (segmentRenderer.cancelQueuedSegmentsByType) {
       const cancelled = segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });
@@ -3218,11 +3218,21 @@ app.post('/api/orchestrator/filler', (req, res) => {
 });
 
 // ============== Orchestrator Chat Intake API ==============
+// Put a viewer's message on the overlay now, before its reply exists (the chat server sends
+// the message itself to /chat/message with the same id once the reply is written)
+app.post('/api/orchestrator/chat/echo', (req, res) => {
+  const { id, username, text } = req.body || {};
+  if (!id || !text) return res.status(400).json({ error: 'Missing id or text' });
+  addChatMessage(username || 'anonymous', String(text).trim(), id);
+  broadcastChatStatus(id, 'shown');
+  res.json({ success: true });
+});
+
 app.post('/api/orchestrator/chat/message', async (req, res) => {
   if (!chatIntake) return res.status(503).json({ error: 'Chat intake not initialized' });
-  const { username, text, response } = req.body || {};
+  const { id, echoed, username, text, response } = req.body || {};
   if (!text) return res.status(400).json({ error: 'Missing text' });
-  chatIntake.addMessage(username || 'anonymous', text, response || null);
+  chatIntake.addMessage(username || 'anonymous', text, response || null, { id, echoed: Boolean(echoed) });
   res.json({ success: true });
 });
 
@@ -4208,6 +4218,13 @@ async function start() {
 
   // Initialize pipeline store with dialogue logging to logs/ (git-ignored)
   const dialogueLogPath = path.join(LOGS_DIR, 'dialogue.jsonl');
+  // How long a segment still holds the queue: the unplayed part of the one on air,
+  // the whole estimate for the rest.
+  const segmentRemainingMs = (s) => {
+    const totalMs = (s.estimatedDuration || 0) * 1000;
+    if (s.id !== currentPlayingSegmentId || !currentSegmentStartedAt) return totalMs;
+    return Math.max(0, totalMs - (Date.now() - currentSegmentStartedAt));
+  };
   const onSegmentActivity = (segment, event) => {
     const line = JSON.stringify({
       at: new Date().toISOString(),
@@ -4230,7 +4247,7 @@ async function start() {
       const queueMs = allSegs
         .slice(0, thisIdx)
         .filter(s => s.status === 'forming' || s.status === 'ready')
-        .reduce((sum, s) => sum + (s.estimatedDuration || 0) * 1000, 0);
+        .reduce((sum, s) => sum + segmentRemainingMs(s), 0);
       setMemeReady(memeJobId, queueMs);
     }
 
@@ -4254,8 +4271,9 @@ async function start() {
       const queueMs = allSegs
         .slice(0, countUntil)
         .filter(s => s.status === 'forming' || s.status === 'ready')
-        .reduce((sum, s) => sum + (s.estimatedDuration || 0) * 1000, 0);
+        .reduce((sum, s) => sum + segmentRemainingMs(s), 0);
       setChatMessageReady(chatCardId, queueMs);
+      broadcastChatStatus(chatCardId, 'ready', { queueMs });
     }
   };
   pipelineStore = new PipelineStore(path.join(ROOT_DIR, 'data'), { onSegmentActivity });
@@ -4388,7 +4406,10 @@ async function start() {
   playbackController.registerOnAirHook((segmentId, segment) => {
     // Chat bar: hits 100% when narrator-cue starts (right before the answer)
     const chatCardId = segment?.metadata?.chatCardId;
-    if (chatCardId && segment?.metadata?.isNarratorCue) setChatMessageOnAir(chatCardId);
+    if (chatCardId && segment?.metadata?.isNarratorCue) {
+      setChatMessageOnAir(chatCardId);
+      broadcastChatStatus(chatCardId, 'on-air');
+    }
     // Meme bar: hits 100% when the meme-reaction segment starts
     const memeJobId = segment?.metadata?.memeJobId;
     if (memeJobId) setMemeOnAir(memeJobId);

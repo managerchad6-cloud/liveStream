@@ -103,6 +103,11 @@ const gate = createGate({
 app.use(gate.middleware());
 // Chat costs an LLM call and TTS: a member gets a few per minute
 const allowChat = gate.rateLimiter(6, 60_000);
+// …and only holders, CHAT_DAILY a day (saved under data/ so restarts don't reset it), one at a time
+const CHAT_DAILY = /^\d+$/.test(process.env.CHAT_DAILY || '') ? Number(process.env.CHAT_DAILY) : 60;
+const chatDaily = gate.dailyCap(CHAT_DAILY, path.join(__dirname, 'data', 'chat-daily.json'));
+const claimChat = gate.oneAtATime();
+const CHAT_DEFAULTS = { model: 'eleven_v3', temperature: 0.7 };
 
 // Also serve frontend for backward compatibility (can be disabled on VPS with nginx)
 app.use(express.static(path.join(__dirname, 'frontend')));
@@ -276,19 +281,24 @@ app.get('/api/auto/diagnostic', async (req, res) => {
 
 // API: Chat endpoint - routes message, generates response, queues to pipeline
 app.post('/api/chat', async (req, res) => {
+  let release = null; // this wallet's one-at-a-time slot, freed when we're done with the message
   try {
     const {
       message,
       voice = 'chad',
-      model = 'eleven_v3',
-      temperature = 0.7,
       mode = 'direct'
     } = req.body;
+    let { model = CHAT_DEFAULTS.model, temperature = CHAT_DEFAULTS.temperature } = req.body;
 
     const who = gate.participant(req, res);
     if (!who) return;
-    if (!who.operator && !allowChat(who.wallet)) {
-      return res.status(429).json({ code: 'rate_limited', error: 'Slow down — a few messages a minute' });
+    if (!who.operator) {
+      if (!gate.holder(req, res)) return;
+      if (!allowChat(who.wallet)) {
+        return res.status(429).json({ code: 'rate_limited', error: 'Slow down — a few messages a minute' });
+      }
+      // The public doesn't choose what the reply costs
+      ({ model, temperature } = CHAT_DEFAULTS);
     }
 
     if (!message || typeof message !== 'string') {
@@ -296,6 +306,18 @@ app.post('/api/chat', async (req, res) => {
     }
     if (!who.operator && message.length > 300) {
       return res.status(400).json({ error: 'Message too long' });
+    }
+
+    // Votes are cheap; everything else costs an LLM call and TTS, so it's counted
+    const isVote = /^\/(voteMeme|video|roadmap)\s+\d+/i.test(message);
+    if (!who.operator && !isVote) {
+      release = claimChat(who.wallet);
+      if (!release) {
+        return res.status(429).json({ code: 'chat_busy', error: 'Your last message is still on its way' });
+      }
+      if (!chatDaily.take(who.wallet)) {
+        return res.status(429).json({ code: 'daily_limit', error: `That's ${CHAT_DAILY} messages today — back tomorrow` });
+      }
     }
 
     // /meme command: forward to animation server, skip LLM entirely
@@ -378,68 +400,88 @@ app.post('/api/chat', async (req, res) => {
 
     // Router mode: LLM picks which character responds
     const normalizedMode = mode === 'router' ? 'router' : 'direct';
-    const routingDecision = normalizedMode === 'router'
-      ? await routeMessageToVoice(message)
-      : { voice };
-
-    if (normalizedMode === 'router' && routingDecision.filtered) {
-      return res.json({
-        filtered: true,
-        reason: routingDecision.reason,
-        counts: routingDecision.counts
-      });
-    }
-
-    const selectedVoice = routingDecision.voice;
-    const voiceConfig = voices[selectedVoice];
-    if (!voiceConfig) {
+    if (normalizedMode === 'direct' && !voices[voice]) {
       return res.status(400).json({ error: 'Invalid voice. Use "chad" or "virgin"' });
     }
-
-    // Generate character response via Gemini (best-effort)
-    let replyText = null;
-    try {
-      const memory = memoryStore[selectedVoice] || '';
-      const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
-
-      const completion = await gemini.chat.completions.create({
-        model: process.env.MODEL || 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
-        ],
-        max_tokens: 150,
-        temperature: temperature,
-      });
-
-      replyText = completion.choices[0].message.content;
-      console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
-      console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
-    } catch (llmErr) {
-      console.warn('[Chat] Gemini generation failed, forwarding raw message:', llmErr.message);
+    if (normalizedMode === 'router') {
+      const filterDecision = shouldFilterRouterMessage();
+      if (filterDecision.filtered) {
+        return res.json({ filtered: true, reason: filterDecision.reason, counts: filterDecision.counts });
+      }
     }
 
-    // Send to director inbox (fire-and-forget)
-    const inboxPayload = { username: 'chat', text: message };
-    if (replyText) {
-      inboxPayload.response = { speaker: selectedVoice, text: replyText };
-    }
-    axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, inboxPayload).catch(err => {
-      console.warn('[Chat] Failed to send to director inbox:', err.message);
-    });
+    // Answer now: the viewer's message goes on the stream overlay right away, and the two LLM
+    // calls (routing + reply) run after the response. Progress arrives as 'chat:status' on the
+    // orchestrator WebSocket, keyed by this id.
+    const id = crypto.randomUUID();
+    axios.post(`${animationServerUrl}/api/orchestrator/chat/echo`, { id, username: 'chat', text: message }, { timeout: 4000 })
+      .catch(err => console.warn('[Chat] Overlay echo failed:', err.message));
+    res.status(202).json({ queued: true, id });
 
-    // Update conversation history and memory if we got a response
-    if (replyText) {
-      appendConversationTurn(message, replyText, selectedVoice);
-      enqueueMemoryUpdate(selectedVoice, message, replyText);
-    }
-
-    res.json({ queued: true, message: 'Sent to director inbox', voice: selectedVoice });
+    // The slot stays taken until the reply is written and handed to the director
+    const done = release; release = null;
+    respondToChat({ id, message, mode: normalizedMode, voice, model, temperature })
+      .catch(err => console.error('[Chat] Background reply failed:', err.message))
+      .finally(() => done?.());
   } catch (error) {
     console.error('Error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
     res.status(500).json({ error: 'Failed to generate response' });
+  } finally {
+    release?.();
   }
 });
+
+// Pick the voice, write the reply and hand both to the director inbox (after /api/chat answered)
+async function respondToChat({ id, message, mode, voice, model, temperature }) {
+  let selectedVoice = voice;
+  if (mode === 'router') {
+    try {
+      selectedVoice = (await routeMessageToVoice(message)).voice;
+    } catch (err) {
+      selectedVoice = guessVoiceFromHeuristics(message);
+      console.warn('[Chat] Router failed, using heuristics:', err.message);
+    }
+  }
+  const voiceConfig = voices[selectedVoice] || voices.chad;
+
+  // Generate character response via Gemini (best-effort)
+  let replyText = null;
+  try {
+    const memory = memoryStore[selectedVoice] || '';
+    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
+
+    const completion = await gemini.chat.completions.create({
+      model: process.env.MODEL || 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message }
+      ],
+      max_tokens: 150,
+      temperature: temperature,
+    });
+
+    replyText = completion.choices[0].message.content;
+    console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
+    console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
+  } catch (llmErr) {
+    console.warn('[Chat] Gemini generation failed, forwarding raw message:', llmErr.message);
+  }
+
+  // Send to director inbox; the overlay already shows the message (echoed)
+  const inboxPayload = { id, echoed: true, username: 'chat', text: message };
+  if (replyText) {
+    inboxPayload.response = { speaker: selectedVoice, text: replyText };
+  }
+  axios.post(`${animationServerUrl}/api/orchestrator/chat/message`, inboxPayload).catch(err => {
+    console.warn('[Chat] Failed to send to director inbox:', err.message);
+  });
+
+  // Update conversation history and memory if we got a response
+  if (replyText) {
+    appendConversationTurn(message, replyText, selectedVoice);
+    enqueueMemoryUpdate(selectedVoice, message, replyText);
+  }
+}
 
 // Legacy endpoint for backward compatibility
 app.post('/chat', async (req, res) => {
@@ -554,12 +596,8 @@ function shouldFilterRouterMessage() {
   };
 }
 
+// The volume filter (shouldFilterRouterMessage) runs before this, in /api/chat
 async function routeMessageToVoice(message) {
-  const filterDecision = shouldFilterRouterMessage();
-  if (filterDecision.filtered) {
-    return filterDecision;
-  }
-
   const explicit = detectExplicitAddress(message);
   if (explicit) {
     return { voice: explicit };

@@ -151,6 +151,44 @@ class PipelineStore {
     return this.insertAt(id, index);
   }
 
+  _isChatSegment(segment) {
+    if (!segment) return false;
+    if (segment.type === 'narrator-cue' || segment.type === 'chat-response') return true;
+    return Boolean(segment.metadata?.chatCardId || segment.metadata?.source === 'chat');
+  }
+
+  /**
+   * Move a viewer's chat segments (narrator-cue, then its response) so they air
+   * next: right after the on-air segment, behind any chat already waiting there
+   * (first come, first served), ahead of auto-convos, expands and fillers.
+   */
+  async prioritizeChat(ids) {
+    const moving = new Set(ids);
+    const rest = this.segments.filter(s => !moving.has(s.id));
+    const run = ids.map(id => this.getSegment(id)).filter(Boolean);
+    if (run.length === 0) return this.segments;
+
+    // Start after the on-air segment, or after the aired history when nothing is on air
+    const onAirIndex = rest.findIndex(s => s.status === 'ready');
+    let index = onAirIndex !== -1 ? onAirIndex + 1 : rest.findIndex(s => s.status !== 'aired');
+    if (index === -1) index = rest.length;
+
+    while (index < rest.length) {
+      const prev = rest[index - 1];
+      const next = rest[index];
+      // Keep a transition next to the segment it leads into
+      if (prev && prev.type === 'transition' && prev.metadata?.bridgeFor === next.id) { index += 1; continue; }
+      // Earlier viewers go first
+      if (this._isChatSegment(next)) { index += 1; continue; }
+      break;
+    }
+
+    rest.splice(index, 0, ...run);
+    this.segments = rest;
+    await this._persist();
+    return this.segments;
+  }
+
   async transitionStatus(id, newStatus) {
     const segment = this.getSegment(id);
     if (!segment) {
