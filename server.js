@@ -103,6 +103,11 @@ const gate = createGate({
 app.use(gate.middleware());
 // Chat costs an LLM call and TTS: a member gets a few per minute
 const allowChat = gate.rateLimiter(6, 60_000);
+// …and only holders, CHAT_DAILY a day (saved under data/ so restarts don't reset it), one at a time
+const CHAT_DAILY = /^\d+$/.test(process.env.CHAT_DAILY || '') ? Number(process.env.CHAT_DAILY) : 60;
+const chatDaily = gate.dailyCap(CHAT_DAILY, path.join(__dirname, 'data', 'chat-daily.json'));
+const claimChat = gate.oneAtATime();
+const CHAT_DEFAULTS = { model: 'eleven_v3', temperature: 0.7 };
 
 // Also serve frontend for backward compatibility (can be disabled on VPS with nginx)
 app.use(express.static(path.join(__dirname, 'frontend')));
@@ -276,19 +281,24 @@ app.get('/api/auto/diagnostic', async (req, res) => {
 
 // API: Chat endpoint - routes message, generates response, queues to pipeline
 app.post('/api/chat', async (req, res) => {
+  let release = null; // this wallet's one-at-a-time slot, freed when we're done with the message
   try {
     const {
       message,
       voice = 'chad',
-      model = 'eleven_v3',
-      temperature = 0.7,
       mode = 'direct'
     } = req.body;
+    let { model = CHAT_DEFAULTS.model, temperature = CHAT_DEFAULTS.temperature } = req.body;
 
     const who = gate.participant(req, res);
     if (!who) return;
-    if (!who.operator && !allowChat(who.wallet)) {
-      return res.status(429).json({ code: 'rate_limited', error: 'Slow down — a few messages a minute' });
+    if (!who.operator) {
+      if (!gate.holder(req, res)) return;
+      if (!allowChat(who.wallet)) {
+        return res.status(429).json({ code: 'rate_limited', error: 'Slow down — a few messages a minute' });
+      }
+      // The public doesn't choose what the reply costs
+      ({ model, temperature } = CHAT_DEFAULTS);
     }
 
     if (!message || typeof message !== 'string') {
@@ -296,6 +306,18 @@ app.post('/api/chat', async (req, res) => {
     }
     if (!who.operator && message.length > 300) {
       return res.status(400).json({ error: 'Message too long' });
+    }
+
+    // Votes are cheap; everything else costs an LLM call and TTS, so it's counted
+    const isVote = /^\/(voteMeme|video|roadmap)\s+\d+/i.test(message);
+    if (!who.operator && !isVote) {
+      release = claimChat(who.wallet);
+      if (!release) {
+        return res.status(429).json({ code: 'chat_busy', error: 'Your last message is still on its way' });
+      }
+      if (!chatDaily.take(who.wallet)) {
+        return res.status(429).json({ code: 'daily_limit', error: `That's ${CHAT_DAILY} messages today — back tomorrow` });
+      }
     }
 
     // /meme command: forward to animation server, skip LLM entirely
@@ -396,11 +418,16 @@ app.post('/api/chat', async (req, res) => {
       .catch(err => console.warn('[Chat] Overlay echo failed:', err.message));
     res.status(202).json({ queued: true, id });
 
+    // The slot stays taken until the reply is written and handed to the director
+    const done = release; release = null;
     respondToChat({ id, message, mode: normalizedMode, voice, model, temperature })
-      .catch(err => console.error('[Chat] Background reply failed:', err.message));
+      .catch(err => console.error('[Chat] Background reply failed:', err.message))
+      .finally(() => done?.());
   } catch (error) {
     console.error('Error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
     res.status(500).json({ error: 'Failed to generate response' });
+  } finally {
+    release?.();
   }
 });
 
