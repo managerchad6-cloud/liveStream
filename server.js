@@ -474,7 +474,7 @@ async function generateCharacterReply(voiceId, message, model, temperature) {
       });
       // The history in the prompt is "Chad: …" lines and the model sometimes copies the label,
       // which TTS would read out
-      const text = (completion.choices[0].message.content || '').replace(/^\s*\**(chad|virgin)\**\s*:\s*/i, '').trim();
+      const text = (completion.choices[0].message.content || '').replace(/^\s*\**(chad|virgin)\**\s*:\s*\**\s*/i, '').trim();
       return text || null;
     } catch (llmErr) {
       console.warn(`[Chat] Gemini reply attempt ${attempt} failed for ${voiceId}:`, llmErr.message);
