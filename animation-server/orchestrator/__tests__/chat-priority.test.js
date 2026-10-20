@@ -93,7 +93,8 @@ describe('Chat airs next, not at the end of the pipeline', () => {
     intake.setAutoApprove(true);
 
     const card = intake.addMessage('viewer', 'yo chad what is good', { speaker: 'chad', text: 'Living the dream.' });
-    await new Promise(r => setTimeout(r, 50));
+    // Until both renders are queued (a fixed 50ms flaked when the whole suite runs in parallel)
+    for (let t = 0; t < 2000 && queueRender.mock.calls.length < 2; t += 10) await new Promise(r => setTimeout(r, 10));
 
     const segs = store.getAllSegments();
     expect(segs.map(s => s.type)).toEqual(['auto-convo', 'auto-convo', 'narrator-cue', 'chat-response', 'auto-convo', 'expand', 'filler']);
