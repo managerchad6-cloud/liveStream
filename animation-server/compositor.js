@@ -141,7 +141,8 @@ let staticBaseBuffer = null; // Pre-composited static layers { data, info } raw 
 let frameCache = {};          // Cache for character state (raw RGBA buffers) - Level 2
 const FRAME_CACHE_MAX = 50;   // Level 2 cache: expression base + phoneme + blink (raw = larger)
 let lastOutputKey = null;     // Key of the last full output frame
-let lastOutputBuffer = null;  // Last complete JPEG output buffer
+let lastOutputBuffer = null;  // Last complete output frame (raw RGBA, ticker included)
+let lastBaseFrame = null;     // The same frame before the ticker was written into it (fast path)
 let outputCache = {};         // Cache for full output frames (raw RGBA buffers)
 const OUTPUT_CACHE_MAX = 10;  // Max cached output frames (raw RGBA = ~3.5MB each)
 let exprLayerCache = {};      // Per-layer cache for shifted eyes / rotated brows
@@ -778,7 +779,7 @@ async function preloadLayers() {
   staticBaseVersion += 1;
   frameCache = {};
   lastOutputKey = null;
-  lastOutputBuffer = null;
+  lastOutputBuffer = null; lastBaseFrame = null;
   committedExprBaseKey = null;
   committedExprBaseBuffer = null;
   lastExprBaseKey = null;
@@ -988,6 +989,154 @@ function parseTickerSegments(raw) {
  * Plays tickerMessages in sequence, one full scroll cycle per slot, then advances.
  */
 function buildTickerSvg() {
+  const L = tickerLayout();
+  if (!L) return null;
+  // SVG is only TICKER_HEIGHT px tall — ~20x fewer pixels for librsvg to rasterize.
+  // Positioned at stripY in the output via the composite op's `top` field.
+  const svg = tickerStripSvg(outputWidth, L.scrollX, L.textY, L.tspans);
+  return { input: Buffer.from(svg), left: 0, top: L.stripY };
+}
+
+function tickerStripSvg(width, textX, textY, tspans) {
+  return `<svg width="${width}" height="${TICKER_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="${width}" height="${TICKER_HEIGHT}" fill="black"/>
+  <line x1="0" y1="1.5" x2="${width}" y2="1.5" stroke="#c8a84b" stroke-width="3"/>
+  <text x="${textX}" y="${textY}" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="400" xml:space="preserve">${tspans}</text>
+</svg>`;
+}
+
+// ── Ticker strip blit ─────────────────────────────────────────────────────────
+// The ticker scrolls every frame, which used to mean rasterizing its SVG and re-compositing the
+// whole frame 30×/s. Instead the strip (opaque: black bar + gold rule + text) is rasterized once
+// per message, text starting at x=0, and each frame copies the visible slice into the output.
+let _tickerStrip = null;     // { text, data, width } for the current message
+let _tickerBg = null;        // { width, data } bar + rule without text, outputWidth wide
+let _tickerStripBuilding = null;
+
+/** The ready strip for this layout, or null while it is being rasterized (caller falls back to SVG) */
+function tickerStripFor(L) {
+  if (_tickerStrip && _tickerStrip.text === L.text && _tickerBg && _tickerBg.width === outputWidth) return _tickerStrip;
+  if (!_tickerStripBuilding) {
+    const text = L.text;
+    // Text width is estimated (0.6 em/char); 1.5x + padding so the real glyphs are never clipped
+    const width = Math.ceil(L.estimatedTextWidth * 1.5) + 64;
+    _tickerStripBuilding = Promise.all([
+      sharp(Buffer.from(tickerStripSvg(width, 0, L.textY, L.tspans))).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+      sharp(Buffer.from(tickerStripSvg(outputWidth, 0, L.textY, ''))).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+    ]).then(([strip, bg]) => {
+      _tickerStrip = { text, data: strip.data, width: strip.info.width };
+      _tickerBg = { width: bg.info.width, data: bg.data };
+    }).catch(err => console.warn('[Compositor] Ticker strip build failed:', err.message))
+      .finally(() => { _tickerStripBuilding = null; });
+  }
+  return null;
+}
+
+/** Copy of `base` with the ticker's visible slice written into its bottom rows */
+function withTicker(base, L, strip) {
+  const out = Buffer.allocUnsafe(base.length);
+  base.copy(out);
+  const rowBytes = outputWidth * 4;
+  const x0 = Math.max(0, L.scrollX);
+  const x1 = Math.min(outputWidth, L.scrollX + strip.width);
+  for (let y = 0; y < TICKER_HEIGHT; y++) {
+    const dst = (L.stripY + y) * rowBytes;
+    _tickerBg.data.copy(out, dst, y * rowBytes, (y + 1) * rowBytes);
+    if (x1 > x0) {
+      const src = (y * strip.width + (x0 - L.scrollX)) * 4;
+      strip.data.copy(out, dst + x0 * 4, src, src + (x1 - x0) * 4);
+    }
+  }
+  return out;
+}
+
+// ── Overlay raster caches ─────────────────────────────────────────────────────
+// Composite ops given as SVG were rasterized by librsvg on every frame, and the TV picture (PNG)
+// was decoded on every frame. Both are cached as raw RGBA: SVGs by their exact text (an animating
+// overlay changes its SVG, so it re-rasterizes only when it actually changes), TV frames by buffer.
+const SVG_RASTER_CACHE_MAX = 48;
+const svgRasterCache = new Map();   // svg text → { data, width, height } (Map order = LRU)
+const TV_RAW_CACHE_MAX = 8;
+const tvRawCache = new Map();       // PNG Buffer → { data, width, height }
+
+function lruGet(map, key) {
+  const v = map.get(key);
+  if (v !== undefined) { map.delete(key); map.set(key, v); }
+  return v;
+}
+
+function lruSet(map, key, value, max) {
+  map.set(key, value);
+  if (map.size > max) map.delete(map.keys().next().value);
+}
+
+const isSvgBuffer = (buf) => Buffer.isBuffer(buf) && buf.length > 4 && (buf[0] === 0x3c /* < */);
+
+async function toRawRgba(input) {
+  const { data, info } = await sharp(input).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height };
+}
+
+/** Same composite op with its SVG input replaced by a cached raw RGBA raster */
+async function rasterizedOp(op) {
+  if (!op || op.raw || !isSvgBuffer(op.input)) return op;
+  const key = op.input.toString();
+  let r = lruGet(svgRasterCache, key);
+  if (!r) {
+    r = await toRawRgba(op.input);
+    lruSet(svgRasterCache, key, r, SVG_RASTER_CACHE_MAX);
+  }
+  return { ...op, input: r.data, raw: { width: r.width, height: r.height, channels: 4 } };
+}
+
+// Mouth/blink layers (PNG in scaledLayerBuffers) decoded once to raw RGBA
+const layerRawCache = new Map();    // PNG Buffer → { data, width, height }
+
+async function layerRaw(pngBuffer) {
+  let r = layerRawCache.get(pngBuffer);
+  if (!r) {
+    r = await toRawRgba(pngBuffer);
+    layerRawCache.set(pngBuffer, r);
+  }
+  return r;
+}
+
+/** Porter-Duff "over" of a straight-alpha RGBA layer onto an opaque RGBA frame, in place */
+function blendOver(dst, dstW, dstH, src, left, top) {
+  const { data: s, width: sw, height: sh } = src;
+  const x0 = Math.max(0, -left), x1 = Math.min(sw, dstW - left);
+  const y0 = Math.max(0, -top), y1 = Math.min(sh, dstH - top);
+  for (let y = y0; y < y1; y++) {
+    let si = (y * sw + x0) * 4;
+    let di = ((top + y) * dstW + left + x0) * 4;
+    for (let x = x0; x < x1; x++, si += 4, di += 4) {
+      const a = s[si + 3];
+      if (a === 0) continue;
+      if (a === 255) {
+        dst[di] = s[si]; dst[di + 1] = s[si + 1]; dst[di + 2] = s[si + 2]; dst[di + 3] = 255;
+      } else {
+        const na = 255 - a;
+        dst[di] = (s[si] * a + dst[di] * na + 127) / 255;
+        dst[di + 1] = (s[si + 1] * a + dst[di + 1] * na + 127) / 255;
+        dst[di + 2] = (s[si + 2] * a + dst[di + 2] * na + 127) / 255;
+        dst[di + 3] = 255;
+      }
+    }
+  }
+}
+
+/** The TV picture as a raw RGBA composite op (decoded once per distinct frame buffer) */
+async function tvFrameOp(buffer, left, top) {
+  let r = lruGet(tvRawCache, buffer);
+  if (!r) {
+    r = await toRawRgba(buffer);
+    lruSet(tvRawCache, buffer, r, TV_RAW_CACHE_MAX);
+  }
+  return { input: r.data, raw: { width: r.width, height: r.height, channels: 4 }, left, top, blend: 'over' };
+}
+
+/** Current ticker message and scroll position (advances slots), or null when there is no ticker */
+function tickerLayout() {
   if (!tickerMessages.length || !outputWidth || !outputHeight) return null;
 
   // Find the next non-empty slot starting from tickerCurrentIndex
@@ -1033,7 +1182,7 @@ function buildTickerSvg() {
       if (next !== -1 && next !== tickerCurrentIndex) {
         tickerCurrentIndex = next;
         tickerSlotStartMs = now;
-        return buildTickerSvg(); // recurse with new slot
+        return tickerLayout(); // recurse with new slot
       }
       // Single active message: reset slot clock for seamless loop
       tickerSlotStartMs = now - (elapsed % cycleDurationMs);
@@ -1058,16 +1207,7 @@ function buildTickerSvg() {
     return `<tspan fill="${fill}">${escapeSvgText(text)}</tspan>`;
   }).join('');
 
-  // SVG is only TICKER_HEIGHT px tall — ~20x fewer pixels for librsvg to rasterize.
-  // Positioned at stripY in the output via the composite op's `top` field.
-  const svg = `<svg width="${outputWidth}" height="${TICKER_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
-  <rect x="0" y="0" width="${outputWidth}" height="${TICKER_HEIGHT}" fill="black"/>
-  <line x1="0" y1="1.5" x2="${outputWidth}" y2="1.5" stroke="#c8a84b" stroke-width="3"/>
-  <text x="${scrollX}" y="${textY}" font-family="${FRIENDSZONE_FAMILY}DejaVu Sans, Arial, sans-serif" font-size="${TICKER_FONT_SIZE}" font-weight="400" xml:space="preserve">${tspans}</text>
-</svg>`;
-
-  // Return composite op: input SVG + output position
-  return { input: Buffer.from(svg), left: 0, top: stripY };
+  return { text: currentText, tspans, scrollX, textY, stripY, estimatedTextWidth };
 }
 
 /**
@@ -2556,10 +2696,22 @@ async function compositeFrame(state) {
   const _tvSlideKey = tvSlide.visible ? 0 : 1; // changes when fully settled
   const outputKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}-tv${tvContentVersion}-tvs${_tvSlideKey}-c${captionKey}-ch${currentChatVersion}-mq${memeQueueVersion}-sq${suggestionQueueVersion}-vl${videosListVersion}-vp${_videosPage}-vf${vFadeQ}-vm${_videoMinute}-rl${roadmapListVersion}-rp${_roadmapPage}-rf${rFadeQ}-mvp${_memeVotePage}-mvf${mFadeQ}-tkv${_tokenStatsVersion}`;
 
+  // The ticker is written into the finished frame (withTicker), so it no longer defeats the fast
+  // path and output cache. Until its strip is rasterized it goes through the SVG composite as before.
+  const tickerL = hasActiveTicker ? tickerLayout() : null;
+  const tickerStrip = tickerL ? tickerStripFor(tickerL) : null;
+  const tickerViaSvg = Boolean(tickerL && !tickerStrip);
+  const finish = (frame) => {
+    const out = tickerStrip ? withTicker(frame, tickerL, tickerStrip) : frame;
+    lastOutputBuffer = out;
+    return out;
+  };
+
   // Fast path: skip all compositing if nothing changed and no animated overlays running.
-  // hasActiveFade/TVSlide bypass it during their animations.
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlidePending && outputKey === lastOutputKey && lastOutputBuffer) {
-    return lastOutputBuffer;
+  // hasActiveFade/TVSlide and the chat/meme progress bars bypass it while they animate.
+  if (!tickerViaSvg && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlidePending && !hasActivePendingChat && !hasActiveMemeBar
+      && outputKey === lastOutputKey && lastBaseFrame) {
+    return finish(lastBaseFrame);
   }
 
   const charCacheKey = `${effectiveExprBaseKey}-${chadPhoneme}-${virginPhoneme}-${chadBlinking ? 1 : 0}-${virginBlinking ? 1 : 0}`;
@@ -2604,13 +2756,24 @@ async function compositeFrame(state) {
       }
     }
 
-    // Composite Level 2: expression base (raw RGBA) + mouth/blink → raw RGBA
-    charBuffer = await sharp(exprBaseRaw.data, {
-      raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
-    })
-      .composite(charOps)
-      .raw()
-      .toBuffer();
+    // Composite Level 2: expression base (raw RGBA) + mouth/blink → raw RGBA.
+    // These layers are small, so blending them in JS onto a copy of the base beats a full-frame
+    // libvips pass (and its PNG decodes); sharp remains the fallback for non-RGBA bases.
+    if (exprBaseRaw.info.channels === 4) {
+      charBuffer = Buffer.allocUnsafe(exprBaseRaw.data.length);
+      exprBaseRaw.data.copy(charBuffer);
+      for (const op of charOps) {
+        const src = await layerRaw(op.input);
+        blendOver(charBuffer, exprBaseRaw.info.width, exprBaseRaw.info.height, src, op.left, op.top);
+      }
+    } else {
+      charBuffer = await sharp(exprBaseRaw.data, {
+        raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
+      })
+        .composite(charOps)
+        .raw()
+        .toBuffer();
+    }
 
     // Cache character frame (evict if full)
     const frameCacheKeys = Object.keys(frameCache);
@@ -2620,98 +2783,94 @@ async function compositeFrame(state) {
     frameCache[charCacheKey] = charBuffer;
   }
 
-  // Overlays: TV content, captions, leaderboard, chat
-  const overlayOps = [];
-
-  // TV content — slides with frame/reflection (both in _buildBaseFromParts at correct z)
-  if (currentTVFrame && TV_VIEWPORT && tvOffsetY < TV_SLIDE_DIST) {
-    overlayOps.push({
-      input: currentTVFrame,
-      left: TV_VIEWPORT.x,
-      top: TV_VIEWPORT.y + tvOffsetY,
-      blend: 'over'
-    });
-  }
-
-  // SVG builders return { input, left, top } positioned to their content bounds.
-  // This reduces librsvg rasterization area vs full 1280×720 SVGs.
-  const captionOp = caption ? buildCaptionSvg(caption) : null;
-  if (captionOp) overlayOps.push({ ...captionOp, blend: 'over' });
-
-  const chatOp = buildChatOverlaySvg();
-  if (chatOp) overlayOps.push({ ...chatOp, blend: 'over' });
-
-  // Videos + Roadmap panels: use pre-rasterized RGBA when available (avoids per-frame librsvg call).
-  // During glow events, fall back to SVG so the per-frame glow animation renders correctly.
-  {
-    const vr = _panelRaster.videos;
-    if (!hasActiveGlow && vr.rgba) {
-      overlayOps.push({ input: vr.rgba, raw: { width: vr.width, height: vr.height, channels: 4 }, left: vr.left, top: vr.top, blend: 'over' });
-    } else {
-      const op = buildVideosListSvg();
-      if (op) overlayOps.push({ ...op, blend: 'over' });
-    }
-  }
-  {
-    const rr = _panelRaster.roadmap;
-    if (!hasActiveGlow && rr.rgba) {
-      overlayOps.push({ input: rr.rgba, raw: { width: rr.width, height: rr.height, channels: 4 }, left: rr.left, top: rr.top, blend: 'over' });
-    } else {
-      const op = buildRoadmapListSvg();
-      if (op) overlayOps.push({ ...op, blend: 'over' });
-    }
-  }
-
-  // Token stat panels (social left, trade right) — use pre-rasterized RGBA
-  {
-    const sr = _panelRaster.socialStats;
-    if (sr.rgba) {
-      overlayOps.push({ input: sr.rgba, raw: { width: sr.width, height: sr.height, channels: 4 }, left: sr.left, top: sr.top, blend: 'over' });
-    } else {
-      const op = buildSocialStatsSvg();
-      if (op) overlayOps.push({ ...op, blend: 'over' });
-    }
-  }
-  {
-    const tr = _panelRaster.tradeStats;
-    if (tr.rgba) {
-      overlayOps.push({ input: tr.rgba, raw: { width: tr.width, height: tr.height, channels: 4 }, left: tr.left, top: tr.top, blend: 'over' });
-    } else {
-      const op = buildTradeStatsSvg();
-      if (op) overlayOps.push({ ...op, blend: 'over' });
-    }
-  }
-
-  const memeQueueOp = buildMemeQueueSvg();
-  if (memeQueueOp) overlayOps.push({ ...memeQueueOp, blend: 'over' });
-
-  const suggestionQueueOp = buildSuggestionQueueSvg();
-  if (suggestionQueueOp) overlayOps.push({ ...suggestionQueueOp, blend: 'over' });
-
-  // Ticker: correctly-sized SVG (1280×TICKER_HEIGHT = 36px, ~20× less than full frame).
-  // Composited in the same single pass — rasterization cost is negligible at this size.
-  if (hasActiveTicker) {
-    const tickerOp = buildTickerSvg();
-    if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
-  }
-
-  // Check output cache — skip during ticker/glow/fade/pending-chat-bars (smooth animation)
+  // Output cache (frame without ticker) — skipped while something in it animates per frame
   let result;
-  if (!hasActiveTicker && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide && !hasActivePendingChat && !hasActiveMemeBar) {
+  if (!tickerViaSvg && !hasActiveGlow && !hasActiveFade && !hasActiveTVSlide && !hasActivePendingChat && !hasActiveMemeBar) {
     result = outputCache[outputKey];
   }
 
   if (!result) {
+    // Overlays: TV content, captions, leaderboard, chat
+    const overlayOps = [];
+
+    // TV content — slides with frame/reflection (both in _buildBaseFromParts at correct z)
+    if (currentTVFrame && TV_VIEWPORT && tvOffsetY < TV_SLIDE_DIST) {
+      overlayOps.push(await tvFrameOp(currentTVFrame, TV_VIEWPORT.x, TV_VIEWPORT.y + tvOffsetY));
+    }
+
+    // SVG builders return { input, left, top } positioned to their content bounds.
+    // This reduces librsvg rasterization area vs full 1280×720 SVGs.
+    const captionOp = caption ? buildCaptionSvg(caption) : null;
+    if (captionOp) overlayOps.push({ ...captionOp, blend: 'over' });
+
+    const chatOp = buildChatOverlaySvg();
+    if (chatOp) overlayOps.push({ ...chatOp, blend: 'over' });
+
+    // Videos + Roadmap panels: use pre-rasterized RGBA when available (avoids per-frame librsvg call).
+    // During glow events, fall back to SVG so the per-frame glow animation renders correctly.
+    {
+      const vr = _panelRaster.videos;
+      if (!hasActiveGlow && vr.rgba) {
+        overlayOps.push({ input: vr.rgba, raw: { width: vr.width, height: vr.height, channels: 4 }, left: vr.left, top: vr.top, blend: 'over' });
+      } else {
+        const op = buildVideosListSvg();
+        if (op) overlayOps.push({ ...op, blend: 'over' });
+      }
+    }
+    {
+      const rr = _panelRaster.roadmap;
+      if (!hasActiveGlow && rr.rgba) {
+        overlayOps.push({ input: rr.rgba, raw: { width: rr.width, height: rr.height, channels: 4 }, left: rr.left, top: rr.top, blend: 'over' });
+      } else {
+        const op = buildRoadmapListSvg();
+        if (op) overlayOps.push({ ...op, blend: 'over' });
+      }
+    }
+
+    // Token stat panels (social left, trade right) — use pre-rasterized RGBA
+    {
+      const sr = _panelRaster.socialStats;
+      if (sr.rgba) {
+        overlayOps.push({ input: sr.rgba, raw: { width: sr.width, height: sr.height, channels: 4 }, left: sr.left, top: sr.top, blend: 'over' });
+      } else {
+        const op = buildSocialStatsSvg();
+        if (op) overlayOps.push({ ...op, blend: 'over' });
+      }
+    }
+    {
+      const tr = _panelRaster.tradeStats;
+      if (tr.rgba) {
+        overlayOps.push({ input: tr.rgba, raw: { width: tr.width, height: tr.height, channels: 4 }, left: tr.left, top: tr.top, blend: 'over' });
+      } else {
+        const op = buildTradeStatsSvg();
+        if (op) overlayOps.push({ ...op, blend: 'over' });
+      }
+    }
+
+    const memeQueueOp = buildMemeQueueSvg();
+    if (memeQueueOp) overlayOps.push({ ...memeQueueOp, blend: 'over' });
+
+    const suggestionQueueOp = buildSuggestionQueueSvg();
+    if (suggestionQueueOp) overlayOps.push({ ...suggestionQueueOp, blend: 'over' });
+
+    // Ticker via SVG only until its strip is ready (see tickerStripFor)
+    if (tickerViaSvg) {
+      const tickerOp = buildTickerSvg();
+      if (tickerOp) overlayOps.push({ ...tickerOp, blend: 'over' });
+    }
+
     if (overlayOps.length > 0) {
+      // Every input is raw RGBA: SVGs come from the raster cache, so libvips only blends
+      const ops = await Promise.all(overlayOps.map(rasterizedOp));
       result = await sharp(charBuffer, { raw: { width: outputWidth, height: outputHeight, channels: 4 } })
-        .composite(overlayOps)
+        .composite(ops)
         .raw()
         .toBuffer();
     } else {
       result = charBuffer;
     }
 
-    if (!hasActiveTicker && !hasActivePendingChat && !hasActiveMemeBar) {
+    if (!tickerViaSvg && !hasActivePendingChat && !hasActiveMemeBar) {
       const outKeys = Object.keys(outputCache);
       if (outKeys.length >= OUTPUT_CACHE_MAX) {
         for (let i = 0; i < 15; i++) delete outputCache[outKeys[i]];
@@ -2721,9 +2880,9 @@ async function compositeFrame(state) {
   }
 
   lastOutputKey = outputKey;
-  lastOutputBuffer = result;
+  lastBaseFrame = tickerViaSvg ? null : result;
 
-  return result;
+  return finish(result);
 }
 
 function clearCache() {
@@ -2734,7 +2893,7 @@ function clearCache() {
   exprBaseCache = {};
   outputCache = {};
   lastOutputKey = null;
-  lastOutputBuffer = null;
+  lastOutputBuffer = null; lastBaseFrame = null;
   committedExprBaseKey = null;
   committedExprBaseBuffer = null;
   lastExprBaseKey = null;
@@ -2800,7 +2959,7 @@ function setExpressionOffset(character, feature, x, y) {
   // Invalidate last-output fast path (charCacheKey includes expression values
   // so full-frame cache entries naturally miss on new offsets)
   lastOutputKey = null;
-  lastOutputBuffer = null;
+  lastOutputBuffer = null; lastBaseFrame = null;
 }
 
 function computeEyebrowRotation(character, y) {
@@ -2885,7 +3044,7 @@ function setEyebrowRotationLimits(character, rotUp, rotDown) {
     expressionRotationTargets[character].right = computeEyebrowRotation(character, rightY);
     frameCache = {};
     lastOutputKey = null;
-    lastOutputBuffer = null;
+    lastOutputBuffer = null; lastBaseFrame = null;
   }
 }
 
@@ -2930,7 +3089,7 @@ function resetExpressionOffsets(character) {
   }
   frameCache = {};
   lastOutputKey = null;
-  lastOutputBuffer = null;
+  lastOutputBuffer = null; lastBaseFrame = null;
 }
 
 /**
@@ -2968,7 +3127,7 @@ function setEyebrowAsymmetry(character, leftY, rightY) {
   expressionRotationTargets[character].right = computeEyebrowRotation(character, brow.right.y);
 
   lastOutputKey = null;
-  lastOutputBuffer = null;
+  lastOutputBuffer = null; lastBaseFrame = null;
 }
 
 module.exports = {
