@@ -1811,19 +1811,19 @@ async function renderFrame(frame, audioProgress = null) {
         : ((frame - playbackStartFrame) / STREAM_FPS) * 1000;
     }
     const exprState = expressionEvaluator.evaluateAtMs(currentTimeMs);
-    const shouldApplyExpr = (frame % 3) === 0; // throttle expression updates to reduce cache churn
+    // Applied every frame at whole-pixel precision: rebuilding the expression base is a few-ms JS
+    // blit now (was ~90ms of libvips), so eyes/brows no longer move in 4px steps at 10 Hz.
+    const shouldApplyExpr = true;
 
     for (const c of ['chad', 'virgin']) {
       if (!exprState[c]) continue;
       const s = exprState[c];
       const prev = lastExprState[c];
 
-      // Quantize expression values to reduce cache key space explosion.
-      // Rounding to multiples of 3 pixels reduces unique cache entries by ~9x
-      // while maintaining visually smooth animation (with fewer expression changes).
-      const QUANT = 4;
-      const BROW_QUANT = 2;
-      const browMin = 2;
+      // Whole pixels: sub-pixel values would only create cache keys with identical output
+      const QUANT = 1;
+      const BROW_QUANT = 1;
+      const browMin = 1;
       s.eyeX = Math.round(s.eyeX / QUANT) * QUANT;
       s.eyeY = Math.round(s.eyeY / QUANT) * QUANT;
 
@@ -1839,11 +1839,11 @@ async function renderFrame(frame, audioProgress = null) {
       if (rawBrowAsymL !== 0 && s.browAsymL === 0) s.browAsymL = Math.sign(rawBrowAsymL) * browMin;
       if (rawBrowAsymR !== 0 && s.browAsymR === 0) s.browAsymR = Math.sign(rawBrowAsymR) * browMin;
 
-      // Only call compositor setters when values actually changed —
-      // each call wipes the frame cache, forcing expensive re-compositing
+      // Only call compositor setters when values actually changed (a new value means a new
+      // expression base and a re-composite)
       if (shouldApplyExpr) {
-        const eyeXChanged = Math.abs(s.eyeX - prev.eyeX) >= 2;
-        const eyeYChanged = Math.abs(s.eyeY - prev.eyeY) >= 2;
+        const eyeXChanged = s.eyeX !== prev.eyeX;
+        const eyeYChanged = s.eyeY !== prev.eyeY;
         if (eyeXChanged || eyeYChanged) {
           setExpressionOffset(c, 'eyes', s.eyeX, s.eyeY);
           prev.eyeX = s.eyeX;

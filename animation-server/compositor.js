@@ -159,11 +159,6 @@ const EXPR_BASE_CACHE_MAX = 25;   // Raw buffers are ~3.7MB vs ~0.5-1MB PNG, so 
 let committedExprBaseKey = null;
 let committedExprBaseBuffer = null; // { data, info } raw RGBA
 
-// Pre-warm concurrency guard: at most one pre-warm batch in flight + one pending (latest-wins).
-// Prevents >6 concurrent Sharp ops from stacking during heavy speech.
-let _preWarmL2InFlight = false;
-let _preWarmL2Pending = null; // null or { exprBaseCacheKey, exprBaseRaw, speakingChar }
-
 // Speaking character tracking for L2 pre-warming
 let currentSpeakingCharacter = null;
 const OUTPUT_SCALE = 1/3; // Render at 1280x720 instead of 3840x2160
@@ -2214,14 +2209,43 @@ async function applyOpacityToBuffer(baseBuffer, meta, opacity) {
  * Uses caching for common frame states (most frames are identical)
  * TV content is composited before character layers (appears behind them)
  */
-async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = fireState.frame, tvOffY = 0) {
-  // Build expression layer composite ops
-  const l1Start = Date.now();
-  const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
-  const layerTasks = [];  // { index, exprLayer, type, cacheKey, taskFn } or { index, op }
+// Expression layers (eyes, eye_cover, brows: full-frame PNGs) and nose layers, as raw RGBA cropped
+// to their visible pixels — decoded once. Moving an eye is then a blit at an offset instead of
+// re-encoding a shifted full-frame PNG and compositing ~10 full-frame layers in libvips.
+const croppedRawCache = new Map();  // PNG Buffer → { data, width, height, left, top } (left/top in the PNG)
 
-  for (let i = 0; i < sortedExprLayers.length; i++) {
-    const exprLayer = sortedExprLayers[i];
+async function croppedRaw(pngBuffer) {
+  let r = croppedRawCache.get(pngBuffer);
+  if (r) return r;
+  const { data, width, height } = await toRawRgba(pngBuffer);
+  let x0 = width, y0 = height, x1 = -1, y1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0, i = y * width * 4 + 3; x < width; x++, i += 4) {
+      if (data[i] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+  }
+  if (x1 < 0) {
+    r = { data: Buffer.alloc(0), width: 0, height: 0, left: 0, top: 0 };
+  } else {
+    const w = x1 - x0 + 1, h = y1 - y0 + 1;
+    const out = Buffer.allocUnsafe(w * h * 4);
+    for (let y = 0; y < h; y++) data.copy(out, y * w * 4, ((y0 + y) * width + x0) * 4, ((y0 + y) * width + x1 + 1) * 4);
+    r = { data: out, width: w, height: h, left: x0, top: y0 };
+  }
+  croppedRawCache.set(pngBuffer, r);
+  return r;
+}
+
+let _exprBuildSeq = 0;        // order L1 builds were requested in
+let _exprCommittedSeq = -1;   // newest build committed so far (an older build finishing late never wins)
+
+async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = fireState.frame, tvOffY = 0) {
+  const l1Start = Date.now();
+  const seq = _exprBuildSeq++;
+  const sortedExprLayers = [...expressionLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
+  const blits = []; // { src: { data, width, height }, left, top } in z-order
+
+  for (const exprLayer of sortedExprLayers) {
     const mapping = EXPRESSION_LAYER_MAP[exprLayer.id];
     if (mapping === undefined) continue;
     const offset = mapping
@@ -2241,145 +2265,50 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
       }
       rotation = Math.round(rotation * 10) / 10;
 
-      if (dy === 0 && rotation === 0) {
-        layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
-      } else {
-        const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
-        const cached = exprLayerCache[browCacheKey];
-        if (cached) {
-          layerTasks.push({ index: i, op: { input: cached.input, left: cached.left, top: cached.top, blend: 'over' } });
-        } else {
-          // Queue async task for parallel execution
-          const bounds = exprLayer.contentBounds;
-          const centerX = bounds.left + bounds.width / 2;
-          const centerY = bounds.top + bounds.height / 2;
-          const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
-
-          layerTasks.push({
-            index: i,
-            type: 'brow',
-            cacheKey: browCacheKey,
-            taskFn: async () => {
-              const rotated = await sharp(exprLayer.croppedBuffer)
-                .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-                .png()
-                .toBuffer();
-
-              const rad = Math.abs(angle) * Math.PI / 180;
-              const cosA = Math.cos(rad);
-              const sinA = Math.sin(rad);
-              const newW = Math.ceil(bounds.width * cosA + bounds.height * sinA);
-              const newH = Math.ceil(bounds.width * sinA + bounds.height * cosA);
-
-              let placeLeft = Math.round(centerX - newW / 2);
-              let placeTop = Math.round(centerY - newH / 2 + dy);
-
-              let finalBuffer = rotated;
-              if (placeLeft < 0 || placeTop < 0) {
-                const trimLeft = Math.max(0, -placeLeft);
-                const trimTop = Math.max(0, -placeTop);
-                const trimW = Math.min(newW - trimLeft, outputWidth);
-                const trimH = Math.min(newH - trimTop, outputHeight);
-                if (trimW > 0 && trimH > 0) {
-                  finalBuffer = await sharp(rotated)
-                    .extract({ left: trimLeft, top: trimTop, width: trimW, height: trimH })
-                    .png()
-                    .toBuffer();
-                }
-                placeLeft = Math.max(0, placeLeft);
-                placeTop = Math.max(0, placeTop);
-              }
-
-              return { input: finalBuffer, left: placeLeft, top: placeTop };
-            }
-          });
-        }
+      if (rotation === 0) {
+        const c = await croppedRaw(exprLayer.buffer);
+        blits.push({ src: c, left: c.left, top: c.top + dy });
+        continue;
       }
+      const browCacheKey = `brow_${exprLayer.id}_${dy}_${rotation}`;
+      let brow = exprLayerCache[browCacheKey];
+      if (!brow) {
+        const bounds = exprLayer.contentBounds;
+        const angle = exprLayer.eyebrowSide === 'left' ? rotation : -rotation;
+        const { data, info } = await sharp(exprLayer.croppedBuffer)
+          .rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        // Same placement as before: rotated box centred on the brow's content centre
+        const rad = Math.abs(angle) * Math.PI / 180;
+        const newW = Math.ceil(bounds.width * Math.cos(rad) + bounds.height * Math.sin(rad));
+        const newH = Math.ceil(bounds.width * Math.sin(rad) + bounds.height * Math.cos(rad));
+        brow = {
+          src: { data, width: info.width, height: info.height },
+          left: Math.round(bounds.left + bounds.width / 2 - newW / 2),
+          top: Math.round(bounds.top + bounds.height / 2 - newH / 2 + dy),
+        };
+        const keys = Object.keys(exprLayerCache);
+        if (keys.length >= EXPR_LAYER_CACHE_MAX) {
+          for (let k = 0; k < 20; k++) delete exprLayerCache[keys[k]];
+        }
+        exprLayerCache[browCacheKey] = brow;
+      }
+      blits.push(brow);
       continue;
     }
 
-    // Eye layers and eye_cover: translate via extract+extend
-    const dx = Math.round(offset.x);
-    const dy = Math.round(offset.y);
-
-    if (dx === 0 && dy === 0) {
-      layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
-    } else {
-      const eyeCacheKey = `eye_${exprLayer.id}_${dx}_${dy}`;
-      const cached = exprLayerCache[eyeCacheKey];
-      if (cached) {
-        layerTasks.push({ index: i, op: { input: cached, left: 0, top: 0, blend: 'over' } });
-      } else {
-        const layerW = exprLayer.scaledWidth;
-        const layerH = exprLayer.scaledHeight;
-        const extractLeft = Math.max(0, -dx);
-        const extractTop = Math.max(0, -dy);
-        const extractWidth = layerW - Math.abs(dx);
-        const extractHeight = layerH - Math.abs(dy);
-
-        if (extractWidth > 0 && extractHeight > 0) {
-          layerTasks.push({
-            index: i,
-            type: 'eye',
-            cacheKey: eyeCacheKey,
-            taskFn: async () => {
-              return sharp(exprLayer.buffer)
-                .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
-                .extend({
-                  top: Math.max(0, dy),
-                  bottom: Math.max(0, -dy),
-                  left: Math.max(0, dx),
-                  right: Math.max(0, -dx),
-                  background: { r: 0, g: 0, b: 0, alpha: 0 }
-                })
-                .png()
-                .toBuffer();
-            }
-          });
-        } else {
-          layerTasks.push({ index: i, op: { input: exprLayer.buffer, left: 0, top: 0, blend: 'over' } });
-        }
-      }
-    }
+    // Eye layers and eye_cover: translate
+    const c = await croppedRaw(exprLayer.buffer);
+    blits.push({ src: c, left: c.left + Math.round(offset.x), top: c.top + Math.round(offset.y) });
   }
-
-  // Run all pending transforms in parallel
-  const pendingTasks = layerTasks.filter(t => t.taskFn);
-  if (pendingTasks.length > 0) {
-    const results = await Promise.all(pendingTasks.map(t => t.taskFn()));
-    for (let j = 0; j < pendingTasks.length; j++) {
-      const task = pendingTasks[j];
-      const result = results[j];
-      // Cache the result
-      const keys = Object.keys(exprLayerCache);
-      if (keys.length >= EXPR_LAYER_CACHE_MAX) {
-        for (let k = 0; k < 20; k++) delete exprLayerCache[keys[k]];
-      }
-      if (task.type === 'brow') {
-        exprLayerCache[task.cacheKey] = result;
-        task.op = { input: result.input, left: result.left, top: result.top, blend: 'over' };
-      } else {
-        exprLayerCache[task.cacheKey] = result;
-        task.op = { input: result, left: 0, top: 0, blend: 'over' };
-      }
-    }
-  }
-
-  // Build exprOps array in z-order
-  const exprOps = layerTasks
-    .sort((a, b) => a.index - b.index)
-    .map(t => t.op)
-    .filter(Boolean);
 
   // Nose layers (above eye_cover, part of expression base)
   const sortedNoseLayers = [...noseLayerEntries].sort((a, b) => a.zIndex - b.zIndex);
   for (const noseLayer of sortedNoseLayers) {
-    exprOps.push({
-      input: noseLayer.buffer,
-      left: noseLayer.scaledX,
-      top: noseLayer.scaledY,
-      blend: 'over'
-    });
+    const c = await croppedRaw(noseLayer.buffer);
+    blits.push({ src: c, left: noseLayer.scaledX + c.left, top: noseLayer.scaledY + c.top });
   }
 
   // Build scene base with the exact fire frame captured at dispatch time.
@@ -2388,17 +2317,14 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
   // which would cache a frame-N+1 buffer under a frame-N key and stall the fire animation.
   const sceneBase = await _buildBaseFromParts(fireFrame, tvOffY);
   if (!sceneBase) return null;
+  const { width, height, channels } = sceneBase.info;
+  if (channels !== 4) throw new Error(`scene base has ${channels} channels, expected RGBA`);
 
-  // Composite Level 1: sceneBase (raw RGBA) + expression layers + nose → raw RGBA buffer
-  const exprBaseResult = await sharp(sceneBase.data, {
-    raw: { width: sceneBase.info.width, height: sceneBase.info.height, channels: sceneBase.info.channels }
-  })
-    .composite(exprOps)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const exprBaseRaw = { data: exprBaseResult.data, info: exprBaseResult.info };
+  // Composite Level 1: sceneBase + expression layers + nose → raw RGBA buffer
+  const data = Buffer.allocUnsafe(sceneBase.data.length);
+  sceneBase.data.copy(data);
+  for (const b of blits) blendOver(data, width, height, b.src, b.left, b.top);
+  const exprBaseRaw = { data, info: { width, height, channels: 4 } };
 
   // Cache expression base (evict if full)
   const exprBaseKeys = Object.keys(exprBaseCache);
@@ -2411,55 +2337,15 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
 
   const l1Time = Date.now() - l1Start;
   if (l1Time > 30) {
-    console.log(`[Compositor] L1 cache miss: ${l1Time}ms (${pendingTasks.length} transforms)`);
+    console.log(`[Compositor] L1 cache miss: ${l1Time}ms`);
   }
 
-  // Fire L2 pre-warming in the background (never blocks frame loop).
-  // For speech: pre-warm all 6 phonemes for the speaking character.
-  // For idle: pre-warm just the A-A-0-0 (closed mouth, no blink) entry before swapping
-  //   the committed base — avoids an L2 miss on the first frame that uses the new base.
-  const speakChar = currentSpeakingCharacter;
-  if (speakChar) {
-    setImmediate(() => preWarmL2(exprBaseCacheKey, exprBaseRaw, speakChar));
-  } else {
-    setImmediate(async () => {
-      try {
-        const idleKey = `${exprBaseCacheKey}-A-A-0-0`;
-        if (!frameCache[idleKey]) {
-          const m = loadManifest();
-          const mouthOps = [];
-          for (const layer of m.layers) {
-            if (layer.type === 'mouth' && layer.phoneme === 'A') {
-              const buffer = scaledLayerBuffers[layer.id];
-              if (buffer) {
-                mouthOps.push({
-                  input: buffer,
-                  left: Math.round(layer.x * OUTPUT_SCALE),
-                  top: Math.round(layer.y * OUTPUT_SCALE),
-                  blend: 'over'
-                });
-              }
-            }
-          }
-          const charBuf = await sharp(exprBaseRaw.data, {
-            raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
-          })
-            .composite(mouthOps)
-            .raw()
-            .toBuffer();
-          const frameCacheKeys = Object.keys(frameCache);
-          if (frameCacheKeys.length >= FRAME_CACHE_MAX) {
-            for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
-          }
-          frameCache[idleKey] = charBuf;
-        }
-      } catch (err) {
-        console.warn('[Compositor] Idle L2 pre-warm error:', err.message);
-      }
-      // Swap committed base only after idle L2 is warm
-      committedExprBaseKey = exprBaseCacheKey;
-      committedExprBaseBuffer = exprBaseRaw;
-    });
+  // Commit right away: a mouth/blink frame on this base is now a ~1ms JS blend (L2), so there is
+  // nothing to pre-warm before frames switch to it
+  if (seq > _exprCommittedSeq) {
+    _exprCommittedSeq = seq;
+    committedExprBaseKey = exprBaseCacheKey;
+    committedExprBaseBuffer = exprBaseRaw;
   }
 
   return exprBaseRaw;
@@ -2470,94 +2356,6 @@ async function buildExpressionBase(exprBaseCacheKey, exprSnapshot, fireFrame = f
  */
 function setSpeakingCharacter(char) {
   currentSpeakingCharacter = char || null;
-}
-
-/**
- * Pre-warm L2 cache entries for common phoneme combinations.
- * Called via setImmediate after buildExpressionBase completes — never blocks the frame loop.
- * For the speaking character we pre-warm phonemes A-F (most common during speech);
- * the other character stays at 'A', blink=false.
- *
- * Latest-wins concurrency guard: at most one batch in flight + one pending.
- * Prevents stacking 6-op Sharp batches during heavy speech expression changes.
- */
-function preWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
-  if (_preWarmL2InFlight) {
-    // Queue only the latest request — intermediate states are fine to skip
-    _preWarmL2Pending = { exprBaseCacheKey, exprBaseRaw, speakingChar };
-    return;
-  }
-  _runPreWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar);
-}
-
-function _runPreWarmL2(exprBaseCacheKey, exprBaseRaw, speakingChar) {
-  _preWarmL2InFlight = true;
-  const m = loadManifest();
-  const phonemes = ['A', 'B', 'C', 'D', 'E', 'F'];
-
-  const tasks = phonemes.map(async (ph) => {
-    const chadPh = speakingChar === 'chad' ? ph : 'A';
-    const virgPh = speakingChar === 'virgin' ? ph : 'A';
-    const charCacheKey = `${exprBaseCacheKey}-${chadPh}-${virgPh}-0-0`;
-
-    if (frameCache[charCacheKey]) return; // already cached
-
-    const charOps = [];
-    const sortedLayers = [...m.layers]
-      .filter(l => l.type === 'mouth' || l.type === 'blink')
-      .sort((a, b) => a.zIndex - b.zIndex);
-
-    for (const layer of sortedLayers) {
-      let shouldInclude = false;
-      if (layer.type === 'mouth') {
-        if (layer.character === 'chad' && layer.phoneme === chadPh) shouldInclude = true;
-        else if (layer.character === 'virgin' && layer.phoneme === virgPh) shouldInclude = true;
-      }
-      // blink=false for pre-warm, skip blink layers
-      if (!shouldInclude) continue;
-      const buffer = scaledLayerBuffers[layer.id];
-      if (buffer) {
-        charOps.push({
-          input: buffer,
-          left: Math.round(layer.x * OUTPUT_SCALE),
-          top: Math.round(layer.y * OUTPUT_SCALE),
-          blend: 'over'
-        });
-      }
-    }
-
-    // Composite Level 2 from raw RGBA expression base → raw RGBA
-    const charBuffer = await sharp(exprBaseRaw.data, {
-      raw: { width: exprBaseRaw.info.width, height: exprBaseRaw.info.height, channels: exprBaseRaw.info.channels }
-    })
-      .composite(charOps)
-      .raw()
-      .toBuffer();
-
-    // Store in L2 cache
-    const frameCacheKeys = Object.keys(frameCache);
-    if (frameCacheKeys.length >= FRAME_CACHE_MAX) {
-      for (let i = 0; i < 20; i++) delete frameCache[frameCacheKeys[i]];
-    }
-    frameCache[charCacheKey] = charBuffer;
-  });
-
-  Promise.all(tasks).then(() => {
-    _preWarmL2InFlight = false;
-    // Atomically swap committed base now that L2 entries are pre-warmed
-    committedExprBaseKey = exprBaseCacheKey;
-    committedExprBaseBuffer = exprBaseRaw;
-    // Run the latest pending request if one queued up during this batch
-    const pending = _preWarmL2Pending;
-    _preWarmL2Pending = null;
-    if (pending) _runPreWarmL2(pending.exprBaseCacheKey, pending.exprBaseRaw, pending.speakingChar);
-  }).catch(err => {
-    _preWarmL2InFlight = false;
-    const pending = _preWarmL2Pending;
-    _preWarmL2Pending = null;
-    if (pending) _runPreWarmL2(pending.exprBaseCacheKey, pending.exprBaseRaw, pending.speakingChar);
-    console.warn('[Compositor] L2 pre-warm error:', err.message);
-  });
 }
 
 async function compositeFrame(state) {
