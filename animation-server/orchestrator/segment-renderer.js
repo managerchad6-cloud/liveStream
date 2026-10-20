@@ -5,6 +5,7 @@ const voices = require('../../voices');
 const BRIDGE_GATE_TIMEOUT_MS = 15_000;
 const MAX_SEGMENT_RETRIES = 2;
 const RETRY_DELAY_MS = 5_000;
+const SFX_GRACE_MS = 250;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -359,6 +360,9 @@ class SegmentRenderer {
       await this.pipelineStore.updateSegment(segmentId, {
         metadata: this._mergeMetadata(segment, { renderStartedAt: Date.now() })
       });
+      // SFX auto-match only needs the script, so it runs alongside TTS instead of after it
+      const sfxDone = this._matchSfx(segmentId);
+
       // Phase 1: TTS all lines
       const { audioItems, renderDurations } = await this._ttsSegment(segmentId);
 
@@ -366,25 +370,10 @@ class SegmentRenderer {
         throw new Error('No audio generated for any line');
       }
 
-      // Phase 1.5: SFX auto-match — awaited so metadata is set before the segment goes on-air.
-      // Has its own internal 5s timeout so it never meaningfully delays rendering.
-      if (this.sfxMatcher) {
-        try {
-          const freshSeg = this.pipelineStore.getSegment(segmentId);
-          const sfxResult = await this.sfxMatcher.match(freshSeg);
-          if (sfxResult) {
-            const seg = this.pipelineStore.getSegment(segmentId);
-            if (seg) {
-              await this.pipelineStore.updateSegment(segmentId, {
-                metadata: this._mergeMetadata(seg, { sfxAttach: sfxResult })
-              });
-              console.log(`[SegmentRenderer] SFX attached to ${segmentId.slice(0,8)}: ${sfxResult.sfxId} (${sfxResult.placement}, score=${sfxResult.score?.toFixed(2)})`);
-            }
-          }
-        } catch (e) {
-          // Never block rendering
-        }
-      }
+      // Phase 1.5: give a still-running SFX match a short grace, then push without it.
+      // A late result is still attached: 'post' SFX are read when the segment's last line
+      // ends, 'pre' ones when it is dequeued, so it is only lost if it misses that point.
+      await Promise.race([sfxDone, sleep(SFX_GRACE_MS)]);
 
       // Phase 2: Store result and drain in pipeline order
       await new Promise((resolve, reject) => {
@@ -559,6 +548,24 @@ class SegmentRenderer {
 
   async renderBridge(segmentId) {
     return this.renderSegment(segmentId);
+  }
+
+  /** Match an SFX for the segment and attach it to its metadata. Never throws. */
+  async _matchSfx(segmentId) {
+    if (!this.sfxMatcher) return;
+    const startedAt = Date.now();
+    try {
+      const sfxResult = await this.sfxMatcher.match(this.pipelineStore.getSegment(segmentId));
+      if (!sfxResult) return;
+      const seg = this.pipelineStore.getSegment(segmentId);
+      if (!seg || seg.status === 'aired' || seg.status === 'deleted') return;
+      await this.pipelineStore.updateSegment(segmentId, {
+        metadata: this._mergeMetadata(seg, { sfxAttach: sfxResult })
+      });
+      console.log(`[SegmentRenderer] SFX attached to ${segmentId.slice(0,8)} after ${Date.now() - startedAt}ms (status=${seg.status}): ${sfxResult.sfxId} (${sfxResult.placement}, score=${sfxResult.score?.toFixed(2)})`);
+    } catch (e) {
+      // Never block rendering
+    }
   }
 
   _mergeMetadata(segment, updates) {
