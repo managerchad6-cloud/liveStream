@@ -41,7 +41,8 @@ class SfxMatcher {
     if (!sounds.length) return null;
 
     // Skip types that are unlikely to benefit (bridges, fillers are too short/contextless)
-    const skipTypes = new Set(['bridge', 'filler', 'transition']);
+    // narrator-cue reads a viewer's message: an SFX after it would only delay the reply
+    const skipTypes = new Set(['bridge', 'filler', 'transition', 'narrator-cue']);
     if (skipTypes.has(segment.type)) return null;
 
     try {
