@@ -168,6 +168,12 @@ class ContinuousStreamManager {
       '-keyint_min', String(gopSize),
       '-sc_threshold', '0',
       '-bf', '0',
+      // Opt-in encoder latency trim (STREAM_LOW_LATENCY_X264=1): no rate-control lookahead and
+      // sliced threads, so frames aren't held back before output. These are the latency parts of
+      // tune=zerolatency without changing profile/SPS. Off by default: verify X/pump ingest first.
+      ...(process.env.STREAM_LOW_LATENCY_X264 === '1'
+        ? ['-x264-params', 'rc-lookahead=0:sync-lookahead=0:sliced-threads=1']
+        : []),
       // Audio encoding
       '-c:a', 'aac',
       '-b:a', '128k',
