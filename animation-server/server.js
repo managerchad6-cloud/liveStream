@@ -1369,32 +1369,30 @@ function handleAudioComplete() {
 
   // sfxAfter: only fire after the LAST line so the SFX plays after the whole segment,
   // not between lines of a multi-line segment.
-  let sfxAfterDelayMs = 0;
+  let sfxAfterId = null;
+  let doneSeg = null;
   if (isLastLine && completedSegId && sfxService && pipelineStore) {
-    const doneSeg = pipelineStore.getSegment(completedSegId);
-    const sfxAfterId = doneSeg?.metadata?.sfxAfter
+    doneSeg = pipelineStore.getSegment(completedSegId);
+    sfxAfterId = doneSeg?.metadata?.sfxAfter
       || (doneSeg?.metadata?.sfxAttach?.placement === 'post' ? doneSeg?.metadata?.sfxAttach?.sfxId : null);
-
-    if (sfxAfterId) {
-      sfxAfterDelayMs = sfxService.getDurationMs(sfxAfterId); // synchronous — preloaded at startup
-      sfxService.play(sfxAfterId).then(() => {
-        if (doneSeg?.metadata?.sfxAttach?.placement === 'post' && sfxMatcher) {
-          sfxMatcher.trackPlayed(sfxAfterId);
-        }
-        console.log(`[SFX] AFTER segment ${completedSegId.slice(0,8)}: ${sfxAfterId} (${sfxAfterDelayMs}ms)`);
-      }).catch(err => console.warn('[SFX] AFTER play failed:', err.message));
-    }
   }
 
-  if (sfxAfterDelayMs > 0) {
-    // Let the SFX play over silence before the next segment starts
-    setTimeout(() => {
-      processQueue();
-      if (!isAudioActive && idleExpressions) loadIdleExpressionPlan();
-    }, sfxAfterDelayMs);
-  } else {
+  const next = () => {
     processQueue();
     if (!isAudioActive && idleExpressions) loadIdleExpressionPlan();
+  };
+  if (sfxAfterId) {
+    // The SFX plays over silence: it gates speech (sfxGateMs) until the stream has played it out
+    sfxStarting += 1;
+    sfxService.play(sfxAfterId, { maxMs: SFX_MAX_MS, gate: true }).then((ms) => {
+      if (doneSeg?.metadata?.sfxAttach?.placement === 'post' && sfxMatcher) {
+        sfxMatcher.trackPlayed(sfxAfterId);
+      }
+      console.log(`[SFX] AFTER segment ${completedSegId.slice(0,8)}: ${sfxAfterId} (${ms}ms)`);
+    }).catch(err => console.warn('[SFX] AFTER play failed:', err.message))
+      .finally(() => { sfxStarting -= 1; next(); });
+  } else {
+    next();
   }
 
   // segmentDone: advance pipeline state + expand chain.
@@ -1649,6 +1647,31 @@ async function startPlayback(item) {
 let processQueueRetry = null;
 const CHAT_REPLY_HOLD_MS = 20000;
 
+function retryProcessQueue(ms) {
+  if (processQueueRetry) return;
+  processQueueRetry = setTimeout(() => { processQueueRetry = null; processQueue(); }, ms);
+}
+
+// Auto-played SFX (a segment's pre/post) play at most this long, fading out; shorter ones are
+// untouched. Some library sounds are whole song choruses (up to 25s).
+const SFX_MAX_MS = parseInt(process.env.SFX_MAX_MS || '5000', 10) || 5000;
+let sfxStarting = 0; // gated SFX whose play() hasn't resolved yet (decode on a cache miss)
+
+/** ms until gated SFX are done; speech must not start before (manual soundboard plays don't gate) */
+function sfxGateMs() {
+  if (!sfxService) return 0;
+  return Math.max(sfxStarting > 0 ? 100 : 0, sfxService.gateRemainingMs());
+}
+
+/** Resolves once gated SFX have played out on the stream (bounded) */
+function waitForSfxGate() {
+  const deadline = Date.now() + SFX_MAX_MS + 2000;
+  return new Promise(resolve => {
+    const check = () => (sfxGateMs() <= 0 || Date.now() > deadline ? resolve() : setTimeout(check, 50));
+    check();
+  });
+}
+
 /**
  * A viewer's question has been pushed to air (narrator-cue ready/aired) but its reply isn't
  * ready yet. Before the narrator is pushed (it's held until the reply is nearly ready) other
@@ -1678,13 +1701,17 @@ function processQueue() {
     console.log('[Queue] Paused — not dequeuing next segment');
     return;
   }
+  // A segment's SFX is still playing: speech starts when it has finished, never over it
+  const gateMs = sfxGateMs();
+  if (gateMs > 0) {
+    retryProcessQueue(Math.min(gateMs, 500) + 20);
+    return;
+  }
   // A viewer's question is on air (or just was) and its reply is still being written/voiced:
   // don't slip other audio in between. Chat audio itself goes ahead. Bounded by chat-intake's wait.
   const head = renderQueue[0];
   if (head.segmentType !== 'narrator-cue' && head.segmentType !== 'chat-response' && chatReplyPending()) {
-    if (!processQueueRetry) {
-      processQueueRetry = setTimeout(() => { processQueueRetry = null; processQueue(); }, 200);
-    }
+    retryProcessQueue(200);
     return;
   }
 
@@ -1699,27 +1726,22 @@ function processQueue() {
   if (sfxBeforeId && sfxService) {
     // Block the queue immediately so nothing else dequeues during the SFX gap
     isAudioActive = true;
-    sfxService.play(sfxBeforeId)
-      .then(() => {
-        const dur = sfxService.getDurationMs(sfxBeforeId);
+    sfxService.play(sfxBeforeId, { maxMs: SFX_MAX_MS, gate: true })
+      .then((ms) => {
         if (sfxMatcher && nextSeg?.metadata?.sfxAttach?.placement === 'pre') {
           sfxMatcher.trackPlayed(sfxBeforeId);
         }
-        console.log(`[SFX] BEFORE segment ${next.segmentId?.slice(0,8)}: ${sfxBeforeId} (${dur}ms)`);
-        // Wait for SFX to finish, then start the segment
-        setTimeout(() => {
-          isAudioActive = false; // let startPlayback set it back to true
-          startPlayback(next).catch(err => {
-            console.error('[Queue] Failed to start playback after sfxBefore:', err.message);
-            isAudioActive = false;
-            processQueue();
-          });
-        }, dur);
+        console.log(`[SFX] BEFORE segment ${next.segmentId?.slice(0,8)}: ${sfxBeforeId} (${ms}ms)`);
+        return waitForSfxGate(); // until the stream has actually played it out
       })
-      .catch(err => {
-        console.warn(`[SFX] sfxBefore play failed (${sfxBeforeId}): ${err.message}`);
-        isAudioActive = false;
-        startPlayback(next).catch(e => { isAudioActive = false; processQueue(); });
+      .catch(err => console.warn(`[SFX] sfxBefore play failed (${sfxBeforeId}): ${err.message}`))
+      .finally(() => {
+        isAudioActive = false; // let startPlayback set it back to true
+        startPlayback(next).catch(err => {
+          console.error('[Queue] Failed to start playback after sfxBefore:', err.message);
+          isAudioActive = false;
+          processQueue();
+        });
       });
     return;
   }
@@ -1983,11 +2005,13 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         totalLines
       };
 
-      const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
+      // Also queue behind a still-playing segment SFX; processQueue starts it once that's done
+      const queued = shouldQueue && (isAudioActive || renderQueue.length > 0 || sfxGateMs() > 0);
       if (queued) {
         enqueueRenderItem(queueItem);
         response.queued = true;
         response.queuePosition = renderQueue.length;
+        if (!isAudioActive) processQueue();
       } else {
         await startPlayback(queueItem);
         response.queued = false;
@@ -2027,11 +2051,13 @@ app.post('/render', upload.single('audio'), async (req, res) => {
         totalLines
       };
 
-      const queued = shouldQueue && (isAudioActive || renderQueue.length > 0);
+      // Also queue behind a still-playing segment SFX; processQueue starts it once that's done
+      const queued = shouldQueue && (isAudioActive || renderQueue.length > 0 || sfxGateMs() > 0);
       if (queued) {
         enqueueRenderItem(queueItem);
         response.queued = true;
         response.queuePosition = renderQueue.length;
+        if (!isAudioActive) processQueue();
       } else {
         await startPlayback(queueItem);
         response.queued = false;

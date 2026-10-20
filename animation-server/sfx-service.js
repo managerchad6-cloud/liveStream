@@ -68,13 +68,20 @@ function titleFromFilename(filename) {
     .trim();
 }
 
+// s16le stereo 44100Hz: each stereo frame = 4 bytes
+const BYTES_PER_MS = 44100 * 4 / 1000;
+const bytesToMs = (bytes) => Math.ceil(bytes / BYTES_PER_MS);
+const msToBytes = (ms) => Math.floor(ms * BYTES_PER_MS / 4) * 4;
+const CAP_FADE_MS = 500; // fade-out at the end of a capped sound
+
 class SfxService {
   constructor() {
     this.volume = 0.85;
     this._labels   = {};        // id → custom label
     this._meanings = {};        // id → contextual meaning
     this._pcmCache = new Map(); // id → Buffer (s16le stereo 44100)
-    this._active   = [];        // { buf, pos } — currently playing
+    this._active   = [];        // { buf, pos, gate } — currently playing
+    this._cappedCache = new Map(); // `${id}@${maxMs}` → Buffer (capped + faded)
 
     this._load();
   }
@@ -109,7 +116,13 @@ class SfxService {
     this.volume = Math.max(0, Math.min(1, Number(v) || 0));
   }
 
-  async play(id) {
+  /**
+   * Mix a sound into the stream. Returns how long it will play (ms).
+   * @param {object} [opts]
+   * @param {number} [opts.maxMs] Play at most this long, fading out (sounds shorter than it are untouched)
+   * @param {boolean} [opts.gate] Speech must wait for it: counted by gateRemainingMs()
+   */
+  async play(id, { maxMs = 0, gate = false } = {}) {
     const sfxPath = path.join(SFX_DIR, id);
     if (!fs.existsSync(sfxPath)) throw new Error(`SFX not found: ${id}`);
 
@@ -118,9 +131,38 @@ class SfxService {
       this._pcmCache.set(id, buf);
     }
 
-    const buf = this._pcmCache.get(id);
-    this._active.push({ buf, pos: 0 });
-    console.log(`[SFX] Playing: ${id} (${(buf.length / (44100 * 4)).toFixed(2)}s, ${this._active.length} active)`);
+    const full = this._pcmCache.get(id);
+    const buf = maxMs > 0 && bytesToMs(full.length) > maxMs ? this._capped(id, full, maxMs) : full;
+    this._active.push({ buf, pos: 0, gate });
+    const capNote = buf === full ? '' : ` capped from ${(bytesToMs(full.length) / 1000).toFixed(2)}s`;
+    console.log(`[SFX] Playing: ${id} (${(bytesToMs(buf.length) / 1000).toFixed(2)}s${capNote}, ${this._active.length} active)`);
+    return bytesToMs(buf.length);
+  }
+
+  /** ms until every gated sound (see play) has finished; follows the stream's own playback position */
+  gateRemainingMs() {
+    let ms = 0;
+    for (const s of this._active) {
+      if (s.gate && s.pos < s.buf.length) ms = Math.max(ms, bytesToMs(s.buf.length - s.pos));
+    }
+    return ms;
+  }
+
+  /** The first maxMs of a sound with a fade-out at the end (cached per cap) */
+  _capped(id, full, maxMs) {
+    const key = `${id}@${maxMs}`;
+    if (this._cappedCache.has(key)) return this._cappedCache.get(key);
+    const bytes = msToBytes(maxMs);
+    const buf = Buffer.from(full.subarray(0, bytes));
+    const fadeBytes = Math.min(bytes, msToBytes(CAP_FADE_MS));
+    const fadeStart = bytes - fadeBytes;
+    for (let i = fadeStart; i + 3 < bytes; i += 4) {
+      const g = (bytes - i) / fadeBytes; // 1 → 0
+      buf.writeInt16LE(Math.round(buf.readInt16LE(i) * g), i);
+      buf.writeInt16LE(Math.round(buf.readInt16LE(i + 2) * g), i + 2);
+    }
+    this._cappedCache.set(key, buf);
+    return buf;
   }
 
   // Hot path — called 30×/sec. Returns null when nothing is playing.
@@ -147,12 +189,12 @@ class SfxService {
     return out;
   }
 
-  /** Duration of a cached sound in milliseconds. Returns 0 if not yet decoded. */
-  getDurationMs(id) {
+  /** Duration of a cached sound in milliseconds (at most maxMs when given). Returns 0 if not yet decoded. */
+  getDurationMs(id, maxMs = 0) {
     const buf = this._pcmCache.get(id);
     if (!buf) return 0;
-    // s16le stereo 44100Hz: each stereo frame = 4 bytes
-    return Math.ceil(buf.length / 4 / 44100 * 1000);
+    const ms = bytesToMs(buf.length);
+    return maxMs > 0 ? Math.min(ms, maxMs) : ms;
   }
 
   /** Pre-decode all sounds so getDurationMs is always accurate. Fire-and-forget at startup. */
