@@ -1646,12 +1646,34 @@ async function startPlayback(item) {
   scheduleAudioCleanup(item.audioMp3Path, item.duration);
 }
 
+let processQueueRetry = null;
+const CHAT_REPLY_HOLD_MS = 20000;
+
+/** A chat reply whose narrator-cue already started is not ready to air yet */
+function chatReplyPending() {
+  if (chatIntake?.isAwaitingReply?.()) return true;
+  if (!pipelineStore) return false;
+  const now = Date.now();
+  return pipelineStore.getAllSegments().some(s =>
+    s.type === 'chat-response' && s.status === 'forming' && s.renderProgress !== -1
+    && now - Date.parse(s.createdAt) < CHAT_REPLY_HOLD_MS);
+}
+
 function processQueue() {
   if (isAudioActive || renderQueue.length === 0) {
     return;
   }
   if (playbackController && playbackController.isPaused) {
     console.log('[Queue] Paused — not dequeuing next segment');
+    return;
+  }
+  // A viewer's question is on air (or just was) and its reply is still being written/voiced:
+  // don't slip other audio in between. Chat audio itself goes ahead. Bounded by chat-intake's wait.
+  const head = renderQueue[0];
+  if (head.segmentType !== 'narrator-cue' && head.segmentType !== 'chat-response' && chatReplyPending()) {
+    if (!processQueueRetry) {
+      processQueueRetry = setTimeout(() => { processQueueRetry = null; processQueue(); }, 200);
+    }
     return;
   }
 
@@ -2998,7 +3020,8 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
   if (!pipelineStore) return res.status(503).json({ error: 'Pipeline not initialized' });
   if (!segmentRenderer) return res.status(503).json({ error: 'Segment renderer not initialized' });
 
-  const { speaker, text, seed } = req.body || {};
+  // chatCardId: the inbox card being queued, so the suite keeps getting its 'chat:status'
+  const { speaker, text, seed, chatCardId } = req.body || {};
   if (!speaker || !text) {
     return res.status(400).json({ error: 'Missing speaker or text' });
   }
@@ -3024,9 +3047,16 @@ app.post('/api/orchestrator/queue-response', async (req, res) => {
     });
 
     try {
+      const card = chatCardId ? { chatCardId: String(chatCardId) } : {};
       await pipelineStore.updateSegment(responseSeg.id, {
-        metadata: { ...(responseSeg.metadata || {}), priority: 'high', source: 'chat', hasNarratorPair: true }
+        metadata: { ...(responseSeg.metadata || {}), priority: 'high', source: 'chat', hasNarratorPair: true, ...card }
       });
+      if (chatCardId) {
+        await pipelineStore.updateSegment(narratorSeg.id, {
+          metadata: { ...(narratorSeg.metadata || {}), ...card, isNarratorCue: true }
+        });
+        broadcastChatStatus(String(chatCardId), 'forming');
+      }
     } catch (_) {}
 
     // Jump the pair to the front: right after on-air, behind chat that's already waiting.
@@ -3226,6 +3256,12 @@ app.post('/api/orchestrator/chat/echo', (req, res) => {
   addChatMessage(username || 'anonymous', String(text).trim(), id);
   broadcastChatStatus(id, 'shown');
   res.json({ success: true });
+  // Start voicing the narrator-cue now; the reply attaches to it when /chat/message arrives
+  if (chatIntake) {
+    chatIntake.beginCard(id, username || 'anonymous', text).catch(err => {
+      console.warn(`[ChatIntake] Early narrator failed: ${err.message}`);
+    });
+  }
 });
 
 app.post('/api/orchestrator/chat/message', async (req, res) => {

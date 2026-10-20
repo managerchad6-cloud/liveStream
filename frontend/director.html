@@ -1693,7 +1693,8 @@
               await apiPost('/api/orchestrator/queue-response', {
                 speaker: card.response.speaker,
                 text: card.response.text,
-                seed: card.text
+                seed: card.text,
+                chatCardId: card.id
               });
             } else {
               const result = await apiPost('/api/orchestrator/expand-chat', { message: card.text });

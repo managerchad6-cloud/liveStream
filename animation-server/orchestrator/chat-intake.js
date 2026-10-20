@@ -21,6 +21,9 @@ const INJECTION_PATTERNS = [
   /override (your |all )?(instructions?|rules?|prompt)/i,
 ];
 
+// How long an early narrator-cue (beginCard) waits for its reply before the queue moves on
+const EARLY_REPLY_WAIT_MS = 20_000;
+
 class ChatIntakeAgent {
   constructor({ scriptGenerator, pipelineStore, segmentRenderer, eventEmitter, onChatMessage, onChatProgress }) {
     this.scriptGenerator = scriptGenerator;
@@ -41,6 +44,100 @@ class ChatIntakeAgent {
     // Filter state
     this._approvedTimestamps = []; // sliding window for rate limiter
     this._recentApproved = [];     // last 10 approved texts for dedup
+
+    // Cards whose narrator-cue started before the reply was written (see beginCard):
+    // id → { narratorSeg, at } while waiting for the reply, { dropped: true } if filtered out
+    this._early = new Map();
+  }
+
+  /**
+   * The viewer's message just arrived and its reply isn't written yet. The narrator-cue only
+   * reads the viewer's text, so voice it and put it on air now; it covers the reply's LLM + TTS
+   * time instead of adding to it. addMessage() with the same id attaches the reply after it.
+   * Only for auto-approved chat outside hold mode; otherwise addMessage() does everything.
+   */
+  async beginCard(id, username, text) {
+    text = String(text || '').trim();
+    if (!id || !text || !this.autoApprove || this._holdMode || this._early.has(id)) return;
+    this._pruneEarly();
+
+    const reason = this._filter(text);
+    if (reason) {
+      console.log(`[ChatIntake] Filtered (${reason}): "${text.substring(0, 60)}"`);
+      this._early.set(id, { dropped: true, at: Date.now() });
+      this._status(id, 'dropped', { reason });
+      return;
+    }
+    this._recordApproved(text);
+
+    // addMessage() may arrive while the narrator is still being created: it awaits narratorReady
+    const entry = { at: Date.now(), narratorReady: null };
+    entry.narratorReady = (async () => {
+      const seg = await this._createNarrator(id, text);
+      await this.pipelineStore.prioritizeChat([seg.id]);
+      return seg;
+    })();
+    this._early.set(id, entry);
+    const narratorSeg = await entry.narratorReady;
+
+    if (this.onChatProgress) {
+      try { this.onChatProgress(id); } catch (_) {}
+    }
+    this._status(id, 'forming');
+    this._broadcastPipeline();
+    console.log(`[ChatIntake] Narrator-cue ${narratorSeg.id.slice(0, 8)} started before its reply`);
+    const queueFn = this.queueSegmentWithBridge || (sid => this.segmentRenderer?.queueRender(sid));
+    Promise.resolve(queueFn(narratorSeg.id)).catch(err => {
+      console.warn(`[ChatIntake] Narrator render failed: ${err.message}`);
+    });
+  }
+
+  /** True while a started narrator-cue is still waiting for its reply (bounded by EARLY_REPLY_WAIT_MS). */
+  isAwaitingReply() {
+    this._pruneEarly();
+    for (const e of this._early.values()) if (e.narratorReady) return true;
+    return false;
+  }
+
+  /** Put a reply right after its own narrator-cue (or next in line if the narrator already aired). */
+  async _placeAfterNarrator(narratorSeg, segment) {
+    const narrator = this.pipelineStore.getSegment(narratorSeg.id);
+    if (!narrator || narrator.status === 'aired' || narrator.status === 'deleted') {
+      await this.pipelineStore.prioritizeChat([segment.id]);
+      return;
+    }
+    const idx = this.pipelineStore.getAllSegments().findIndex(s => s.id === narratorSeg.id);
+    await this.pipelineStore.insertAt(segment.id, idx + 1);
+  }
+
+  _pruneEarly() {
+    const now = Date.now();
+    for (const [id, e] of this._early) {
+      if (now - e.at > EARLY_REPLY_WAIT_MS) this._early.delete(id);
+    }
+  }
+
+  async _createNarrator(cardId, text) {
+    const narratorText = text.substring(0, 120);
+    const seg = await this.pipelineStore.createSegment({
+      type: 'narrator-cue',
+      seed: text.substring(0, 50),
+      script: [{ speaker: 'narrator', text: narratorText }],
+      estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
+    });
+    await this.pipelineStore.updateSegment(seg.id, {
+      metadata: { ...(seg.metadata || {}), chatCardId: cardId, isNarratorCue: true }
+    });
+    return seg;
+  }
+
+  _broadcastPipeline() {
+    if (this.eventEmitter) {
+      this.eventEmitter.broadcast('pipeline:update', {
+        segments: this.pipelineStore.getAllSegments(),
+        bufferHealth: this.pipelineStore.getBufferHealth()
+      });
+    }
   }
 
   start() {}
@@ -133,6 +230,16 @@ class ChatIntakeAgent {
       this.onChatMessage(card.username, card.text, card.id);
     }
 
+    // Narrator-cue already started from the echo (beginCard): filtered and recorded there
+    const early = this._early.get(card.id);
+    if (early) {
+      if (early.dropped) { this._early.delete(card.id); return null; }
+      this._autoQueue(card, early).catch(err => {
+        console.warn(`[ChatIntake] Auto queue failed: ${err.message}`);
+      }).finally(() => this._early.delete(card.id));
+      return card;
+    }
+
     // Filter gate — only applies during auto-approve
     if (this.autoApprove) {
       const reason = this._filter(card.text);
@@ -174,22 +281,19 @@ class ChatIntakeAgent {
     return card;
   }
 
-  async _autoQueue(card) {
-    const narratorText = card.text.substring(0, 120);
-    let narratorSeg = null;
+  /**
+   * @param {object} card
+   * @param {{narratorReady: Promise<object>}} [early] The narrator-cue already started (beginCard):
+   *   only the response is created, placed right after it, and rendered.
+   */
+  async _autoQueue(card, early = null) {
+    let narratorSeg = early ? await early.narratorReady.catch(() => null) : null;
+    if (!narratorSeg) early = null; // early start failed: create and queue both here as before
     let segment = null;
 
     if (card.response) {
       // Create narrator-cue FIRST so it sits before the response in the pipeline array
-      narratorSeg = await this.pipelineStore.createSegment({
-        type: 'narrator-cue',
-        seed: card.text.substring(0, 50),
-        script: [{ speaker: 'narrator', text: narratorText }],
-        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
-      });
-      await this.pipelineStore.updateSegment(narratorSeg.id, {
-        metadata: { ...(narratorSeg.metadata || {}), chatCardId: card.id, isNarratorCue: true }
-      });
+      if (!narratorSeg) narratorSeg = await this._createNarrator(card.id, card.text);
 
       segment = await this.pipelineStore.createSegment({
         type: 'chat-response',
@@ -204,15 +308,7 @@ class ChatIntakeAgent {
       });
     } else if (this.scriptGenerator) {
       // No pre-written response — narrator-cue precedes the LLM-expanded segment
-      narratorSeg = await this.pipelineStore.createSegment({
-        type: 'narrator-cue',
-        seed: card.text.substring(0, 50),
-        script: [{ speaker: 'narrator', text: narratorText }],
-        estimatedDuration: Math.max(1, Math.ceil(narratorText.split(/\s+/).length / 150 * 60))
-      });
-      await this.pipelineStore.updateSegment(narratorSeg.id, {
-        metadata: { ...(narratorSeg.metadata || {}), chatCardId: card.id, isNarratorCue: true }
-      });
+      if (!narratorSeg) narratorSeg = await this._createNarrator(card.id, card.text);
 
       segment = await this.scriptGenerator.expandChatMessage(card.text);
       // Tag as having a narrator pair so expand chain skips it
@@ -230,19 +326,23 @@ class ChatIntakeAgent {
     } catch (_) {}
 
     // Air next instead of waiting behind the whole buffer (auto-convos, expands, fillers)
-    if (this.pipelineStore.prioritizeChat) {
-      try {
+    try {
+      if (early && narratorSeg) {
+        await this._placeAfterNarrator(narratorSeg, segment);
+      } else if (this.pipelineStore.prioritizeChat) {
         await this.pipelineStore.prioritizeChat(narratorSeg ? [narratorSeg.id, segment.id] : [segment.id]);
-      } catch (err) {
-        console.warn(`[ChatIntake] Prioritize failed, airing in arrival order: ${err.message}`);
       }
+    } catch (err) {
+      console.warn(`[ChatIntake] Prioritize failed, airing in arrival order: ${err.message}`);
     }
 
-    // Progress bar: segment entered the rendering pipeline
-    if (this.onChatProgress) {
-      try { this.onChatProgress(card.id); } catch (_) {}
+    if (!early) {
+      // Progress bar: segment entered the rendering pipeline (beginCard already did this)
+      if (this.onChatProgress) {
+        try { this.onChatProgress(card.id); } catch (_) {}
+      }
+      this._status(card.id, 'forming');
     }
-    this._status(card.id, 'forming');
 
     if (this.segmentRenderer?.cancelQueuedSegmentsByType) {
       const cancelled = this.segmentRenderer.cancelQueuedSegmentsByType('filler', { keep: 1 });
@@ -264,7 +364,11 @@ class ChatIntakeAgent {
 
     if (!queueFn) return;
 
-    if (narratorSeg) {
+    if (early) {
+      Promise.resolve(this.segmentRenderer?.queueRender(segment.id)).catch(err => {
+        console.warn(`[ChatIntake] Auto render failed: ${err.message}`);
+      });
+    } else if (narratorSeg) {
       // Narrator through bridge machinery first, response direct after
       Promise.resolve(queueFn(narratorSeg.id)).catch(err => {
         console.warn(`[ChatIntake] Narrator render failed: ${err.message}`);
