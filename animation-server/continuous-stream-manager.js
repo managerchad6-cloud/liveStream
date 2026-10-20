@@ -99,8 +99,14 @@ class ContinuousStreamManager {
     const xRtmpUrl    = process.env.X_RTMP_URL || null;
     const rtmpTargets = [pumpRtmpUrl, xRtmpUrl].filter(Boolean);
 
-    // 2-second GOP — required by pump.fun (keyframe every 2s at 30fps = 60 frames)
-    const gopSize = this.fps * 2;
+    // Keyframe interval = HLS segment length (segments can only be cut on keyframes), and the
+    // viewer's delay is ~2.5-3 segments. 1s when only HLS is served; 2s while an RTMP target is
+    // set, as pump.fun requires a keyframe every 2s. Override with STREAM_GOP_SECONDS.
+    const gopSeconds = parseInt(process.env.STREAM_GOP_SECONDS || '', 10) || (rtmpTargets.length > 0 ? 2 : 1);
+    const gopSize = this.fps * gopSeconds;
+    // Keep a ~12s playlist window whatever the segment length (the suite player relies on it)
+    const hlsListSize = String(Math.ceil(12 / gopSeconds));
+    console.log(`[ContinuousStreamManager] Keyframe/segment every ${gopSeconds}s, playlist of ${hlsListSize} segments`);
 
     // Build output args: HLS only, or HLS + RTMP(s) via tee muxer
     let outputArgs;
@@ -110,8 +116,8 @@ class ContinuousStreamManager {
       const outPathFwd = outputPath.replace(/\\/g, '/');
       const hlsOpts = [
         'f=hls',
-        'hls_time=1',
-        'hls_list_size=6',
+        `hls_time=${gopSeconds}`,
+        `hls_list_size=${hlsListSize}`,
         'hls_flags=delete_segments+append_list+independent_segments',
         'hls_segment_type=mpegts',
         `hls_segment_filename=${segPathFwd}`
@@ -127,8 +133,8 @@ class ContinuousStreamManager {
     } else {
       outputArgs = [
         '-f', 'hls',
-        '-hls_time', '1',
-        '-hls_list_size', '6',
+        '-hls_time', String(gopSeconds),
+        '-hls_list_size', hlsListSize,
         '-hls_flags', 'delete_segments+append_list+independent_segments',
         '-hls_segment_type', 'mpegts',
         '-hls_segment_filename', segmentPath,
