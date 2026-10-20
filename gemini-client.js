@@ -41,6 +41,9 @@ const THINKING_BUDGET =
     : 0;
 const THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'low';
 
+// Default per-request timeout; callers can pass `timeout_ms`. Override with GEMINI_TIMEOUT_MS.
+const REQUEST_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || '30000', 10) || 30000;
+
 function thinkingConfigFor(model) {
   if (/gemini-2\.5/i.test(String(model))) {
     return { thinkingBudget: Number.isFinite(THINKING_BUDGET) ? THINKING_BUDGET : 0 };
@@ -199,6 +202,7 @@ class GeminiClient {
     temperature,
     max_tokens,
     response_format,
+    timeout_ms,
   } = {}) {
     const { systemInstruction, contents } = messagesToGemini(messages);
 
@@ -212,11 +216,12 @@ class GeminiClient {
     const thinkingConfig = thinkingConfigFor(resolvedModel);
     if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
 
+    // Without a timeout a stalled request never settles (seen: >2 min) and its caller waits forever
     const genModel = this.genAI.getGenerativeModel({
       model: resolvedModel,
       systemInstruction,
       safetySettings: SAFETY_SETTINGS,
-    });
+    }, { timeout: timeout_ms || REQUEST_TIMEOUT_MS });
 
     const result = await genModel.generateContent({ contents, generationConfig });
 

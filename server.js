@@ -452,26 +452,35 @@ async function respondToChat({ id, message, mode, voice, model, temperature }) {
   }
 }
 
+const CHAT_REPLY_TIMEOUT_MS = parseInt(process.env.CHAT_REPLY_TIMEOUT_MS || '10000', 10) || 10000;
+
 /** One character's reply to a viewer message, or null if Gemini failed */
 async function generateCharacterReply(voiceId, message, model, temperature) {
   const voiceConfig = voices[voiceId] || voices.chad;
-  try {
-    const memory = memoryStore[voiceId] || '';
-    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
-    const completion = await gemini.chat.completions.create({
-      model: process.env.MODEL || 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message }
-      ],
-      max_tokens: 150,
-      temperature: temperature,
-    });
-    return completion.choices[0].message.content || null;
-  } catch (llmErr) {
-    console.warn(`[Chat] Gemini generation failed for ${voiceId}, forwarding raw message:`, llmErr.message);
-    return null;
+  const memory = memoryStore[voiceId] || '';
+  const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
+  // The viewer's question is already on air: a stalled call gets one quick retry, not a long wait
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const completion = await gemini.chat.completions.create({
+        model: process.env.MODEL || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: message }
+        ],
+        max_tokens: 150,
+        temperature: temperature,
+        timeout_ms: CHAT_REPLY_TIMEOUT_MS,
+      });
+      // The history in the prompt is "Chad: …" lines and the model sometimes copies the label,
+      // which TTS would read out
+      const text = (completion.choices[0].message.content || '').replace(/^\s*\**(chad|virgin)\**\s*:\s*/i, '').trim();
+      return text || null;
+    } catch (llmErr) {
+      console.warn(`[Chat] Gemini reply attempt ${attempt} failed for ${voiceId}:`, llmErr.message);
+    }
   }
+  return null;
 }
 
 // Legacy endpoint for backward compatibility
