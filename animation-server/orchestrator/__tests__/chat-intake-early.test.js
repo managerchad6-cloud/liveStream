@@ -64,6 +64,40 @@ describe('ChatIntake early narrator', () => {
     expect(statuses).toEqual(['review']);
   });
 
+  test('narrator push is held until the reply is about to be ready', async () => {
+    const holds = new Map();
+    let eta = 10_000;
+    intake.segmentRenderer.setPushHold = (id, fn) => holds.set(id, fn);
+    intake.segmentRenderer.estimateRemainingMs = () => eta;
+
+    await intake.beginCard('card-5', 'chat', 'how much do you bench?');
+    const narrator = store.getAllSegments()[0];
+    const narratorAudio = [{ audioBuffer: Buffer.alloc(32_000) }]; // 2s at 128 kbps
+    let released = false;
+    const held = holds.get(narrator.id)(narratorAudio).then(() => { released = true; });
+
+    await new Promise(r => setTimeout(r, 250));
+    expect(released).toBe(false); // reply not written yet
+
+    intake.addMessage('chat', 'how much do you bench?', { speaker: 'chad', text: 'Your house.' }, { id: 'card-5', echoed: true });
+    await new Promise(r => setTimeout(r, 250));
+    expect(released).toBe(false); // reply TTS needs 10s, narrator is 2s
+
+    eta = 1_500; // <= 2000 - 250 margin
+    await held;
+    expect(released).toBe(true);
+  });
+
+  test('narrator hold releases when no reply will come', async () => {
+    const holds = new Map();
+    intake.segmentRenderer.setPushHold = (id, fn) => holds.set(id, fn);
+    await intake.beginCard('card-6', 'chat', 'anyone there at all?');
+    const narrator = store.getAllSegments()[0];
+    const held = holds.get(narrator.id)([{ audioBuffer: Buffer.alloc(16_000) }]);
+    intake._early.delete('card-6'); // e.g. expired or chat server never answered
+    await held; // resolves instead of hanging
+  });
+
   test('no echo (old path): addMessage still creates narrator + reply', async () => {
     intake.addMessage('chat', 'how is the gym going', { speaker: 'chad', text: 'Great.' }, { id: 'card-4', echoed: true });
     await flush();

@@ -1649,14 +1649,25 @@ async function startPlayback(item) {
 let processQueueRetry = null;
 const CHAT_REPLY_HOLD_MS = 20000;
 
-/** A chat reply whose narrator-cue already started is not ready to air yet */
+/**
+ * A viewer's question has been pushed to air (narrator-cue ready/aired) but its reply isn't
+ * ready yet. Before the narrator is pushed (it's held until the reply is nearly ready) other
+ * audio may still play.
+ */
 function chatReplyPending() {
-  if (chatIntake?.isAwaitingReply?.()) return true;
   if (!pipelineStore) return false;
   const now = Date.now();
-  return pipelineStore.getAllSegments().some(s =>
-    s.type === 'chat-response' && s.status === 'forming' && s.renderProgress !== -1
-    && now - Date.parse(s.createdAt) < CHAT_REPLY_HOLD_MS);
+  const segs = pipelineStore.getAllSegments();
+  return segs.some(n => n.metadata?.isNarratorCue && (n.status === 'ready' || n.status === 'aired')
+    && now - Date.parse(n.createdAt) < CHAT_REPLY_HOLD_MS
+    && chatReplyOutstanding(n.metadata.chatCardId, segs));
+}
+
+function chatReplyOutstanding(cardId, segs) {
+  if (!cardId) return false;
+  const reply = segs.find(s => s.type === 'chat-response' && s.metadata?.chatCardId === cardId);
+  if (reply) return reply.status === 'forming' && reply.renderProgress !== -1;
+  return Boolean(chatIntake?.isAwaitingReply?.(cardId));
 }
 
 function processQueue() {

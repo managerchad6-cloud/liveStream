@@ -23,6 +23,15 @@ const INJECTION_PATTERNS = [
 
 // How long an early narrator-cue (beginCard) waits for its reply before the queue moves on
 const EARLY_REPLY_WAIT_MS = 20_000;
+// Just-in-time narrator: longest it is held back waiting for its reply, and how much earlier
+// than the narrator's end the reply should be ready (estimate slack)
+const NARRATOR_HOLD_MAX_MS = 15_000;
+const JIT_MARGIN_MS = 250;
+
+/** Duration of an MP3 from its size (ElevenLabs default output is 128 kbps CBR) */
+function mp3DurationMs(buf) {
+  return Math.round(((buf?.length || 0) * 8) / 128);
+}
 
 class ChatIntakeAgent {
   constructor({ scriptGenerator, pipelineStore, segmentRenderer, eventEmitter, onChatMessage, onChatProgress }) {
@@ -48,6 +57,8 @@ class ChatIntakeAgent {
     // Cards whose narrator-cue started before the reply was written (see beginCard):
     // id → { narratorSeg, at } while waiting for the reply, { dropped: true } if filtered out
     this._early = new Map();
+    // cardId → { id, at }: the reply segment of an early card, for the narrator's push hold
+    this._replyOf = new Map();
   }
 
   /**
@@ -79,6 +90,8 @@ class ChatIntakeAgent {
     })();
     this._early.set(id, entry);
     const narratorSeg = await entry.narratorReady;
+    // Air the question just in time: it should end as its reply becomes ready, not leave a gap
+    this.segmentRenderer?.setPushHold?.(narratorSeg.id, items => this._holdNarrator(id, items));
 
     if (this.onChatProgress) {
       try { this.onChatProgress(id); } catch (_) {}
@@ -92,11 +105,39 @@ class ChatIntakeAgent {
     });
   }
 
-  /** True while a started narrator-cue is still waiting for its reply (bounded by EARLY_REPLY_WAIT_MS). */
-  isAwaitingReply() {
+  /**
+   * True while a started narrator-cue is still waiting for its reply to be written (bounded by
+   * EARLY_REPLY_WAIT_MS). With a card id: that card only; without: any card.
+   */
+  isAwaitingReply(cardId) {
     this._pruneEarly();
+    if (cardId) return Boolean(this._early.get(cardId)?.narratorReady);
     for (const e of this._early.values()) if (e.narratorReady) return true;
     return false;
+  }
+
+  /**
+   * Push hold for an early narrator-cue (its TTS is done). Releases once the reply is expected
+   * to be ready by the time the narrator finishes reading: reply ETA <= narrator length - margin.
+   * Also releases when the reply is ready/failed/never coming, or after NARRATOR_HOLD_MAX_MS.
+   */
+  async _holdNarrator(cardId, audioItems) {
+    const narratorMs = audioItems.reduce((ms, it) => ms + mp3DurationMs(it.audioBuffer), 0);
+    const startedAt = Date.now();
+    let why = 'cap';
+    while (Date.now() - startedAt < NARRATOR_HOLD_MAX_MS) {
+      const replyId = this._replyOf.get(cardId)?.id;
+      if (replyId) {
+        const reply = this.pipelineStore.getSegment(replyId);
+        if (!reply || reply.status !== 'forming' || reply.renderProgress === -1) { why = 'reply-done'; break; }
+        const eta = this.segmentRenderer?.estimateRemainingMs?.(replyId) ?? 0;
+        if (eta <= narratorMs - JIT_MARGIN_MS) { why = `reply-eta ${eta}ms`; break; }
+      } else if (!this._early.has(cardId)) {
+        why = 'no-reply'; break;
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    console.log(`[ChatIntake] Narrator for ${cardId.slice(0, 8)} held ${Date.now() - startedAt}ms (${why}; narrator ${narratorMs}ms)`);
   }
 
   /** Put a reply right after its own narrator-cue (or next in line if the narrator already aired). */
@@ -114,6 +155,9 @@ class ChatIntakeAgent {
     const now = Date.now();
     for (const [id, e] of this._early) {
       if (now - e.at > EARLY_REPLY_WAIT_MS) this._early.delete(id);
+    }
+    for (const [id, r] of this._replyOf) {
+      if (now - r.at > EARLY_REPLY_WAIT_MS * 3) this._replyOf.delete(id);
     }
   }
 
@@ -318,6 +362,7 @@ class ChatIntakeAgent {
     }
 
     if (!segment) return;
+    if (early) this._replyOf.set(card.id, { id: segment.id, at: Date.now() });
 
     try {
       await this.pipelineStore.updateSegment(segment.id, {

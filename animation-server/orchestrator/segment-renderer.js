@@ -6,6 +6,8 @@ const BRIDGE_GATE_TIMEOUT_MS = 15_000;
 const MAX_SEGMENT_RETRIES = 2;
 const RETRY_DELAY_MS = 5_000;
 const SFX_GRACE_MS = 250;
+const TTS_OVERHEAD_MS = 500;   // fixed part of one TTS call (request + first audio)
+const PUSH_MS = 200;           // Phase 2: upload + decode in /render
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -86,6 +88,12 @@ class SegmentRenderer {
     // Ordered drain: segments wait here after TTS until it's their turn in pipeline order
     this.pendingPushes = new Map();   // segmentId → { audioItems, renderDurations, resolve, reject }
     this.activeTTS = new Set();       // segmentIds currently in Phase 1 (TTS)
+    // Push holds: segmentId → async (audioItems) => void, awaited before that segment's Phase 2.
+    // Unlike preGates it sees the audio (e.g. its duration) and owns its own time cap.
+    this.pushHolds = new Map();
+    // TTS time model for estimateRemainingMs: ms ≈ TTS_OVERHEAD_MS + chars × msPerChar (learned)
+    this.ttsMsPerChar = 25;
+    this.ttsStartedAt = new Map();    // segmentId → Date.now() when Phase 1 began
     // SFX auto-matcher (optional, injected after construction)
     this.sfxMatcher = null;
     this._draining = false;
@@ -108,6 +116,31 @@ class SegmentRenderer {
    */
   setSfxMatcher(matcher) {
     this.sfxMatcher = matcher;
+  }
+
+  /** Hold a segment's audio push until `hold(audioItems)` settles (it must bound its own wait) */
+  setPushHold(segmentId, hold) {
+    this.pushHolds.set(segmentId, hold);
+  }
+
+  /**
+   * Estimated ms until a segment's audio is pushed: 0 once TTS is done, the full TTS estimate
+   * while it waits for a render slot, the remainder while TTS runs.
+   */
+  estimateRemainingMs(segmentId) {
+    const seg = this.pipelineStore.getSegment(segmentId);
+    if (!seg || seg.status !== 'forming' || this.pendingPushes.has(segmentId)) return 0;
+    const chars = (seg.script || []).reduce((n, l) => n + String(l.text || '').length, 0);
+    const total = TTS_OVERHEAD_MS + chars * this.ttsMsPerChar + PUSH_MS;
+    const started = this.ttsStartedAt.get(segmentId);
+    return Math.max(0, total - (started ? Date.now() - started : 0));
+  }
+
+  /** Fold one TTS call's timing into the model (slow EWMA; ignores tiny lines) */
+  _learnTts(chars, ms) {
+    if (chars < 40) return;
+    const perChar = Math.max(1, (ms - TTS_OVERHEAD_MS) / chars);
+    this.ttsMsPerChar = this.ttsMsPerChar * 0.7 + perChar * 0.3;
   }
 
   addPreGate(segmentId, gatePromise) {
@@ -215,6 +248,7 @@ class SegmentRenderer {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const ttsText = prepareForTTS(line.text);
+          const ttsStart = Date.now();
 
           const _key = process.env.ELEVENLABS_API_KEY || '';
           console.log(`[ElevenLabs] using key: ${_key.slice(0, 8)}...${_key.slice(-4)} (len=${_key.length})`);
@@ -238,6 +272,7 @@ class SegmentRenderer {
           );
 
           audioBuffer = Buffer.from(ttsResponse.data);
+          this._learnTts(ttsText.length, Date.now() - ttsStart);
           success = true;
           break;
         } catch (err) {
@@ -355,6 +390,7 @@ class SegmentRenderer {
     this.activeRenders += 1;
     this.inFlight.add(segmentId);
     this.activeTTS.add(segmentId);
+    this.ttsStartedAt.set(segmentId, Date.now());
 
     try {
       await this.pipelineStore.updateSegment(segmentId, {
@@ -455,6 +491,8 @@ class SegmentRenderer {
       this.activeRenders = Math.max(0, this.activeRenders - 1);
       this.inFlight.delete(segmentId);
       this.activeTTS.delete(segmentId);
+      this.ttsStartedAt.delete(segmentId);
+      this.pushHolds.delete(segmentId);
       // A failed/finished segment may unblock the next one in pipeline order
       this._drainInPipelineOrder();
       this._dequeue();
@@ -483,6 +521,11 @@ class SegmentRenderer {
         try {
           const gate = this.preGates.get(nextId);
           if (gate) { this.preGates.delete(nextId); await gate; }
+          const hold = this.pushHolds.get(nextId);
+          if (hold) {
+            this.pushHolds.delete(nextId);
+            try { await hold(audioItems); } catch (_) {}
+          }
           await this._pushAudioItems(nextId, audioItems, renderDurations);
           resolve();
         } catch (err) {
