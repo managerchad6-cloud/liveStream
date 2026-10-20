@@ -406,38 +406,34 @@ app.post('/api/chat', async (req, res) => {
 
 // Pick the voice, write the reply and hand both to the director inbox (after /api/chat answered)
 async function respondToChat({ id, message, mode, voice, model, temperature }) {
+  const startedAt = Date.now();
+  const writeReply = (v) => generateCharacterReply(v, message, model, temperature);
   let selectedVoice = voice;
-  if (mode === 'router') {
+  let reply;
+  const explicit = mode === 'router' ? detectExplicitAddress(message) : null;
+  if (mode === 'router' && !explicit) {
+    // The reply depends on who answers, but waiting for the router first doubles the LLM time.
+    // Write both characters' replies while the router decides, and keep the chosen one.
+    const drafts = { chad: writeReply('chad'), virgin: writeReply('virgin') };
     try {
       selectedVoice = (await routeMessageToVoice(message)).voice;
     } catch (err) {
       selectedVoice = guessVoiceFromHeuristics(message);
       console.warn('[Chat] Router failed, using heuristics:', err.message);
     }
+    if (!drafts[selectedVoice]) selectedVoice = 'chad';
+    reply = drafts[selectedVoice];
+  } else {
+    if (explicit) selectedVoice = explicit;
+    reply = writeReply(selectedVoice);
   }
   const voiceConfig = voices[selectedVoice] || voices.chad;
 
-  // Generate character response via Gemini (best-effort)
-  let replyText = null;
-  try {
-    const memory = memoryStore[selectedVoice] || '';
-    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
-
-    const completion = await gemini.chat.completions.create({
-      model: process.env.MODEL || 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message }
-      ],
-      max_tokens: 150,
-      temperature: temperature,
-    });
-
-    replyText = completion.choices[0].message.content;
-    console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}`);
+  // Character response via Gemini (best-effort)
+  const replyText = await reply;
+  if (replyText) {
+    console.log(`[Chat] Voice: ${voiceConfig.name}, Model: ${model}, Temp: ${temperature}, ${Date.now() - startedAt}ms`);
     console.log(`[Chat] Response: ${replyText.substring(0, 100)}...`);
-  } catch (llmErr) {
-    console.warn('[Chat] Gemini generation failed, forwarding raw message:', llmErr.message);
   }
 
   // Send to director inbox; the overlay already shows the message (echoed)
@@ -453,6 +449,28 @@ async function respondToChat({ id, message, mode, voice, model, temperature }) {
   if (replyText) {
     appendConversationTurn(message, replyText, selectedVoice);
     enqueueMemoryUpdate(selectedVoice, message, replyText);
+  }
+}
+
+/** One character's reply to a viewer message, or null if Gemini failed */
+async function generateCharacterReply(voiceId, message, model, temperature) {
+  const voiceConfig = voices[voiceId] || voices.chad;
+  try {
+    const memory = memoryStore[voiceId] || '';
+    const systemPrompt = buildCharacterSystemPrompt(voiceConfig, model, memory, conversationHistory);
+    const completion = await gemini.chat.completions.create({
+      model: process.env.MODEL || 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message }
+      ],
+      max_tokens: 150,
+      temperature: temperature,
+    });
+    return completion.choices[0].message.content || null;
+  } catch (llmErr) {
+    console.warn(`[Chat] Gemini generation failed for ${voiceId}, forwarding raw message:`, llmErr.message);
+    return null;
   }
 }
 
@@ -683,7 +701,7 @@ function buildCharacterSystemPrompt(voiceConfig, model, memory, history) {
   const historySection = history && history.length
     ? `\n\nCONVERSATION HISTORY (most recent last):\nLines from "[Viewer]" are from the livestream audience. Lines from "Chad" or "Virgin" are from your co-host.\n${history.join('\n')}`
     : '';
-  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nNEVER use the "I accidentally did X and it turned into Y success" formula. No accidental success stories.\nChad: NEVER give advice or encouragement. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you", "no worries". You ROAST, brag, or dismiss — never help.\nVirgin: NEVER just be generically sad or agree with Chad. No "I guess", "easier said than done", "if only". Always have a SPECIFIC detail. Get defensive about your hobbies or change the subject.\nKeep each response fresh, punchy, and aligned to the user's intent.\n\nRESPONSE LENGTH — match strictly to the message:\n- Insults, reactions, one-liners ("you're gay", "lol", "hi"): 1 sentence, 5-10 words. Hit and done.\n- Simple questions or casual comments: 1-2 sentences max.\n- Substantive questions with real content: 2-3 sentences max.\nNever rant. Never pad. A short jab beats a long speech every time.`;
+  const freshnessGuard = `\n\nSTYLE GUARDRAILS:\nNEVER use the "I accidentally did X and it turned into Y success" formula. No accidental success stories.\nChad: NEVER give advice or encouragement. No "just wing it", "fake it till you make it", "you gotta", "try X sometime", "you do you", "no worries". You ROAST, brag, or dismiss — never help.\nVirgin: NEVER just be generically sad or agree with Chad. No "I guess", "easier said than done", "if only". Always have a SPECIFIC detail. Get defensive about your hobbies or change the subject.\nKeep each response fresh, punchy, and aligned to the user's intent.\n\nRESPONSE LENGTH — match strictly to the message:\n- Insults, reactions, one-liners ("you're gay", "lol", "hi"): 1 sentence, 5-10 words. Hit and done.\n- Simple questions or casual comments: 1-2 sentences max.\n- Substantive questions with real content: 2-3 sentences max.\nNever rant. Never pad. A short jab beats a long speech every time.\nHARD LIMIT: 30 words, whatever the message. Every extra word keeps the viewer waiting on stream.`;
   const base = model === 'eleven_v3'
     ? voiceConfig.basePrompt + voiceConfig.audioTags
     : voiceConfig.basePrompt;
