@@ -32,15 +32,21 @@ const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 // responses (e.g. a 350-token JSON script comes back cut off with
 // finishReason=MAX_TOKENS). This app generates dialogue/JSON, not math proofs,
 // so we disable thinking. Configurable via GEMINI_THINKING_BUDGET (default 0).
-// Only the 2.5 family accepts `thinkingBudget`, so we scope it to those models.
+// The 2.5 family takes `thinkingBudget`; Gemini 3+ takes `thinkingLevel` and thinks
+// by default too (3.8-flash: 137-250 thought tokens, 3.5-15s per chat reply vs ~2s
+// at "low"). Configurable via GEMINI_THINKING_LEVEL (default "low").
 const THINKING_BUDGET =
   process.env.GEMINI_THINKING_BUDGET !== undefined
     ? parseInt(process.env.GEMINI_THINKING_BUDGET, 10)
     : 0;
+const THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'low';
 
 function thinkingConfigFor(model) {
   if (/gemini-2\.5/i.test(String(model))) {
     return { thinkingBudget: Number.isFinite(THINKING_BUDGET) ? THINKING_BUDGET : 0 };
+  }
+  if (/gemini-[3-9]/i.test(String(model))) {
+    return { thinkingLevel: THINKING_LEVEL };
   }
   return undefined;
 }
